@@ -7,43 +7,46 @@ server:  server.o connections.o list.o out.o hashtable.o zset.o strings.o common
 	$(CC) $(CFLAGS) -o server server.o connections.o list.o out.c hashtable.o zset.c strings.o common.o avl.o heap.o thread_pool.o deque.o 
 
 server.o: server.c
-	gcc -c server.c
+	$(CC) $(CFLAGS) -c server.c
 
 connections.o:
-	gcc -c connections.c
+	$(CC) $(CFLAGS) -c connections.c
 
 list.o: list.c list.h
-	gcc -c list.c
+	$(CC) $(CFLAGS) -c list.c
 
 out.o: out.c out.h
-	gcc -c out.c
+	$(CC) $(CFLAGS) -c out.c
 
 hashtable.o: hashtable.c hashtable.h
-	gcc -c hashtable.c
+	$(CC) $(CFLAGS) -c hashtable.c
 
 zset.o: zset.c zset.h
-	gcc -c zset.c
+	$(CC) $(CFLAGS) -c zset.c
 
 strings.o: strings.c strings.h
-	gcc -c strings.c
+	$(CC) $(CFLAGS) -c strings.c
 
 common.o: common.c common.h
-	gcc -c common.c
+	$(CC) $(CFLAGS) -c common.c
 
 avl.o: avl.c avl.h
-	gcc -c avl.c
+	$(CC) $(CFLAGS) -c avl.c
 
 heap.o: heap.c heap.h
-	gcc -c heap.c
+	$(CC) $(CFLAGS) -c heap.c
 
 thread_pool.o: thread_pool.c thread_pool.h
-	gcc -c thread_pool.c
+	$(CC) $(CFLAGS) -c thread_pool.c
 
 deque.o: deque.c deque.h
-	gcc -c deque.c
+	$(CC) $(CFLAGS) -c deque.c
 
-client: client.cpp
-	g++ $(CFLAGS) -o client client.cpp  
+client.o: client.c
+	$(CC) $(CFLAGS) -c client.c
+
+client: client.o common.o
+	$(CC) $(CFLAGS) -o client client.o common.o
 
 clean:
 	rm -f *.o client server

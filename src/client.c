@@ -8,21 +8,8 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
-#include <string>
-#include <vector>
 // proj
 #include "common.h"
-
-
-static void msg(const char *msg) {
-    fprintf(stderr, "%s\n", msg);
-}
-
-static void die(const char *msg) {
-    int err = errno;
-    fprintf(stderr, "[%d] %s\n", err, msg);
-    abort();
-}
 
 static int32_t read_full(int fd, char *buf, size_t n) {
     while (n > 0) {
@@ -52,25 +39,27 @@ static int32_t write_all(int fd, const char *buf, size_t n) {
 
 const size_t k_max_msg = 4096;
 
-static int32_t send_req(int fd, const std::vector<std::string> &cmd) {
+static int32_t send_req(int fd, char** cmd, size_t cmd_size) {
     uint32_t len = 4;
-    for (const std::string &s : cmd) {
-        len += 4 + s.size();
+    for (int i = 0; i < cmd_size; i++) {
+        len += strlen(cmd[i]) + 4; 
     }
+
     if (len > k_max_msg) {
         return -1;
     }
 
     char wbuf[4 + k_max_msg];
     memcpy(&wbuf[0], &len, 4);  // assume little endian
-    uint32_t n = cmd.size();
-    memcpy(&wbuf[4], &n, 4);
+    memcpy(&wbuf[4], &cmd_size, 4);
     size_t cur = 8;
-    for (const std::string &s : cmd) {
-        uint32_t p = (uint32_t)s.size();
+    for (int i = 0; i < cmd_size; i++) {
+        char* s = cmd[i];
+        int len = strlen(s);
+        uint32_t p = (uint32_t) strlen(s);
         memcpy(&wbuf[cur], &p, 4);
-        memcpy(&wbuf[cur + 4], s.data(), s.size());
-        cur += 4 + s.size();
+        memcpy(&wbuf[cur + 4], s, len); 
+        cur += 4 + len;
     }
     return write_all(fd, wbuf, 4 + len);
 }
@@ -209,18 +198,18 @@ int main(int argc, char **argv) {
 
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
-    addr.sin_port = ntohs(1234);
+    addr.sin_port = ntohs(PORT);
     addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK);  // 127.0.0.1
     int rv = connect(fd, (const struct sockaddr *)&addr, sizeof(addr));
     if (rv) {
         die("connect");
     }
 
-    std::vector<std::string> cmd;
-    for (int i = 1; i < argc; ++i) {
-        cmd.push_back(argv[i]);
-    }
-    int32_t err = send_req(fd, cmd);
+    size_t size = 0;
+    char** cmds = malloc(sizeof(char*)* argc);
+    for (int i = 1; i < argc; ++i) 
+        cmds[size++] = argv[i];
+    int32_t err = send_req(fd, cmds, size);
     if (err) {
         goto L_DONE;
     }
@@ -230,6 +219,7 @@ int main(int argc, char **argv) {
     }
 
 L_DONE:
+    free(cmds);
     close(fd);
     return 0;
 }

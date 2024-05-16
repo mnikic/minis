@@ -32,7 +32,6 @@
 #include "heap.h"
 #include "thread_pool.h"
 
-#define PORT 1234
 #define MAX_EVENTS 10000
 #define K_MAX_MSG 4096
 
@@ -47,16 +46,6 @@ enum {
 enum {
 	ERR_UNKNOWN = 1, ERR_2BIG = 2, ERR_TYPE = 3, ERR_ARG = 4,
 };
-
-static void msg(const char *msg) {
-	fprintf(stderr, "%s\n", msg);
-}
-
-static void die(const char *msg) {
-	int err = errno;
-	fprintf(stderr, "[%d] %s\n", err, msg);
-	abort();
-}
 
 static int cmd_is(const char *word, const char *cmd) {
 	return 0 == strcasecmp(word, cmd);
