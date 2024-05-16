@@ -10,11 +10,11 @@ The only thing that is left in C++ is the client.
 I have also included a very crude make file that leaves a lot to be desired.
 
 Usage:
-cd src
-make
+1) cd src
+2) make
 
 then start the server with:
-./server
+3) ./server
 
 Open another shell and start issuing commands with the client such as:
 ./client set k 12
