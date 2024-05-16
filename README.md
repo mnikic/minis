@@ -14,6 +14,7 @@ Usage:
 2) make
 
 then start the server with:
+
 3) ./server
 
 Open another shell and start issuing commands with the client such as:
