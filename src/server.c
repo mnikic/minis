@@ -88,8 +88,7 @@ static struct {
 	DList idle_list;
 
 	// timers for TTLs
-	HeapItem *heap;
-	size_t heap_size;
+	Heap heap;
 
 	// the thread pool
 	TheadPool tp;
@@ -318,27 +317,24 @@ static void do_zquery(char **cmd, String *out) {
 // set or remove the TTL
 static void entry_set_ttl(Entry *ent, int64_t ttl_ms) {
 	if (ttl_ms < 0 && ent->heap_idx != (size_t) -1) {
-		// erase an item from the heap
-		// by replacing it with the last item in the array.
-		size_t pos = ent->heap_idx;
-		g_data.heap[pos] = g_data.heap[g_data.heap_size - 1];
-		g_data.heap_size--;
-		if (pos < g_data.heap_size) {
-			heap_update(g_data.heap, pos, g_data.heap_size);
-		}
+		heap_remove_idx(&g_data.heap, ent->heap_idx);
 		ent->heap_idx = -1;
 	} else if (ttl_ms >= 0) {
 		size_t pos = ent->heap_idx;
 		if (pos == (size_t) -1) {
+			msg("are we there yet");
 			// add an new item to the heap
-			HeapItem item;
-			item.ref = &ent->heap_idx;
-			g_data.heap[g_data.heap_size] = item;
-			g_data.heap_size++;
-			pos = g_data.heap_size - 1;
+			HeapItem* item = (HeapItem*)malloc(sizeof(HeapItem));
+			if (item == NULL)
+				die("Coulnt allocate heap item");
+			item->ref = &ent->heap_idx;
+			item->val = get_monotonic_usec() + (uint64_t) ttl_ms * 1000; 
+			heap_add(&g_data.heap, item);
+			pos = g_data.heap.size - 1;
+		} else {
+			heap_get(&g_data.heap, pos)->val = get_monotonic_usec() + (uint64_t) ttl_ms * 1000; 
+			heap_update(&g_data.heap, pos);
 		}
-		g_data.heap[pos].val = get_monotonic_usec() + (uint64_t) ttl_ms * 1000;
-		heap_update(g_data.heap, pos, g_data.heap_size);
 	}
 }
 
@@ -468,7 +464,7 @@ static void do_ttl(char **cmd, String *out) {
 		return out_int(out, -1);
 	}
 
-	uint64_t expire_at = g_data.heap[ent->heap_idx].val;
+	uint64_t expire_at = heap_get(&g_data.heap, ent->heap_idx)->val;
 	uint64_t now_us = get_monotonic_usec();
 	return out_int(out, expire_at > now_us ? (expire_at - now_us) / 1000 : 0);
 }
@@ -704,8 +700,8 @@ static void process_timers() {
 	// TTL timers
 	const size_t k_max_works = 2000;
 	size_t nworks = 0;
-	while (!g_data.heap_size == 0 && g_data.heap[0].val < now_us) {
-		Entry *ent = container_of(g_data.heap[0].ref, Entry, heap_idx);
+	while (!heap_empty(&g_data.heap) && heap_top(&g_data.heap)->val < now_us) {
+		Entry *ent = container_of(heap_top(&g_data.heap)->ref, Entry, heap_idx);
 		HNode *node = hm_pop(&g_data.db, &ent->node, &hnode_same);
 		assert(node == &ent->node);
 		entry_del(ent);
@@ -740,9 +736,10 @@ static uint32_t next_timer_ms() {
 		Conn *next = container_of(g_data.idle_list.next, Conn, idle_list);
 		next_us = next->idle_start + k_idle_timeout_ms * 1000;
 	}
+
 	// ttl timers
-	if (!g_data.heap_size == 0 && g_data.heap[0].val < next_us) {
-		next_us = g_data.heap[0].val;
+	if (!heap_empty(&g_data.heap) && heap_top(&g_data.heap)->val < next_us) {
+		next_us = heap_top(&g_data.heap)->val;
 	}
 
 	if (next_us == (uint64_t) -1) {
@@ -763,7 +760,7 @@ int main() {
 
 	dlist_init(&g_data.idle_list);
 	thread_pool_init(&g_data.tp, 4);
-
+	heap_init(&g_data.heap);
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0) {
 		die("socket()");
