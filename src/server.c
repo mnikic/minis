@@ -317,22 +317,16 @@ static void do_zquery(char **cmd, String *out) {
 // set or remove the TTL
 static void entry_set_ttl(Entry *ent, int64_t ttl_ms) {
 	if (ttl_ms < 0 && ent->heap_idx != (size_t) -1) {
-		HeapItem* removed = heap_remove_idx(&g_data.heap, ent->heap_idx);
-		if (removed != NULL) {
-			free(removed);
-		}
+		(void) heap_remove_idx(&g_data.heap, ent->heap_idx);
 		ent->heap_idx = -1;
 	} else if (ttl_ms >= 0) {
 		size_t pos = ent->heap_idx;
 		if (pos == (size_t) -1) {
 			// add an new item to the heap
-			HeapItem* item = (HeapItem*)malloc(sizeof(HeapItem));
-			if (item == NULL)
-				die("Couln't allocate a heap item.");
-			item->ref = &ent->heap_idx;
-			item->val = get_monotonic_usec() + (uint64_t) ttl_ms * 1000; 
-			heap_add(&g_data.heap, item);
-			pos = g_data.heap.size - 1;
+			HeapItem item;
+			item.ref = &ent->heap_idx;
+			item.val = get_monotonic_usec() + (uint64_t) ttl_ms * 1000;
+			heap_add(&g_data.heap, &item);
 		} else {
 			heap_get(&g_data.heap, pos)->val = get_monotonic_usec() + (uint64_t) ttl_ms * 1000; 
 			heap_update(&g_data.heap, pos);

@@ -30,8 +30,12 @@ HeapItem* heap_top(Heap* heap) {
 	return heap_get(heap, 0);
 }
 
+
+// TODO: Do we need to remove anything here?
 HeapItem* heap_remove_idx(Heap* heap, size_t pos) {
-	HeapItem* to_remove = &heap->items[pos];
+	if (heap == NULL || pos >= heap->size)
+		return NULL;
+	HeapItem* to_remove = &heap->items[heap->size - 1];
 	// erase an item from the heap
 	// by replacing it with the last item in the array.
 	heap->items[pos] = heap->items[heap->size - 1];
@@ -42,6 +46,7 @@ HeapItem* heap_remove_idx(Heap* heap, size_t pos) {
 	return to_remove;
 }
 
+// TODO: Do we need to accept a pointer or would a struct alone suffice.
 void heap_add(Heap* heap, HeapItem* item) {
 	if (heap == NULL) {
 		fprintf(stderr, "Cannot add items to a NULL heap.");
