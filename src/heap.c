@@ -30,7 +30,8 @@ HeapItem* heap_top(Heap* heap) {
 	return heap_get(heap, 0);
 }
 
-void heap_remove_idx(Heap* heap, size_t pos) {
+HeapItem* heap_remove_idx(Heap* heap, size_t pos) {
+	HeapItem* to_remove = &heap->items[pos];
 	// erase an item from the heap
 	// by replacing it with the last item in the array.
 	heap->items[pos] = heap->items[heap->size - 1];
@@ -38,6 +39,7 @@ void heap_remove_idx(Heap* heap, size_t pos) {
 	if (pos < heap->size) {
 		heap_update(heap, pos);
 	}
+	return to_remove;
 }
 
 void heap_add(Heap* heap, HeapItem* item) {
