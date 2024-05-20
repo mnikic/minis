@@ -480,6 +480,9 @@ static int32_t do_request(const uint8_t *req, uint32_t reqlen, String *out) {
 	if (n > K_MAX_MSG) {
 		return -1;
 	}
+	if (n < 1) {
+		return -1;
+	}
 
 	size_t pos = 4;
 	while (n--) {
@@ -492,7 +495,7 @@ static int32_t do_request(const uint8_t *req, uint32_t reqlen, String *out) {
 		if (pos + 4 + sz > reqlen) {
 			return -1;
 		}
-		cmd[cmd_size] = (char*) (calloc(sz, sizeof(char)));
+		cmd[cmd_size] = (char*) (calloc(sz, sizeof(char*)));
 		memcpy(cmd[cmd_size], &req[pos + 4], sz);
 		cmd_size++;
 		pos += 4 + sz;

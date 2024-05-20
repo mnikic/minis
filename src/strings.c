@@ -12,7 +12,11 @@
 static inline void ensureAdditionalCapacity(String *this, size_t size) {
 	if (this->capacity < (size + this->i)) {
 		size_t new_capacity = (this->i + size) * 2;
-		this->data = realloc(this->data, new_capacity * sizeof(char));
+		char* ptr = (char*)realloc(this->data, new_capacity * sizeof(char));
+		if (!ptr)
+			abort();
+		this->data = ptr;
+		memset(&this->data[this->i], 0, new_capacity - (size_t) this->i);
 		if (!this->data) {
 			abort();
 		}
@@ -45,6 +49,7 @@ String* str_init(char *chars) {
 	this->i = 0;
 	this->capacity = 0;
 	this->data = malloc(sizeof(char));
+	this->data[0] = '\0';
 	if (!this->data) {
 		abort();
 	}
