@@ -562,6 +562,7 @@ static int32_t try_one_request(Conn *conn, uint32_t *start_index) {
 	if (err) {
 		msg("bad req");
 		conn->state = STATE_END;
+		str_free(out);
 		return FALSE;
 	}
 	uint32_t wlen = str_size(out);
@@ -583,6 +584,7 @@ static int32_t try_one_request(Conn *conn, uint32_t *start_index) {
 		conn->state = STATE_RES;
 		state_res(conn);
 	}
+	str_free(out);
 	return (conn->state == STATE_REQ);
 }
 
