@@ -14,9 +14,9 @@ typedef struct {
 	int i;
 } String;
 
-extern String* str_init(char *chars);
+extern String* str_init(const char *chars);
 extern void str_appendS(String *this, String *that);
-extern void str_appendCs(String *this, char *that);
+extern void str_appendCs(String *this, const char *that);
 extern void str_appendC(String *this, char that);
 extern void str_append_uint32(String *this, uint32_t integer);
 extern void str_append_int64_t(String *this, int64_t integer);

@@ -6,10 +6,9 @@
  */
 #include <stdint.h>
 #include <string.h>
-#include <stdlib.h>
 #include "out.h"
 
-static uint32_t size(char *string) {
+static uint32_t size(const char *string) {
 	if (string) {
 		return strlen(string);
 	}
@@ -20,7 +19,7 @@ void out_nil(String *out) {
 	str_appendC(out, SER_NIL);
 }
 
-void out_str(String *out, char *val) {
+void out_str(String *out, const char *val) {
 	str_appendC(out, SER_STR);
 	uint32_t len = size(val);
 	str_append_uint32(out, len);
@@ -44,7 +43,7 @@ void out_dbl(String *out, double val) {
     str_append_double(out, val);
 }
 
-void out_err(String *out, int32_t code, char *msg) {
+void out_err(String *out, int32_t code, const char *msg) {
 	str_appendC(out, SER_ERR);
 	uint32_t len = size(msg);
 	str_append_uint32(out, code);

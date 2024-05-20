@@ -55,11 +55,11 @@ static int32_t send_req(int fd, char** cmd, size_t cmd_size) {
     size_t cur = 8;
     for (int i = 0; i < cmd_size; i++) {
         char* s = cmd[i];
-        int len = strlen(s);
-        uint32_t p = (uint32_t) strlen(s);
+        int cmd_len = strlen(s);
+        uint32_t p = (uint32_t) cmd_len;
         memcpy(&wbuf[cur], &p, 4);
-        memcpy(&wbuf[cur + 4], s, len); 
-        cur += 4 + len;
+        memcpy(&wbuf[cur + 4], s, cmd_len);
+        cur += 4 + cmd_len;
     }
     return write_all(fd, wbuf, 4 + len);
 }

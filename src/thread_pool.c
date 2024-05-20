@@ -38,7 +38,7 @@ void thread_pool_init(TheadPool *tp, size_t num_threads) {
 
     tp->threads = calloc(num_threads, sizeof(pthread_t));
     for (size_t i = 0; i < num_threads; ++i) {
-        int rv = pthread_create(&tp->threads[i], NULL, &worker, tp);
+        rv = pthread_create(&tp->threads[i], NULL, &worker, tp);
         assert(rv == 0);
     }
 }

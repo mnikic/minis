@@ -68,7 +68,7 @@ static void fd_set_nb(int fd) {
 	}
 }
 
-static uint64_t get_monotonic_usec() {
+static uint64_t get_monotonic_usec(void) {
 	struct timespec tv = { 0, 0 };
 	clock_gettime(CLOCK_MONOTONIC, &tv);
 	return (uint64_t) tv.tv_sec * 1000000 + tv.tv_nsec / 1000;
@@ -277,8 +277,7 @@ static void do_zquery(char **cmd, String *out) {
 	int64_t offset = 0;
 	int64_t limit = 0;
 	if (!str2int(cmd[4], &offset)) {
-		char *message = "expect int";
-		return out_err(out, ERR_ARG, message);
+		return out_err(out, ERR_ARG, "expect int");
 	}
 	if (!str2int(cmd[5], &limit)) {
 		return out_err(out, ERR_ARG, "expect int");
@@ -675,7 +674,7 @@ static int hnode_same(HNode *lhs, HNode *rhs) {
 	return lhs == rhs;
 }
 
-static void process_timers() {
+static void process_timers(void) {
 	// the extra 1000us is for the ms resolution of poll()
 	uint64_t now_us = get_monotonic_usec() + 1000;
 
@@ -727,7 +726,7 @@ static void connection_io(Conn *conn) {
 	}
 }
 
-static uint32_t next_timer_ms() {
+static uint32_t next_timer_ms(void) {
 	uint64_t now_us = get_monotonic_usec();
 	uint64_t next_us = (uint64_t) -1;
 	// idle timers
@@ -752,7 +751,7 @@ static uint32_t next_timer_ms() {
 	return (uint32_t) ((next_us - now_us) / 1000);
 }
 
-int main() {
+int main(void) {
 	struct epoll_event event, events[MAX_EVENTS];
 	struct sockaddr_in addr = { };
 	int epfd, fd, rv, val = 1;

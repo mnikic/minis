@@ -14,13 +14,13 @@
 
 extern void out_nil(String *out);
 
-extern void out_str(String *out, char *val);
+extern void out_str(String *out, const char *val);
 
 extern void out_int(String *out, int64_t val);
 
 extern void out_dbl(String *out, double val);
 
-extern void out_err(String *out, int32_t code, char *msg);
+extern void out_err(String *out, int32_t code, const char *msg);
 
 extern void out_arr(String *out, uint32_t n);
 

@@ -25,7 +25,7 @@ static inline void ensureAdditionalCapacity(String *this, size_t size) {
 	}
 }
 
-void str_appendCs(String *this, char *that) {
+void str_appendCs(String *this, const char *that) {
 	if (!this || !that)
 		return;
 	ensureAdditionalCapacity(this, strlen(that));
@@ -44,7 +44,7 @@ void str_appendCs_size(String *this, const char *that, uint32_t size) {
 	}
 }
 
-String* str_init(char *chars) {
+String* str_init(const char *chars) {
 	String *this = malloc(sizeof(String));
 	this->i = 0;
 	this->capacity = 0;

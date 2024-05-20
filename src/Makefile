@@ -1,5 +1,8 @@
 CC=gcc
-CFLAGS= -Wall -Werror
+CFLAGS= -Wall -Werror -Wno-unused-parameter -Wwrite-strings -Wstrict-prototypes -Wold-style-definition -Wshadow -Wredundant-decls -Wnested-externs -Wmissing-include-dirs -g -O0
+ifeq ($(CC),gcc)
+	CFLAGS += -Wjump-misses-init -Wlogical-op
+endif
 
 all: server client
 
