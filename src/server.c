@@ -384,6 +384,10 @@ static void entry_destroy(Entry *ent) {
         free(ent->zset);
         break;
     }
+    if (ent->key)
+	free(ent->key);
+    if (ent->val)
+	free(ent->val);
     free(ent);
 }
 
@@ -808,7 +812,7 @@ int main(void) {
 		}
 
 		// process active connections
-		for (size_t i = 0; i < enfd_count; ++i) {
+		for (int i = 0; i < enfd_count; ++i) {
 			if (events[i].data.fd == fd) {
 				int conn_fd = accept_new_conn(fd);
 				if (conn_fd > -1) {

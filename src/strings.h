@@ -8,10 +8,12 @@
 #ifndef STRINGS_H_
 #define STRINGS_H_
 
+#include <stdint.h>
+
 typedef struct {
 	char *data;
-	int capacity;
-	int i;
+	size_t capacity;
+	size_t i;
 } String;
 
 extern String* str_init(const char *chars);

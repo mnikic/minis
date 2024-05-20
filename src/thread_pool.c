@@ -5,6 +5,7 @@
  *      Author: loshmi
  */
 #include <assert.h>
+#include <pthread.h>
 #include "thread_pool.h"
 
 
@@ -39,6 +40,7 @@ void thread_pool_init(TheadPool *tp, size_t num_threads) {
     tp->threads = calloc(num_threads, sizeof(pthread_t));
     for (size_t i = 0; i < num_threads; ++i) {
         rv = pthread_create(&tp->threads[i], NULL, &worker, tp);
+        pthread_detach(tp->threads[i]);
         assert(rv == 0);
     }
 }

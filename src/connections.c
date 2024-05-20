@@ -5,6 +5,7 @@
  *      Author: loshmi
  */
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -15,7 +16,6 @@ static void grow(Conns *this, size_t new_capacity) {
     if (new_capacity <= (2 * (this->capacity))) {
         new_capacity = 2 * this->capacity;
     }
-    printf("resizing to %ld elements.\n", new_capacity);
     this->conns_all = realloc(this->conns_all,
             sizeof(Conn) * (new_capacity / 32) + 1);
     this->conns_all = realloc(this->conns_all, sizeof(Conn) * new_capacity);
@@ -30,18 +30,18 @@ Conns* conns_new(uint32_t capacity) {
         return NULL;
     }
     this->capacity = capacity;
-    this->presence = (uint32_t*) calloc(sizeof(uint32_t), (capacity / 32) + 1);
+    this->presence = (uint32_t*) calloc((capacity / 32) + 1, sizeof(uint32_t));
     if (!this->presence) {
         free(this);
         return NULL;
     }
-    this->conns_all = (Conn*) calloc(sizeof(Conn), capacity);
+    this->conns_all = (Conn*) calloc(capacity, sizeof(Conn));
     if (!this->conns_all) {
         free(this->presence);
         free(this);
         return NULL;
     }
-    this->conns_by_fd = (Value**) calloc(sizeof(Value*), capacity);
+    this->conns_by_fd = (Value**) calloc(capacity, sizeof(Value*));
     if (!this->conns_by_fd) {
         free(this->presence);
         free(this->conns_all);
@@ -56,7 +56,8 @@ void conns_set(Conns *this, Conn *connection) {
     if (!this || !connection) {
         return;
     }
-    if (connection->fd >= this->capacity) {
+    assert(connection->fd >= 0);
+    if ((size_t) connection->fd >= this->capacity) {
         grow(this, connection->fd);
     }
     if (this->presence[connection->fd / 32] & 1 << connection->fd) {
@@ -76,14 +77,15 @@ void conns_set(Conns *this, Conn *connection) {
 }
 
 void conns_del(Conns *this, int key) {
+    assert(key >= 0);
     if (!this
-            || !(key <= ((this->capacity / 32 + 1) * 32)
+            || !((size_t) key <= ((this->capacity / 32 + 1) * 32)
                     && (this->presence[key / 32] & 1 << key))) {
         return;
     }
 
     Value *old_value = this->conns_by_fd[key];
-    if (key != this->size - 1) {
+    if ((size_t) key != this->size - 1) {
         this->conns_all[old_value->ind_in_all] =
                 this->conns_all[this->size - 1];
         this->conns_by_fd[this->conns_all[this->size - 1].fd]->ind_in_all =
@@ -107,8 +109,7 @@ void conns_free(Conns *this) {
     if (!this || this->capacity == 0) {
         return;
     }
-    int i;
-    for (i = 0; i < this->capacity; i++) {
+    for (size_t i = 0; i < this->capacity; i++) {
         free((this->conns_all));
     }
     free(this->conns_all);

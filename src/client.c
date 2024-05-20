@@ -41,7 +41,7 @@ const size_t k_max_msg = 4096;
 
 static int32_t send_req(int fd, char** cmd, size_t cmd_size) {
     uint32_t len = 4;
-    for (int i = 0; i < cmd_size; i++) {
+    for (size_t i = 0; i < cmd_size; i++) {
         len += strlen(cmd[i]) + 4; 
     }
 
@@ -53,7 +53,7 @@ static int32_t send_req(int fd, char** cmd, size_t cmd_size) {
     memcpy(&wbuf[0], &len, 4);  // assume little endian
     memcpy(&wbuf[4], &cmd_size, 4);
     size_t cur = 8;
-    for (int i = 0; i < cmd_size; i++) {
+    for (size_t i = 0; i < cmd_size; i++) {
         char* s = cmd[i];
         int cmd_len = strlen(s);
         uint32_t p = (uint32_t) cmd_len;
