@@ -371,6 +371,7 @@ static void do_set(char **cmd, String *out) {
 		ent->val = calloc(strlen(cmd[2]) + 1, sizeof(char));
 		strcpy(ent->val, cmd[2]);
 		ent->heap_idx = -1;
+		ent->type = T_STR;
 		hm_insert(&g_data.db, &ent->node);
 	}
 	out_nil(out);
