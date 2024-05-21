@@ -140,3 +140,10 @@ void hm_destroy(HMap *hmap) {
     free(hmap->ht2.tab);
     free(hmap);
 }
+
+void hm_init(HMap *hmap) {
+    h_init(&hmap->ht1, 4);
+    h_init(&hmap->ht2, 4);
+    hmap->resizing_pos = 0;
+}
+

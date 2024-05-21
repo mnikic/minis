@@ -9,6 +9,7 @@
 #define STRINGS_H_
 
 #include <stdint.h>
+#include <stddef.h>
 
 typedef struct {
 	char *data;

@@ -20,11 +20,13 @@
 #define SER_DBL 4 	 // A double
 #define SER_ARR 5	 // Ar array
 #define PORT 1234
+#define K_MAX_MSG 4096
 
 #define container_of(ptr, type, member) ({\
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);\
 	(type *)( (char *)__mptr - offsetof(type,member) );})
 
+extern uint64_t get_monotonic_usec(void); 
 
 extern uint64_t str_hash(const uint8_t *data, size_t len);
 

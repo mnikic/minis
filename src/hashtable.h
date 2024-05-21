@@ -11,7 +11,7 @@ typedef struct hnode {
 // a simple fixed-sized hashtable
 typedef struct {
     HNode **tab;
-    size_t mask ;
+    size_t mask;
     size_t size;
 } HTab;
 
@@ -23,6 +23,7 @@ typedef struct {
     size_t resizing_pos;
 } HMap;
 
+void hm_init(HMap *hmap);
 HNode *hm_lookup(HMap *hmap, HNode *key, int (*cmp)(HNode *, HNode *));
 void hm_insert(HMap *hmap, HNode *node);
 HNode *hm_pop(HMap *hmap, HNode *key, int (*cmp)(HNode *, HNode *));
