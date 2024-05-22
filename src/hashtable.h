@@ -23,9 +23,9 @@ typedef struct {
     size_t resizing_pos;
 } HMap;
 
-void hm_init(HMap *hmap);
-HNode *hm_lookup(HMap *hmap, HNode *key, int (*cmp)(HNode *, HNode *));
-void hm_insert(HMap *hmap, HNode *node);
-HNode *hm_pop(HMap *hmap, HNode *key, int (*cmp)(HNode *, HNode *));
-size_t hm_size(HMap *hmap);
-void hm_destroy(HMap *hmap);
+extern void hm_init(HMap *hmap);
+extern HNode *hm_lookup(HMap *hmap, HNode *key, int (*cmp)(HNode *, HNode *));
+extern void hm_insert(HMap *hmap, HNode *node);
+extern HNode *hm_pop(HMap *hmap, HNode *key, int (*cmp)(HNode *, HNode *));
+extern size_t hm_size(HMap *hmap);
+extern void hm_destroy(HMap *hmap);

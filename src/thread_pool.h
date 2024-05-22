@@ -26,7 +26,7 @@ typedef  struct thead_pool {
     pthread_cond_t not_empty;
 } TheadPool;
 
-void thread_pool_init(TheadPool *tp, size_t num_threads);
-void thread_pool_queue(TheadPool *tp, void (*f)(void *), void *arg);
+extern void thread_pool_init(TheadPool *tp, size_t num_threads);
+extern void thread_pool_queue(TheadPool *tp, void (*f)(void *), void *arg);
 
 #endif /* THREAD_POOL_H_ */
