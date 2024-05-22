@@ -31,6 +31,21 @@ enum {
 };
 
 
+// deallocate the key immediately
+static void entry_destroy(Entry *ent) {
+    switch (ent->type) {
+    case T_ZSET:
+        zset_dispose(ent->zset);
+        free(ent->zset);
+        break;
+    }
+    if (ent->key)
+	free(ent->key);
+    if (ent->val)
+	free(ent->val);
+    free(ent);
+}
+
 static int cmd_is(const char *word, const char *cmd) {
 	return 0 == strcasecmp(word, cmd);
 }
@@ -237,7 +252,11 @@ static void do_del(Cache *cache, char **cmd, String *out) {
 
 	HNode *node = hm_pop(&cache->db, &key.node, &entry_eq);
 	if (node) {
-		free(container_of(node, Entry, node));
+		Entry *entry = container_of(node, Entry, node);
+		if (entry->heap_idx != (size_t) -1) {
+			heap_remove_idx(&cache->heap, entry->heap_idx);
+		}
+		entry_destroy(entry);
 	}
 	out_int(out, node ? 1 : 0);
 }
@@ -264,21 +283,6 @@ static void do_set(Cache *cache, char **cmd, String *out) {
 		hm_insert(&cache->db, &ent->node);
 	}
 	out_nil(out);
-}
-
-// deallocate the key immediately
-static void entry_destroy(Entry *ent) {
-    switch (ent->type) {
-    case T_ZSET:
-        zset_dispose(ent->zset);
-        free(ent->zset);
-        break;
-    }
-    if (ent->key)
-	free(ent->key);
-    if (ent->val)
-	free(ent->val);
-    free(ent);
 }
 
 static void entry_del_async(void *arg) {
