@@ -1,10 +1,7 @@
 /*
  ============================================================================
- Name        : 06_c.c
+ Name        : server.c
  Author      : Milos
- Version     :
- Copyright   : Your copyright notice
- Description : Hello World in C, Ansi-style
  ============================================================================
  */
 
@@ -15,7 +12,6 @@
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -34,8 +30,15 @@ enum {
 };
 
 enum {
-	ERR_UNKNOWN = 1, ERR_2BIG = 2, ERR_TYPE = 3, ERR_ARG = 4,
+	STATE_REQ = 0, STATE_RES = 1, STATE_END = 2, // mark the connection for deletion
 };
+
+static struct {
+	// a map of all client connections, keyed by fd
+	Conns *fd2conn;
+	// timers for idle connections
+	DList idle_list;
+} g_data;
 
 static void fd_set_nb(int fd) {
 	errno = 0;
@@ -54,20 +57,8 @@ static void fd_set_nb(int fd) {
 	}
 }
 
-enum {
-	STATE_REQ = 0, STATE_RES = 1, STATE_END = 2, // mark the connection for deletion
-};
-
-// The data structure for the key space.
-static struct {
-	// a map of all client connections, keyed by fd
-	Conns *fd2conn;
-	// timers for idle connections
-	DList idle_list;
-} g_data;
-
 static int32_t accept_new_conn(int fd) {
-// accept
+	// accept
 	struct sockaddr_in client_addr = { };
 	socklen_t socklen = sizeof(client_addr);
 	int connfd = accept(fd, (struct sockaddr*) &client_addr, &socklen);
@@ -76,9 +67,9 @@ static int32_t accept_new_conn(int fd) {
 		return -1;  // error
 	}
 
-// set the new connection fd to nonblocking mode
+	// set the new connection fd to nonblocking mode
 	fd_set_nb(connfd);
-// creating the struct Conn
+	// creating the struct Conn
 	Conn *conn = (Conn*) malloc(sizeof(Conn));
 	if (!conn) {
 		close(connfd);
@@ -188,7 +179,7 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 		state_res(conn);
 	}
 
-// generating echoing response
+	// generating echoing response
 	memcpy(&conn->wbuf[conn->wbuf_size], &wlen, 4);
 	memcpy(&conn->wbuf[conn->wbuf_size + 4], str_data(out), wlen);
 	conn->wbuf_size += 4 + wlen;
@@ -204,7 +195,7 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 }
 
 static int32_t try_fill_buffer(Cache* cache, Conn *conn) {
-// try to fill the buffer
+	// try to fill the buffer
 	assert(conn->rbuf_size < sizeof(conn->rbuf));
 	ssize_t rv = 0;
 	do {
@@ -234,8 +225,8 @@ static int32_t try_fill_buffer(Cache* cache, Conn *conn) {
 	conn->rbuf_size += (size_t) rv;
 	assert(conn->rbuf_size <= sizeof(conn->rbuf));
 
-// Try to process requests one by one.
-// Why is there a loop? Please read the explanation of "pipelining".
+	// Try to process requests one by one.
+	// Why is there a loop? Please read the explanation of "pipelining".
 	while (try_one_request(cache, conn, &start_index)) {
 	}
 
@@ -276,7 +267,7 @@ static int32_t try_flush_buffer(Conn *conn) {
 		conn->wbuf_size = 0;
 		return FALSE;
 	}
-// still got some data in wbuf, could try to write again
+	// still got some data in wbuf, could try to write again
 	return TRUE;
 }
 
@@ -308,8 +299,8 @@ static void process_timers(Cache* cache) {
 }
 
 static void connection_io(Cache* cache, Conn *conn) {
-// waked up by poll, update the idle timer
-// by moving conn to the end of the list.
+	// waked up by poll, update the idle timer
+	// by moving conn to the end of the list.
 	conn->idle_start = get_monotonic_usec();
 	dlist_detach(&conn->idle_list);
 	dlist_insert_before(&g_data.idle_list, &conn->idle_list);
@@ -370,17 +361,17 @@ int main(void) {
 		die("bind()");
 	}
 
-// listen
+	// listen
 	rv = listen(fd, SOMAXCONN);
 	if (rv) {
 		die("listen()");
 	}
 	printf("The server is listening on port %i.\n", PORT);
 
-// a hash table of all client connections, keyed by fd
+	// a hash table of all client connections, keyed by fd
 	g_data.fd2conn = conns_new(10);
 
-// set the listen fd to nonblocking mode
+	// set the listen fd to nonblocking mode
 	fd_set_nb(fd);
 
 	epfd = epoll_create1(0);
