@@ -6,8 +6,8 @@ endif
 
 all: server client
 
-server:  server.o connections.o list.o out.o hashtable.o zset.o strings.o common.o avl.o heap.o thread_pool.o deque.o commands.o
-	$(CC) $(CFLAGS) -o server server.o connections.o list.o out.c hashtable.o zset.c strings.o common.o avl.o heap.o thread_pool.o deque.o commands.o
+server:  server.o connections.o list.o out.o hashtable.o zset.o strings.o common.o avl.o heap.o thread_pool.o deque.o cache.o
+	$(CC) $(CFLAGS) -o server server.o connections.o list.o out.c hashtable.o zset.c strings.o common.o avl.o heap.o thread_pool.o deque.o cache.o
 
 server.o: server.c
 	$(CC) $(CFLAGS) -c server.c
@@ -48,8 +48,8 @@ deque.o: deque.c deque.h
 client.o: client.c
 	$(CC) $(CFLAGS) -c client.c
 
-commands.o: commands.c commands.h
-	$(CC) $(CFLAGS) -c commands.c
+cache.o: cache.c cache.h
+	$(CC) $(CFLAGS) -c cache.c
 
 client: client.o common.o
 	$(CC) $(CFLAGS) -o client client.o common.o

@@ -22,7 +22,7 @@
 #include <time.h>
 #include <netinet/ip.h>
 #include <sys/epoll.h>
-#include "commands.h"
+#include "cache.h"
 #include "connections.h"
 #include "strings.h"
 #include "common.h"
@@ -102,10 +102,10 @@ static void conn_done(Conn *conn) {
 	free(conn);
 }
 
-static void state_req(Storage* storage, Conn *conn);
+static void state_req(Cache* cache, Conn *conn);
 static void state_res(Conn *conn);
 
-static int32_t do_request(Storage* storage, const uint8_t *req, uint32_t reqlen, String *out) {
+static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, String *out) {
 	char *cmd[4];
 	int cmd_size = 0;
 	int return_value = 0;
@@ -144,7 +144,7 @@ static int32_t do_request(Storage* storage, const uint8_t *req, uint32_t reqlen,
 		goto CLEANUP;
 
 	}
-	commands_execute(storage, cmd, cmd_size, out);
+	cache_execute(cache, cmd, cmd_size, out);
 
 CLEANUP: for (int i = 0; i < cmd_size; i++) {
 		if (cmd[i]) {
@@ -154,7 +154,7 @@ CLEANUP: for (int i = 0; i < cmd_size; i++) {
 	return return_value;
 }
 
-static int32_t try_one_request(Storage* storage, Conn *conn, uint32_t *start_index) {
+static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) {
 // try to parse a request from the buffer
 	if (conn->rbuf_size < *start_index + 4) {
 		// not enough data in the buffer. Will retry in the next iteration
@@ -173,7 +173,7 @@ static int32_t try_one_request(Storage* storage, Conn *conn, uint32_t *start_ind
 	}
 
 	String *out = str_init(NULL);
-	int32_t err = do_request(storage, &conn->rbuf[4], len, out);
+	int32_t err = do_request(cache, &conn->rbuf[4], len, out);
 	if (err) {
 		msg("bad req");
 		conn->state = STATE_END;
@@ -203,7 +203,7 @@ static int32_t try_one_request(Storage* storage, Conn *conn, uint32_t *start_ind
 	return (conn->state == STATE_REQ);
 }
 
-static int32_t try_fill_buffer(Storage* storage, Conn *conn) {
+static int32_t try_fill_buffer(Cache* cache, Conn *conn) {
 // try to fill the buffer
 	assert(conn->rbuf_size < sizeof(conn->rbuf));
 	ssize_t rv = 0;
@@ -236,7 +236,7 @@ static int32_t try_fill_buffer(Storage* storage, Conn *conn) {
 
 // Try to process requests one by one.
 // Why is there a loop? Please read the explanation of "pipelining".
-	while (try_one_request(storage, conn, &start_index)) {
+	while (try_one_request(cache, conn, &start_index)) {
 	}
 
 	size_t remain = conn->rbuf_size - start_index;
@@ -247,8 +247,8 @@ static int32_t try_fill_buffer(Storage* storage, Conn *conn) {
 	return (conn->state == STATE_REQ);
 }
 
-static void state_req(Storage* storage, Conn *conn) {
-	while (try_fill_buffer(storage, conn)) {
+static void state_req(Cache* cache, Conn *conn) {
+	while (try_fill_buffer(cache, conn)) {
 	}
 }
 
@@ -287,7 +287,7 @@ static void state_res(Conn *conn) {
 
 const uint64_t k_idle_timeout_ms = 5 * 1000;
 
-static void process_timers(Storage *storage) {
+static void process_timers(Cache* cache) {
 	// the extra 1000us is for the ms resolution of poll()
 	uint64_t now_us = get_monotonic_usec() + 1000;
 
@@ -304,10 +304,10 @@ static void process_timers(Storage *storage) {
 		conn_done(next);
 	}
 
-	commands_evict(storage, now_us);
+	cache_evict(cache, now_us);
 }
 
-static void connection_io(Storage* storage, Conn *conn) {
+static void connection_io(Cache* cache, Conn *conn) {
 // waked up by poll, update the idle timer
 // by moving conn to the end of the list.
 	conn->idle_start = get_monotonic_usec();
@@ -315,7 +315,7 @@ static void connection_io(Storage* storage, Conn *conn) {
 	dlist_insert_before(&g_data.idle_list, &conn->idle_list);
 
 	if (conn->state == STATE_REQ) {
-		state_req(storage, conn);
+		state_req(cache, conn);
 	} else if (conn->state == STATE_RES) {
 		state_res(conn);
 	} else {
@@ -323,7 +323,7 @@ static void connection_io(Storage* storage, Conn *conn) {
 	}
 }
 
-static uint32_t next_timer_ms(Storage* storage) {
+static uint32_t next_timer_ms(Cache* cache) {
 	uint64_t now_us = get_monotonic_usec();
 	uint64_t next_us = (uint64_t) -1;
 	// idle timers
@@ -332,9 +332,9 @@ static uint32_t next_timer_ms(Storage* storage) {
 		next_us = next->idle_start + k_idle_timeout_ms * 1000;
 	}
 
-	uint64_t from_storage = commands_next_expiry(storage);
-	if (from_storage != (uint64_t) -1 && from_storage < next_us) {
-		next_us = from_storage;
+	uint64_t from_cache = cache_next_expiry(cache);
+	if (from_cache != (uint64_t) -1 && from_cache < next_us) {
+		next_us = from_cache;
 	}
 
 	if (next_us == (uint64_t) -1) {
@@ -354,7 +354,7 @@ int main(void) {
 	int epfd, fd, rv, val = 1;
 
 	dlist_init(&g_data.idle_list);
-	Storage* storage = commands_init();
+	Cache* cache = cache_init();
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0) {
 		die("socket()");
@@ -394,7 +394,7 @@ int main(void) {
 		die("epoll ctl: listen_sock!");
 	}
 	while (TRUE) {
-		int timeout_ms = (int) next_timer_ms(storage);
+		int timeout_ms = (int) next_timer_ms(cache);
 		// poll for active fds
 		int enfd_count = epoll_wait(epfd, events, MAX_EVENTS, timeout_ms);
 		if (enfd_count < 0) {
@@ -413,7 +413,7 @@ int main(void) {
 				}
 			} else if (events[i].events & EPOLLIN) {
 				Conn *conn = conns_get(g_data.fd2conn, events[i].data.fd);
-				connection_io(storage, conn);
+				connection_io(cache, conn);
 				if (conn->state == STATE_END) {
 					// client closed normally, or something bad happened.
 					// destroy this connection
@@ -427,7 +427,7 @@ int main(void) {
 				}
 			}
 		}
-		process_timers(storage);
+		process_timers(cache);
 	}
 
 	return 0;
