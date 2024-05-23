@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -25,11 +26,6 @@ typedef struct entry {
 enum {
 	T_STR = 0, T_ZSET = 1,
 };
-
-enum {
-	ERR_UNKNOWN = 1, ERR_2BIG = 2, ERR_TYPE = 3, ERR_ARG = 4,
-};
-
 
 // deallocate the key immediately
 static void entry_destroy(Entry *ent) {
@@ -97,7 +93,7 @@ static void do_zadd(Cache *cache, char **cmd, String *out) {
 
 	Entry key;
 	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, sizeof key.key - 1);
+	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 	HNode *hnode = hm_lookup(&cache->db, &key.node, &entry_eq);
 
 	Entry *ent = NULL;
@@ -132,19 +128,19 @@ static void do_zadd(Cache *cache, char **cmd, String *out) {
 static int expect_zset(Cache *cache, String *out, char *s, Entry **ent) {
 	Entry key;
 	key.key = s;
-	key.node.hcode = str_hash((uint8_t*) key.key, sizeof key.key - 1);
+	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 	HNode *hnode = hm_lookup(&cache->db, &key.node, &entry_eq);
 	if (!hnode) {
 		out_nil(out);
-		return FALSE;
+		return false;
 	}
 
 	*ent = container_of(hnode, Entry, node);
 	if ((*ent)->type != T_ZSET) {
 		out_err(out, ERR_TYPE, "expect zset");
-		return FALSE;
+		return false;
 	}
-	return TRUE;
+	return true;
 }
 
 // zrem zset name
@@ -192,22 +188,21 @@ static void do_zquery(Cache *cache, char **cmd, String *out) {
 	Entry *ent = NULL;
 	if (!expect_zset(cache, out, cmd[1], &ent)) {
 		if (str_char_at(out, 0) == SER_NIL) {
-			str_free(out);
-			out = str_init(NULL);
-			out_arr(out, 0);
+			str_clear(out);
+			out_arr(out, (uint32_t) 0);
 		}
 		return;
 	}
 
 // look up the tuple
 	if (limit <= 0) {
-		return out_arr(out, 0);
+		return out_arr(out, (uint32_t) 0);
 	}
 	ZNode *znode = zset_query(ent->zset, score, cmd[3], strlen(cmd[3]) - 1,
 			offset);
 
 // output
-	out_arr(out, 0);    // the array length will be updated later
+	out_arr(out, (uint32_t) 0);    // the array length will be updated later
 	uint32_t n = 0;
 	while (znode && (int64_t) n < limit) {
 		out_str_size(out, znode->name, znode->len);
@@ -248,7 +243,7 @@ static void do_keys(Cache *cache, char **cmd, String *out) {
 static void do_del(Cache *cache, char **cmd, String *out) {
 	Entry key;
 	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, sizeof key.key - 1);
+	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 
 	HNode *node = hm_pop(&cache->db, &key.node, &entry_eq);
 	if (node) {
@@ -264,7 +259,7 @@ static void do_del(Cache *cache, char **cmd, String *out) {
 static void do_set(Cache *cache, char **cmd, String *out) {
 	Entry key;
 	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, sizeof key.key - 1);
+	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 
 	HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
 	if (node) {
@@ -293,7 +288,7 @@ static void entry_del(Cache *cache, Entry *ent) {
 	entry_set_ttl(cache, ent, -1);
 
 	const size_t k_large_container_size = 10000;
-	int too_big = FALSE;
+	bool too_big = false;
 	switch (ent->type) {
 	case T_ZSET:
 		too_big = hm_size(&ent->zset->hmap) > k_large_container_size;
@@ -310,7 +305,7 @@ static void entry_del(Cache *cache, Entry *ent) {
 static void do_get(Cache *cache, char **cmd, String *out) {
 	Entry key;
 	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, sizeof key.key - 1);
+	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 
 	HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
 	if (!node) {
@@ -332,7 +327,7 @@ static void do_expire(Cache *cache, char **cmd, String *out) {
 
 	Entry key;
 	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, sizeof key.key - 1);
+	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 
 	HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
 	if (node) {
@@ -345,7 +340,7 @@ static void do_expire(Cache *cache, char **cmd, String *out) {
 static void do_ttl(Cache *cache, char **cmd, String *out) {
 	Entry key;
 	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, sizeof key.key - 1);
+	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 
 	HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
 	if (!node) {

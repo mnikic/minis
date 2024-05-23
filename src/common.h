@@ -11,16 +11,22 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define TRUE 1
-#define FALSE 0
+#define ERR_UNKNOWN 1
+#define ERR_2BIG 2
+#define ERR_TYPE 3
+#define ERR_ARG 4
+
 #define SER_NIL 0
 #define SER_ERR 1    // An error code and message
 #define SER_STR 2    // A string
 #define SER_INT 3    // A int64
 #define SER_DBL 4 	 // A double
 #define SER_ARR 5	 // Ar array
+
 #define PORT 1234
+
 #define K_MAX_MSG 4096
+#define K_MAX_ARGS 100
 
 #define container_of(ptr, type, member) ({\
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);\

@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <stdbool.h>
 #include <time.h>
 #include <netinet/ip.h>
 #include <sys/epoll.h>
@@ -22,6 +23,7 @@
 #include "connections.h"
 #include "strings.h"
 #include "common.h"
+#include "out.h"
 
 #define MAX_EVENTS 10000
 
@@ -97,8 +99,6 @@ static void state_req(Cache* cache, Conn *conn);
 static void state_res(Conn *conn);
 
 static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, String *out) {
-	char *cmd[4];
-	int cmd_size = 0;
 	int return_value = 0;
 
 	if (reqlen < 4) {
@@ -106,12 +106,16 @@ static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, Str
 	}
 	uint32_t n = 0;
 	memcpy(&n, &req[0], 4);
-	if (n > K_MAX_MSG) {
+	if (n > K_MAX_ARGS) {
+		out_err(out, ERR_UNKNOWN, "Unknown cmd");
 		return -1;
 	}
 	if (n < 1) {
 		return -1;
 	}
+
+	char **cmd = malloc(n * sizeof(char*));
+	int cmd_size = 0;
 
 	size_t pos = 4;
 	while (n--) {
@@ -122,9 +126,10 @@ static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, Str
 		uint32_t sz = 0;
 		memcpy(&sz, &req[pos], 4);
 		if (pos + 4 + sz > reqlen) {
-			return -1;
+			return_value = -1;  // trailing garbage
+			goto CLEANUP;
 		}
-		cmd[cmd_size] = (char*) (calloc(sz, sizeof(char*)));
+		cmd[cmd_size] = (char*) (calloc(sz + 1, sizeof(char)));
 		memcpy(cmd[cmd_size], &req[pos + 4], sz);
 		cmd_size++;
 		pos += 4 + sz;
@@ -136,31 +141,32 @@ static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, Str
 
 	}
 	cache_execute(cache, cmd, cmd_size, out);
-
 CLEANUP: for (int i = 0; i < cmd_size; i++) {
 		if (cmd[i]) {
 			free(cmd[i]);
 		}
 	}
+	free(cmd);
+	
 	return return_value;
 }
 
 static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) {
-// try to parse a request from the buffer
+	// try to parse a request from the buffer
 	if (conn->rbuf_size < *start_index + 4) {
 		// not enough data in the buffer. Will retry in the next iteration
-		return FALSE;
+		return false;
 	}
 	uint32_t len = 0;
 	memcpy(&len, &conn->rbuf[*start_index], 4);
 	if (len > K_MAX_MSG) {
 		msg("too long");
 		conn->state = STATE_END;
-		return FALSE;
+		return false;
 	}
 	if (4 + len + *start_index > conn->rbuf_size) {
 		// not enough data in the buffer. Will retry in the next iteration
-		return FALSE;
+		return false;
 	}
 
 	String *out = str_init(NULL);
@@ -169,7 +175,7 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 		msg("bad req");
 		conn->state = STATE_END;
 		str_free(out);
-		return FALSE;
+		return false;
 	}
 	uint32_t wlen = str_size(out);
 
@@ -204,12 +210,12 @@ static int32_t try_fill_buffer(Cache* cache, Conn *conn) {
 	} while (rv < 0 && errno == EINTR);
 	if (rv < 0 && errno == EAGAIN) {
 		// got EAGAIN, stop.
-		return FALSE;
+		return false;
 	}
 	if (rv < 0) {
 		msg("read() error");
 		conn->state = STATE_END;
-		return FALSE;
+		return false;
 	}
 	if (rv == 0) {
 		if (conn->rbuf_size > 0) {
@@ -218,7 +224,7 @@ static int32_t try_fill_buffer(Cache* cache, Conn *conn) {
 			//msg("EOF");
 		}
 		conn->state = STATE_END;
-		return FALSE;
+		return false;
 	}
 
 	uint32_t start_index = conn->rbuf_size;
@@ -251,12 +257,12 @@ static int32_t try_flush_buffer(Conn *conn) {
 	} while (rv < 0 && errno == EINTR);
 	if (rv < 0 && errno == EAGAIN) {
 		// got EAGAIN, stop.
-		return FALSE;
+		return false;
 	}
 	if (rv < 0) {
 		msg("write() error");
 		conn->state = STATE_END;
-		return FALSE;
+		return false;
 	}
 	conn->wbuf_sent += (size_t) rv;
 	assert(conn->wbuf_sent <= conn->wbuf_size);
@@ -265,10 +271,10 @@ static int32_t try_flush_buffer(Conn *conn) {
 		conn->state = STATE_REQ;
 		conn->wbuf_sent = 0;
 		conn->wbuf_size = 0;
-		return FALSE;
+		return false;
 	}
 	// still got some data in wbuf, could try to write again
-	return TRUE;
+	return true;
 }
 
 static void state_res(Conn *conn) {
@@ -384,7 +390,7 @@ int main(void) {
 	if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1) {
 		die("epoll ctl: listen_sock!");
 	}
-	while (TRUE) {
+	while (true) {
 		int timeout_ms = (int) next_timer_ms(cache);
 		// poll for active fds
 		int enfd_count = epoll_wait(epfd, events, MAX_EVENTS, timeout_ms);

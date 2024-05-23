@@ -44,6 +44,11 @@ void str_appendCs_size(String *this, const char *that, uint32_t size) {
 	}
 }
 
+void str_clear(String *this) {
+	this->i = 0;
+	this->data[0] = '\0';
+}
+
 String* str_init(const char *chars) {
 	String *this = malloc(sizeof(String));
 	this->i = 0;

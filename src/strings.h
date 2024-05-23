@@ -18,6 +18,7 @@ typedef struct {
 } String;
 
 extern String* str_init(const char *chars);
+extern void str_clear(String *this);
 extern void str_appendS(String *this, String *that);
 extern void str_appendCs(String *this, const char *that);
 extern void str_appendC(String *this, char that);

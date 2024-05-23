@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "zset.h"
 #include "common.h"
 
@@ -53,7 +54,7 @@ static void tree_add(ZSet *zset, ZNode *node) {
 	}
 
 	AVLNode *cur = zset->tree;
-	while (TRUE) {
+	while (true) {
 		AVLNode **from = zless(&node->tree, cur) ? &cur->left : &cur->right;
 		if (!*from) {
 			*from = &node->tree;
@@ -81,12 +82,12 @@ int zset_add(ZSet *zset, const char *name, size_t len, double score) {
 	ZNode *node = zset_lookup(zset, name, len);
 	if (node) {
 		zset_update(zset, node, score);
-		return FALSE;
+		return false;
 	} else {
 		node = znode_new(name, len, score);
 		hm_insert(&zset->hmap, &node->hmap);
 		tree_add(zset, node);
-		return TRUE;
+		return true;
 	}
 }
 
@@ -99,12 +100,12 @@ typedef struct {
 
 static int hcmp(HNode *node, HNode *key) {
 	if (node->hcode != key->hcode) {
-		return FALSE;
+		return false;
 	}
 	ZNode *znode = container_of(node, ZNode, hmap);
 	HKey *hkey = container_of(key, HKey, node);
 	if (znode->len != hkey->len) {
-		return FALSE;
+		return false;
 	}
 	return 0 == memcmp(znode->name, hkey->name, znode->len);
 }
