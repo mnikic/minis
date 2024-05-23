@@ -24,6 +24,10 @@ extern void out_err(String *out, int32_t code, const char *msg);
 
 extern void out_arr(String *out, uint32_t n);
 
+extern size_t out_bgn_arr(String *out);
+
+extern void out_end_arr(String *out, size_t pos, uint32_t n); 
+
 extern void out_update_arr(String *out, uint32_t n);
 
 extern void out_str_size(String *out, const char *s, size_t size);

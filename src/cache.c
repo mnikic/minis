@@ -110,6 +110,9 @@ static void do_zadd(Cache *cache, char **cmd, String *out) {
 		ent->node.hcode = key.node.hcode;
 		ent->type = T_ZSET;
 		ent->zset = malloc(sizeof(ZSet));
+		if (!ent->zset)
+			die("Couldnt allocate zset");
+		memset(ent->zset, 0, sizeof(ZSet));
 		ent->heap_idx = -1;
 		hm_insert(&cache->db, &ent->node);
 	} else {
@@ -150,7 +153,7 @@ static void do_zrem(Cache *cache, char **cmd, String *out) {
 		return;
 	}
 
-	ZNode *znode = zset_pop(ent->zset, cmd[2], strlen(cmd[2]) - 1);
+	ZNode *znode = zset_pop(ent->zset, cmd[2], strlen(cmd[2]));
 	if (znode) {
 		znode_del(znode);
 	}
@@ -164,7 +167,7 @@ static void do_zscore(Cache *cache, char **cmd, String *out) {
 		return;
 	}
 
-	ZNode *znode = zset_lookup(ent->zset, cmd[2], strlen(cmd[2]) - 1);
+	ZNode *znode = zset_lookup(ent->zset, cmd[2], strlen(cmd[2]));
 	return znode ? out_dbl(out, znode->score) : out_nil(out);
 }
 
@@ -198,19 +201,19 @@ static void do_zquery(Cache *cache, char **cmd, String *out) {
 	if (limit <= 0) {
 		return out_arr(out, (uint32_t) 0);
 	}
-	ZNode *znode = zset_query(ent->zset, score, cmd[3], strlen(cmd[3]) - 1,
-			offset);
+	ZNode *znode = zset_query(ent->zset, score, cmd[3], strlen(cmd[3]));
+	znode = znode_offset(znode, offset);
 
-// output
-	out_arr(out, (uint32_t) 0);    // the array length will be updated later
+	// output
+	size_t idx = out_bgn_arr(out);
 	uint32_t n = 0;
 	while (znode && (int64_t) n < limit) {
 		out_str_size(out, znode->name, znode->len);
 		out_dbl(out, znode->score);
-		znode = container_of(avl_offset(&znode->tree, +1), ZNode, tree);
+		znode = znode_offset(znode, +1);
 		n += 2;
 	}
-	return out_update_arr(out, n);
+	out_end_arr(out,idx, n);
 }
 
 // set or remove the TTL

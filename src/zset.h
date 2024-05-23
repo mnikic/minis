@@ -27,8 +27,8 @@ typedef struct {
 extern int zset_add(ZSet *zset, const char *name, size_t len, double score);
 extern ZNode* zset_lookup(ZSet *zset, const char *name, size_t len);
 extern ZNode* zset_pop(ZSet *zset, const char *name, size_t len);
-extern ZNode* zset_query(ZSet *zset, double score, const char *name, size_t len,
-		int64_t offset);
+ZNode *zset_query(ZSet *zset, double score, const char *name, size_t len);
+extern ZNode *znode_offset(ZNode *node, int64_t offset);
 extern void zset_dispose(ZSet *zset);
 extern void znode_del(ZNode *node);
 

@@ -13,7 +13,7 @@
 
 
 typedef struct avlnode {
-    uint32_t depth ;
+    uint32_t depth;
     uint32_t cnt;
     struct avlnode *left;
     struct avlnode *right;

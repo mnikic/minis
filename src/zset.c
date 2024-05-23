@@ -15,6 +15,7 @@
 static ZNode* znode_new(const char *name, size_t len, double score) {
 	ZNode *node = (ZNode*) malloc(sizeof(ZNode) + len);
 	assert(node);   // not a good idea in real projects
+	memset(node, 0, sizeof(ZNode) + len);
 	avl_init(&node->tree);
 	node->hmap.next = NULL;
 	node->hmap.hcode = str_hash((uint8_t*) name, len);
@@ -29,7 +30,7 @@ static uint32_t min(size_t lhs, size_t rhs) {
 }
 
 // compare by the (score, name) tuple
-static int zless1(AVLNode *lhs, double score, const char *name, size_t len) {
+static bool zless1(AVLNode *lhs, double score, const char *name, size_t len) {
 	ZNode *zl = container_of(lhs, ZNode, tree);
 	if (zl->score != score) {
 		return zl->score < score;
@@ -41,7 +42,7 @@ static int zless1(AVLNode *lhs, double score, const char *name, size_t len) {
 	return zl->len < len;
 }
 
-static int zless(AVLNode *lhs, AVLNode *rhs) {
+static bool zless(AVLNode *lhs, AVLNode *rhs) {
 	ZNode *zr = container_of(rhs, ZNode, tree);
 	return zless1(lhs, zr->score, zr->name, zr->len);
 }
@@ -148,25 +149,25 @@ ZNode* zset_pop(ZSet *zset, const char *name, size_t len) {
 	return node;
 }
 
-// find the (score, name) tuple that is greater or equal to the argument,
-// then offset relative to it.
-ZNode* zset_query(ZSet *zset, double score, const char *name, size_t len,
-		int64_t offset) {
-	AVLNode *found = NULL;
-	AVLNode *cur = zset->tree;
-	while (cur) {
-		if (zless1(cur, score, name, len)) {
-			cur = cur->right;
-		} else {
-			found = cur;    // candidate
-			cur = cur->left;
-		}
-	}
+// find the (score, name) tuple that is greater or equal to the argument.
+ZNode *zset_query(ZSet *zset, double score, const char *name, size_t len) {
+    AVLNode *found = NULL;
+    AVLNode *cur = zset->tree;
+    while (cur) {
+        if (zless1(cur, score, name, len)) {
+            cur = cur->right;
+        } else {
+            found = cur;    // candidate
+            cur = cur->left;
+        }
+    }
+    return found ? container_of(found, ZNode, tree) : NULL;
+}
 
-	if (found) {
-		found = avl_offset(found, offset);
-	}
-	return found ? container_of(found, ZNode, tree) : NULL;
+// offset into the succeeding or preceding node.
+ZNode *znode_offset(ZNode *node, int64_t offset) {
+    AVLNode *tnode = node ? avl_offset(&node->tree, offset) : NULL;
+    return tnode ? container_of(tnode, ZNode, tree) : NULL;
 }
 
 void znode_del(ZNode *node) {
