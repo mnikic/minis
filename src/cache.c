@@ -88,7 +88,8 @@ static int str2int(const char *s, int64_t *out) {
 static void do_zadd(Cache *cache, char **cmd, String *out) {
 	double score = 0;
 	if (!str2dbl(cmd[2], &score)) {
-		return out_err(out, ERR_ARG, "expect fp number");
+		out_err(out, ERR_ARG, "expect fp number");
+		return;
 	}
 
 	Entry key;
@@ -118,14 +119,14 @@ static void do_zadd(Cache *cache, char **cmd, String *out) {
 	} else {
 		ent = container_of(hnode, Entry, node);
 		if (ent->type != T_ZSET) {
-			return out_err(out, ERR_TYPE, "expect zset");
+			out_err(out, ERR_TYPE, "expect zset");
 		}
 	}
 
 // add or update the tuple
 	const char *name = cmd[3];
 	int added = zset_add(ent->zset, name, strlen(name), score);
-	return out_int(out, (int64_t) added);
+	out_int(out, (int64_t) added);
 }
 
 static int expect_zset(Cache *cache, String *out, char *s, Entry **ent) {
@@ -157,7 +158,7 @@ static void do_zrem(Cache *cache, char **cmd, String *out) {
 	if (znode) {
 		znode_del(znode);
 	}
-	return out_int(out, znode ? 1 : 0);
+	out_int(out, znode ? 1 : 0);
 }
 
 // zscore zset name
@@ -168,7 +169,11 @@ static void do_zscore(Cache *cache, char **cmd, String *out) {
 	}
 
 	ZNode *znode = zset_lookup(ent->zset, cmd[2], strlen(cmd[2]));
-	return znode ? out_dbl(out, znode->score) : out_nil(out);
+	if (znode) {
+		out_dbl(out, znode->score);
+	} else {
+		out_nil(out);
+	}
 }
 
 // zquery zset score name offset limit
@@ -176,15 +181,18 @@ static void do_zquery(Cache *cache, char **cmd, String *out) {
 // parse args
 	double score = 0;
 	if (!str2dbl(cmd[2], &score)) {
-		return out_err(out, ERR_ARG, "expect fp number");
+		out_err(out, ERR_ARG, "expect fp number");
+		return;
 	}
 	int64_t offset = 0;
 	int64_t limit = 0;
 	if (!str2int(cmd[4], &offset)) {
-		return out_err(out, ERR_ARG, "expect int");
+		out_err(out, ERR_ARG, "expect int");
+		return;
 	}
 	if (!str2int(cmd[5], &limit)) {
-		return out_err(out, ERR_ARG, "expect int");
+		out_err(out, ERR_ARG, "expect int");
+		return;
 	}
 
 // get the zset
@@ -199,7 +207,8 @@ static void do_zquery(Cache *cache, char **cmd, String *out) {
 
 // look up the tuple
 	if (limit <= 0) {
-		return out_arr(out, (uint32_t) 0);
+		out_arr(out, (uint32_t) 0);
+		return;
 	}
 	ZNode *znode = zset_query(ent->zset, score, cmd[3], strlen(cmd[3]));
 	znode = znode_offset(znode, offset);
@@ -325,7 +334,8 @@ static void do_get(Cache *cache, char **cmd, String *out) {
 static void do_expire(Cache *cache, char **cmd, String *out) {
 	int64_t ttl_ms = 0;
 	if (!str2int(cmd[2], &ttl_ms)) {
-		return out_err(out, ERR_ARG, "expect int64");
+		out_err(out, ERR_ARG, "expect int64");
+		return;
 	}
 
 	Entry key;
@@ -337,7 +347,7 @@ static void do_expire(Cache *cache, char **cmd, String *out) {
 		Entry *ent = container_of(node, Entry, node);
 		entry_set_ttl(cache, ent, ttl_ms);
 	}
-	return out_int(out, node ? 1 : 0);
+	out_int(out, node ? 1 : 0);
 }
 
 static void do_ttl(Cache *cache, char **cmd, String *out) {
@@ -347,17 +357,19 @@ static void do_ttl(Cache *cache, char **cmd, String *out) {
 
 	HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
 	if (!node) {
-		return out_int(out, -2);
+		out_int(out, -2);
+		return;
 	}
 
 	Entry *ent = container_of(node, Entry, node);
 	if (ent->heap_idx == (size_t) -1) {
-		return out_int(out, -1);
+		out_int(out, -1);
+		return;
 	}
 
 	uint64_t expire_at = heap_get(&cache->heap, ent->heap_idx)->val;
 	uint64_t now_us = get_monotonic_usec();
-	return out_int(out, expire_at > now_us ? (expire_at - now_us) / 1000 : 0);
+	out_int(out, expire_at > now_us ? (expire_at - now_us) / 1000 : 0);
 }
 
 void cache_execute(Cache *cache, char **cmd, size_t size, String *out) {
