@@ -1,3 +1,6 @@
+#ifndef HASHTABLE_H
+#define HASHTABLE_H
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,3 +32,5 @@ extern void hm_insert(HMap *hmap, HNode *node);
 extern HNode *hm_pop(HMap *hmap, HNode *key, int (*cmp)(HNode *, HNode *));
 extern size_t hm_size(HMap *hmap);
 extern void hm_destroy(HMap *hmap);
+
+#endif /* HASHTABLE_H_ */

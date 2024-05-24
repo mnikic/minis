@@ -4,7 +4,7 @@
 
 
 // n must be a power of 2
-static void h_init(HTab *htab, size_t n) {
+void h_init(HTab *htab, size_t n) {
     assert(n > 0 && ((n - 1) & n) == 0);
     htab->tab = (HNode **)calloc(n, sizeof(HNode *));
     htab->mask = n - 1;
@@ -12,7 +12,7 @@ static void h_init(HTab *htab, size_t n) {
 }
 
 // hashtable insertion
-static void h_insert(HTab *htab, HNode *node) {
+void h_insert(HTab *htab, HNode *node) {
     size_t pos = node->hcode & htab->mask;
     HNode *next = htab->tab[pos];
     node->next = next;
@@ -24,7 +24,7 @@ static void h_insert(HTab *htab, HNode *node) {
 // Pay attention to the return value. It returns the address of
 // the parent pointer that owns the target node,
 // which can be used to delete the target node.
-static HNode **h_lookup(
+HNode **h_lookup(
     HTab *htab, HNode *key, int (*cmp)(HNode *, HNode *))
 {
     if (!htab->tab) {
@@ -43,7 +43,7 @@ static HNode **h_lookup(
 }
 
 // remove a node from the chain
-static HNode *h_detach(HTab *htab, HNode **from) {
+HNode *h_detach(HTab *htab, HNode **from) {
     HNode *node = *from;
     *from = (*from)->next;
     htab->size--;
@@ -52,7 +52,7 @@ static HNode *h_detach(HTab *htab, HNode **from) {
 
 const size_t k_resizing_work = 128;
 
-static void hm_help_resizing(HMap *hmap) {
+void hm_help_resizing(HMap *hmap) {
     if (hmap->ht2.tab == NULL) {
         return;
     }
@@ -78,7 +78,7 @@ static void hm_help_resizing(HMap *hmap) {
     }
 }
 
-static void hm_start_resizing(HMap *hmap) {
+void hm_start_resizing(HMap *hmap) {
     assert(hmap->ht2.tab == NULL);
     // create a bigger hashtable and swap them
     hmap->ht2 = hmap->ht1;
@@ -135,15 +135,12 @@ size_t hm_size(HMap *hmap) {
 }
 
 void hm_destroy(HMap *hmap) {
-    assert(hmap->ht1.size + hmap->ht2.size == 0);
     free(hmap->ht1.tab);
     free(hmap->ht2.tab);
-    free(hmap);
+    hm_init(hmap);
 }
 
 void hm_init(HMap *hmap) {
-    h_init(&hmap->ht1, 4);
-    h_init(&hmap->ht2, 4);
     hmap->resizing_pos = 0;
 }
 

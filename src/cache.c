@@ -100,6 +100,7 @@ static void do_zadd(Cache *cache, char **cmd, String *out) {
 	Entry *ent = NULL;
 	if (!hnode) {
 		ent = malloc(sizeof(Entry));
+		memset(ent, 0, sizeof(Entry));
 		if (!ent) {
 			abort();
 		}
