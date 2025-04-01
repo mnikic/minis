@@ -42,7 +42,7 @@ const size_t k_max_msg = 4096;
 static int32_t send_req(int fd, char** cmd, size_t cmd_size) {
     uint32_t len = 4;
     for (size_t i = 0; i < cmd_size; i++) {
-        len += strlen(cmd[i]) + 4; 
+        len += (uint32_t) strlen(cmd[i]) + 4; 
     }
 
     if (len > k_max_msg) {
@@ -55,7 +55,7 @@ static int32_t send_req(int fd, char** cmd, size_t cmd_size) {
     size_t cur = 8;
     for (size_t i = 0; i < cmd_size; i++) {
         char* s = cmd[i];
-        int cmd_len = strlen(s);
+        size_t cmd_len = strlen(s);
         uint32_t p = (uint32_t) cmd_len;
         memcpy(&wbuf[cur], &p, 4);
         memcpy(&wbuf[cur + 4], s, cmd_len);
@@ -88,7 +88,7 @@ static int32_t on_response(const uint8_t *data, size_t size) {
                 return -1;
             }
             printf("(err) %d %.*s\n", code, len, &data[1 + 8]);
-            return 1 + 8 + len;
+            return (int32_t) (1 + 8 + len);
         }
     case SER_STR:
         if (size < 1 + 4) {
@@ -103,7 +103,7 @@ static int32_t on_response(const uint8_t *data, size_t size) {
                 return -1;
             }
             printf("(str) %.*s\n", len, &data[1 + 4]);
-            return 1 + 4 + len;
+            return (int32_t) (1 + 4 + len);
         }
     case SER_INT:
         if (size < 1 + 8) {
@@ -206,7 +206,7 @@ int main(int argc, char **argv) {
     }
 
     size_t size = 0;
-    char** cmds = malloc(sizeof(char*)* argc);
+    char** cmds = malloc(sizeof(char*) * (size_t) argc);
     for (int i = 1; i < argc; ++i) 
         cmds[size++] = argv[i];
     int32_t err = send_req(fd, cmds, size);

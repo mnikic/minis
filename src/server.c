@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -115,7 +116,7 @@ static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, Str
 	}
 
 	char **cmd = malloc(n * sizeof(char*));
-	int cmd_size = 0;
+	size_t cmd_size = 0;
 
 	size_t pos = 4;
 	while (n--) {
@@ -141,7 +142,7 @@ static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, Str
 
 	}
 	cache_execute(cache, cmd, cmd_size, out);
-CLEANUP: for (int i = 0; i < cmd_size; i++) {
+CLEANUP: for (size_t i = 0; i < cmd_size; i++) {
 		if (cmd[i]) {
 			free(cmd[i]);
 		}
@@ -177,7 +178,7 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 		str_free(out);
 		return false;
 	}
-	uint32_t wlen = str_size(out);
+	size_t wlen = str_size(out);
 
 	if ((conn->wbuf_size + wlen) > K_MAX_MSG) {
 		// cannot append to the write buffer the current message (too long), need to write!
@@ -228,7 +229,7 @@ static int32_t try_fill_buffer(Cache* cache, Conn *conn) {
 	}
 
 	uint32_t start_index = conn->rbuf_size;
-	conn->rbuf_size += (size_t) rv;
+	conn->rbuf_size += (uint32_t) rv;
 	assert(conn->rbuf_size <= sizeof(conn->rbuf));
 
 	// Try to process requests one by one.
@@ -236,7 +237,7 @@ static int32_t try_fill_buffer(Cache* cache, Conn *conn) {
 	while (try_one_request(cache, conn, &start_index)) {
 	}
 
-	size_t remain = conn->rbuf_size - start_index;
+	uint32_t remain = conn->rbuf_size - start_index;
 	if (remain) {
 		memmove(conn->rbuf, &conn->rbuf[start_index], remain);
 	}

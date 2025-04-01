@@ -115,7 +115,7 @@ void str_free(String *this) {
 	free(this);
 }
 
-int str_size(String *this) {
+size_t str_size(String *this) {
 	return this->i;
 }
 

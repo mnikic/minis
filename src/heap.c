@@ -100,7 +100,7 @@ static void heap_down(Heap* heap, size_t pos) {
 		// find the smallest one among the parent and their kids
 		size_t l = heap_left(pos);
 		size_t r = heap_right(pos);
-		size_t min_pos = -1;
+		size_t min_pos = (size_t) -1;
 		size_t min_val = t.val;
 		if (l < heap->size && heap->items[l].val < min_val) {
 			min_pos = l;

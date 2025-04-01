@@ -13,7 +13,7 @@
 
 static uint32_t size(const char *string) {
 	if (string) {
-		return strlen(string);
+		return (uint32_t) strlen(string);
 	}
 	return 0;
 }
@@ -49,7 +49,7 @@ void out_dbl(String *out, double val) {
 void out_err(String *out, int32_t code, const char *msg) {
 	str_appendC(out, SER_ERR);
 	uint32_t len = size(msg);
-	str_append_uint32(out, code);
+	str_append_uint32(out, (uint32_t) code);
 	str_append_uint32(out, len);
 	str_appendCs(out, msg);
 }

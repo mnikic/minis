@@ -6,6 +6,7 @@
  */
 
 #include <assert.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -26,7 +27,7 @@ static ZNode* znode_new(const char *name, size_t len, double score) {
 }
 
 static uint32_t min(size_t lhs, size_t rhs) {
-	return lhs < rhs ? lhs : rhs;
+	return (uint32_t) (lhs < rhs ? lhs : rhs);
 }
 
 // compare by the (score, name) tuple

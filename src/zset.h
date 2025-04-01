@@ -21,7 +21,7 @@ typedef struct {
 	HNode hmap;
 	double score;
 	size_t len;
-	char name[0];
+	char name[];
 } ZNode;
 
 extern int zset_add(ZSet *zset, const char *name, size_t len, double score);

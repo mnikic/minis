@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,7 +116,7 @@ static void do_zadd(Cache *cache, char **cmd, String *out) {
 		if (!ent->zset)
 			die("Couldnt allocate zset");
 		memset(ent->zset, 0, sizeof(ZSet));
-		ent->heap_idx = -1;
+		ent->heap_idx = (size_t) -1;
 		hm_insert(&cache->db, &ent->node);
 	} else {
 		ent = container_of(hnode, Entry, node);
@@ -230,7 +231,7 @@ static void do_zquery(Cache *cache, char **cmd, String *out) {
 static void entry_set_ttl(Cache *cache, Entry *ent, int64_t ttl_ms) {
 	if (ttl_ms < 0 && ent->heap_idx != (size_t) -1) {
 		(void) heap_remove_idx(&cache->heap, ent->heap_idx);
-		ent->heap_idx = -1;
+		ent->heap_idx = (size_t) -1;
 	} else if (ttl_ms >= 0) {
 		size_t pos = ent->heap_idx;
 		if (pos == (size_t) -1) {
@@ -286,7 +287,7 @@ static void do_set(Cache *cache, char **cmd, String *out) {
 		ent->node.hcode = key.node.hcode;
 		ent->val = calloc(strlen(cmd[2]) + 1, sizeof(char));
 		strcpy(ent->val, cmd[2]);
-		ent->heap_idx = -1;
+		ent->heap_idx = (size_t) -1;
 		ent->type = T_STR;
 		hm_insert(&cache->db, &ent->node);
 	}
@@ -370,7 +371,7 @@ static void do_ttl(Cache *cache, char **cmd, String *out) {
 
 	uint64_t expire_at = heap_get(&cache->heap, ent->heap_idx)->val;
 	uint64_t now_us = get_monotonic_usec();
-	out_int(out, expire_at > now_us ? (expire_at - now_us) / 1000 : 0);
+	out_int(out, (int64_t) (expire_at > now_us ? (expire_at - now_us) / 1000 : 0));
 }
 
 void cache_execute(Cache *cache, char **cmd, size_t size, String *out) {
@@ -431,7 +432,7 @@ void cache_evict(Cache *cache, uint64_t now_us) {
 uint64_t cache_next_expiry(Cache* cache) {
 	// ttl timers
 	if (heap_empty(&cache->heap)) {
-		return -1;
+		return (uint64_t) -1;
 	}
 	return heap_top(&cache->heap)->val; 
 }

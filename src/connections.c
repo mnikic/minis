@@ -6,6 +6,7 @@
  */
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -58,7 +59,7 @@ void conns_set(Conns *this, Conn *connection) {
     }
     assert(connection->fd >= 0);
     if ((size_t) connection->fd >= this->capacity) {
-        grow(this, connection->fd);
+        grow(this, (size_t) connection->fd);
     }
     if (this->presence[connection->fd / 32] & 1 << connection->fd) {
         Value *old_value = this->conns_by_fd[connection->fd];
@@ -67,7 +68,7 @@ void conns_set(Conns *this, Conn *connection) {
     } else {
         Value *value = (Value*) malloc(sizeof(Value));
         value->value = connection;
-        value->ind_in_all = this->size;
+        value->ind_in_all =(uint32_t) this->size;
 
         this->conns_by_fd[connection->fd] = value;
         this->conns_all[this->size] = *connection;
@@ -92,7 +93,7 @@ void conns_del(Conns *this, int key) {
                 old_value->ind_in_all;
     }
     (this->size)--;
-    this->presence[key / 32] &= ~(1 << key);
+    this->presence[key / 32] &= (uint32_t) ~(1 << key);
 
     free(old_value);
     this->conns_by_fd[key] = NULL;

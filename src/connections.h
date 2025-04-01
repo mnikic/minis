@@ -18,7 +18,7 @@ typedef struct {
 	int fd;
 	uint32_t state;     // either STATE_REQ or STATE_RES
 	// buffer for reading
-	size_t rbuf_size;
+	uint32_t rbuf_size;
 	uint8_t rbuf[4 + K_MAX_MSG];
 	// buffer for writing
 	size_t wbuf_size;
