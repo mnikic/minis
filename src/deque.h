@@ -22,13 +22,13 @@ typedef struct s_deque {
 	struct s_deque_node *last;
 } t_deque;
 
-extern t_deque *dq_init(void);
-extern int dq_empty(t_deque *deque);
-extern void dq_push_front(t_deque *deque, void *content);
-extern void dq_push_back(t_deque *deque, void *content);
-extern void *dq_pop_front(t_deque *deque);
-extern void *dq_pop_back(t_deque *deque);
-extern void *dq_peek_front(t_deque *deque);
-extern void *dq_peek_back(t_deque *deque);
+t_deque *dq_init(void);
+int dq_empty(t_deque *deque);
+void dq_push_front(t_deque *deque, void *content);
+void dq_push_back(t_deque *deque, void *content);
+void *dq_pop_front(t_deque *deque);
+void *dq_pop_back(t_deque *deque);
+void *dq_peek_front(t_deque *deque);
+void *dq_peek_back(t_deque *deque);
 
 #endif /* DEQUE_H_ */

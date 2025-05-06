@@ -12,24 +12,24 @@
 #include "strings.h"
 #include "common.h"
 
-extern void out_nil(String *out);
+void out_nil(String *out);
 
-extern void out_str(String *out, const char *val);
+void out_str(String *out, const char *val);
 
-extern void out_int(String *out, int64_t val);
+void out_int(String *out, int64_t val);
 
-extern void out_dbl(String *out, double val);
+void out_dbl(String *out, double val);
 
-extern void out_err(String *out, int32_t code, const char *msg);
+void out_err(String *out, int32_t code, const char *msg);
 
-extern void out_arr(String *out, uint32_t n);
+void out_arr(String *out, uint32_t n);
 
-extern size_t out_bgn_arr(String *out);
+size_t out_bgn_arr(String *out);
 
-extern void out_end_arr(String *out, size_t pos, uint32_t n); 
+void out_end_arr(String *out, size_t pos, uint32_t n); 
 
-extern void out_update_arr(String *out, uint32_t n);
+void out_update_arr(String *out, uint32_t n);
 
-extern void out_str_size(String *out, const char *s, size_t size);
+void out_str_size(String *out, const char *s, size_t size);
 
 #endif /* OUT_H_ */

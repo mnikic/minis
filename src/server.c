@@ -232,8 +232,6 @@ static int32_t try_fill_buffer(Cache* cache, Conn *conn) {
 	conn->rbuf_size += (uint32_t) rv;
 	assert(conn->rbuf_size <= sizeof(conn->rbuf));
 
-	// Try to process requests one by one.
-	// Why is there a loop? Please read the explanation of "pipelining".
 	while (try_one_request(cache, conn, &start_index)) {
 	}
 
@@ -286,7 +284,7 @@ static void state_res(Conn *conn) {
 const uint64_t k_idle_timeout_ms = 5 * 1000;
 
 static void process_timers(Cache* cache) {
-	// the extra 1000us is for the ms resolution of poll()
+	// the extra 1000us is for the ms resolution of epoll()
 	uint64_t now_us = get_monotonic_usec() + 1000;
 
 
@@ -294,7 +292,7 @@ static void process_timers(Cache* cache) {
 		Conn *next = container_of(g_data.idle_list.next, Conn, idle_list);
 		uint64_t next_us = next->idle_start + k_idle_timeout_ms * 1000;
 		if (next_us >= now_us + 1000) {
-			// not ready, the extra 1000us is for the ms resolution of poll()
+			// not ready, the extra 1000us is for the ms resolution of epoll()
 			break;
 		}
 
@@ -306,7 +304,7 @@ static void process_timers(Cache* cache) {
 }
 
 static void connection_io(Cache* cache, Conn *conn) {
-	// waked up by poll, update the idle timer
+	// waked up by epoll, update the idle timer
 	// by moving conn to the end of the list.
 	conn->idle_start = get_monotonic_usec();
 	dlist_detach(&conn->idle_list);
@@ -393,7 +391,7 @@ int main(void) {
 	}
 	while (true) {
 		int timeout_ms = (int) next_timer_ms(cache);
-		// poll for active fds
+		// epoll for active fds
 		int enfd_count = epoll_wait(epfd, events, MAX_EVENTS, timeout_ms);
 		if (enfd_count < 0) {
 			die("epoll_wait");

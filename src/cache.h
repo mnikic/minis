@@ -24,9 +24,9 @@ typedef struct {
 	TheadPool tp;
 } Cache;
 
-extern Cache* cache_init(void);
-extern void cache_evict(Cache *cache, uint64_t now_us);
-extern uint64_t cache_next_expiry(Cache* cache);
-extern void cache_execute(Cache* cache, char **cmd, size_t size, String *out);
+Cache* cache_init(void);
+void cache_evict(Cache *cache, uint64_t now_us);
+uint64_t cache_next_expiry(Cache* cache);
+void cache_execute(Cache* cache, char **cmd, size_t size, String *out);
 
 #endif /* CACHE_H */

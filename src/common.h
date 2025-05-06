@@ -32,12 +32,12 @@
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);\
 	(type *)( (char *)__mptr - offsetof(type,member) );})
 
-extern uint64_t get_monotonic_usec(void); 
+uint64_t get_monotonic_usec(void); 
 
-extern uint64_t str_hash(const uint8_t *data, size_t len);
+uint64_t str_hash(const uint8_t *data, size_t len);
 
-extern void msg(const char *msg); 
+void msg(const char *msg); 
 
-extern void die(const char *msg);
+void die(const char *msg);
 
 #endif /* COMMON_H_ */

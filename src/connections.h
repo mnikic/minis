@@ -42,12 +42,12 @@ typedef struct {
 	size_t size;
 } Conns;
 
-extern Conns* conns_new(uint32_t capacity);
-extern Conn* conns_get(Conns *this, int key);
-extern void conns_set(Conns *this, Conn *connection);
-extern void conns_iter(Conns *this, Conn *array[], size_t *size);
-extern void conns_del(Conns *this, int key);
-extern void conns_free(Conns *this);
+Conns* conns_new(uint32_t capacity);
+Conn* conns_get(Conns *this, int key);
+void conns_set(Conns *this, Conn *connection);
+void conns_iter(Conns *this, Conn *array[], size_t *size);
+void conns_del(Conns *this, int key);
+void conns_free(Conns *this);
 
 #endif /* CONNECTIONS_H_ */
 

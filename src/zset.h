@@ -24,12 +24,12 @@ typedef struct {
 	char name[];
 } ZNode;
 
-extern int zset_add(ZSet *zset, const char *name, size_t len, double score);
-extern ZNode* zset_lookup(ZSet *zset, const char *name, size_t len);
-extern ZNode* zset_pop(ZSet *zset, const char *name, size_t len);
+int zset_add(ZSet *zset, const char *name, size_t len, double score);
+ZNode* zset_lookup(ZSet *zset, const char *name, size_t len);
+ZNode* zset_pop(ZSet *zset, const char *name, size_t len);
 ZNode *zset_query(ZSet *zset, double score, const char *name, size_t len);
-extern ZNode *znode_offset(ZNode *node, int64_t offset);
-extern void zset_dispose(ZSet *zset);
-extern void znode_del(ZNode *node);
+ZNode *znode_offset(ZNode *node, int64_t offset);
+void zset_dispose(ZSet *zset);
+void znode_del(ZNode *node);
 
 #endif /* ZSET_H_ */
