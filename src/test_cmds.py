@@ -39,6 +39,8 @@ $ ./client zquery zset 1 "" 0 10
 (str) n2
 (dbl) 2
 (arr) end
+$ ./client del zset
+(int) 1
 '''
 
 
@@ -61,4 +63,4 @@ for x in lines:
 assert len(cmds) == len(outputs)
 for cmd, expect in zip(cmds, outputs):
     out = subprocess.check_output(shlex.split(cmd)).decode('utf-8')
-    assert out == expect, f'cmd:{cmd} out:{out}'
+    assert out == expect, f'cmd:{cmd}\nout:{out}'
