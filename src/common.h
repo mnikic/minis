@@ -38,6 +38,6 @@ uint64_t str_hash(const uint8_t *data, size_t len);
 
 void msg(const char *msg); 
 
-void die(const char *msg);
+__attribute__((noreturn)) void die(const char *msg);
 
 #endif /* COMMON_H_ */

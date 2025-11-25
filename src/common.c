@@ -31,6 +31,7 @@ inline void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
 }
 
+__attribute__((noreturn))
 inline void die(const char *msg) {
     int err = errno;
     fprintf(stderr, "[%d] %s\n", err, msg);

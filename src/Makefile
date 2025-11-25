@@ -1,58 +1,45 @@
 CC=gcc
-CFLAGS=-O3 -Wformat -Wformat=2 -Wconversion -Wimplicit-fallthrough -Werror=format-security -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -fstrict-flex-arrays=3 -fstack-clash-protection -fstack-protector-strong -Wl,-z,nodlopen -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now -Wl,--as-needed -Wl,--no-copy-dt-needed-entries -Wall -Werror -Wno-unused-parameter -Wwrite-strings -Wstrict-prototypes -Wold-style-definition -Wshadow -Wredundant-decls -Wnested-externs -Wmissing-include-dirs -g -Wextra
+CFLAGS=-std=gnu11 -O2 -g -pthread \
+       -Wall -Wextra -Werror -Wno-unused-parameter \
+       -Wformat=2 -Werror=format-security \
+       -Wconversion -Wimplicit-fallthrough \
+       -Wwrite-strings -Wstrict-prototypes -Wold-style-definition \
+       -Wshadow -Wredundant-decls -Wnested-externs -Wmissing-include-dirs \
+       -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 \
+       -fstack-protector-strong -fstack-clash-protection \
+       -fstrict-flex-arrays=3
+
+LDFLAGS=-pthread \
+        -Wl,-z,nodlopen -Wl,-z,noexecstack \
+        -Wl,-z,relro,-z,now \
+        -Wl,--as-needed -Wl,--no-copy-dt-needed-entries
+
 ifeq ($(CC),gcc)
 	CFLAGS += -Wjump-misses-init -Wlogical-op
 endif
 
+SERVER_SRC = server.c connections.c list.c out.c hashtable.c zset.c strings.c \
+             common.c avl.c heap.c thread_pool.c deque.c cache.c
+SERVER_OBJ = $(SERVER_SRC:.c=.o)
+
+CLIENT_SRC = client.c common.c
+CLIENT_OBJ = $(CLIENT_SRC:.c=.o)
+
+#analyze:
+#	$(CC) $(CFLAGS) -fanalyzer $(SERVER_SRC) $(CLIENT_SRC) -c
+
 all: server client
 
-server:  server.o connections.o list.o out.o hashtable.o zset.o strings.o common.o avl.o heap.o thread_pool.o deque.o cache.o
-	$(CC) $(CFLAGS) -o server server.o connections.o list.o out.c hashtable.o zset.c strings.o common.o avl.o heap.o thread_pool.o deque.o cache.o
+server: $(SERVER_OBJ)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-server.o: server.c
-	$(CC) $(CFLAGS) -c server.c
+client: $(CLIENT_OBJ)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-connections.o:
-	$(CC) $(CFLAGS) -c connections.c
-
-list.o: list.c list.h
-	$(CC) $(CFLAGS) -c list.c
-
-out.o: out.c out.h
-	$(CC) $(CFLAGS) -c out.c
-
-hashtable.o: hashtable.c hashtable.h
-	$(CC) $(CFLAGS) -c hashtable.c
-
-zset.o: zset.c zset.h
-	$(CC) $(CFLAGS) -c zset.c
-
-strings.o: strings.c strings.h
-	$(CC) $(CFLAGS) -c strings.c
-
-common.o: common.c common.h
-	$(CC) $(CFLAGS) -c common.c
-
-avl.o: avl.c avl.h
-	$(CC) $(CFLAGS) -c avl.c
-
-heap.o: heap.c heap.h
-	$(CC) $(CFLAGS) -c heap.c
-
-thread_pool.o: thread_pool.c thread_pool.h
-	$(CC) $(CFLAGS) -c thread_pool.c
-
-deque.o: deque.c deque.h
-	$(CC) $(CFLAGS) -c deque.c
-
-client.o: client.c
-	$(CC) $(CFLAGS) -c client.c
-
-cache.o: cache.c cache.h
-	$(CC) $(CFLAGS) -c cache.c
-
-client: client.o common.o
-	$(CC) $(CFLAGS) -o client client.o common.o
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f *.o client server
+	rm -f *.o server client
+
+.PHONY: all clean #analyze
