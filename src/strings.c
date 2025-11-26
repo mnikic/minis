@@ -51,13 +51,15 @@ void str_clear(String *this) {
 
 String* str_init(const char *chars) {
 	String *this = malloc(sizeof(String));
+	if (!this)
+		abort();
 	this->i = 0;
 	this->capacity = 0;
 	this->data = malloc(sizeof(char));
-	this->data[0] = '\0';
-	if (!this->data) {
+	if (!this->data)
 		abort();
-	}
+	
+	this->data[0] = '\0';
 
 	if (chars) {
 		str_appendCs(this, chars);

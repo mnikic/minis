@@ -5,12 +5,15 @@
  *      Author: loshmi
  */
 #include "deque.h"
+#include "common.h"
 
 t_deque *dq_init(void)
 {
 	t_deque *deque;
 
 	deque = malloc(sizeof(t_deque));
+	if (!deque)
+		die("Out of memory dq_init.");
 	deque->first = NULL;
 	deque->last = NULL;
 	return deque;
@@ -24,6 +27,8 @@ int dq_empty(t_deque *deque)
 void dq_push_front(t_deque *deque, void *content)
 {
 	t_deque_node *node = malloc(sizeof(t_deque_node));
+	if (!node)
+	   die("Out of memory dq_push_front");	
 	node->content = content;
 	node->prev = NULL;
 	node->next = deque->first;
@@ -37,6 +42,8 @@ void dq_push_front(t_deque *deque, void *content)
 void dq_push_back(t_deque *deque, void *content)
 {
 	t_deque_node *node = malloc(sizeof(t_deque_node));
+	if (!node)
+	   die("Out of memory dq_push_back");	
 	node->content = content;
 	node->prev = deque->last;
 	node->next = NULL;

@@ -41,6 +41,7 @@ static struct {
 	Conns *fd2conn;
 	// timers for idle connections
 	DList idle_list;
+	int epfd;
 } g_data;
 
 static void fd_set_nb(int fd) {
@@ -61,39 +62,40 @@ static void fd_set_nb(int fd) {
 }
 
 static int32_t accept_new_conn(int fd) {
-	// accept
-	struct sockaddr_in client_addr = { };
-	socklen_t socklen = sizeof(client_addr);
-	int connfd = accept(fd, (struct sockaddr*) &client_addr, &socklen);
-	if (connfd < 0) {
-		msg("accept() error");
-		return -1;  // error
-	}
+    struct sockaddr_in client_addr = {};
+    socklen_t socklen = sizeof(client_addr);
+    int connfd = accept(fd, (struct sockaddr*)&client_addr, &socklen);
+    if (connfd < 0) {
+        msg("accept() error");
+        return -1;  // Don't close anything
+    }
 
-	// set the new connection fd to nonblocking mode
-	fd_set_nb(connfd);
-	// creating the struct Conn
-	Conn *conn = (Conn*) malloc(sizeof(Conn));
-	if (!conn) {
-		close(connfd);
-		return -1;
-	}
-	conn->fd = connfd;
-	conn->state = STATE_REQ;
-	conn->rbuf_size = 0;
-	conn->wbuf_size = 0;
-	conn->wbuf_sent = 0;
-	conn->idle_start = get_monotonic_usec();
-	dlist_insert_before(&g_data.idle_list, &conn->idle_list);
-	conns_set(g_data.fd2conn, conn);
-	return connfd;
+    fd_set_nb(connfd);
+    Conn *conn = (Conn*)malloc(sizeof(Conn));
+    if (!conn) {
+        close(connfd);  // Close the connection fd
+        return -1;
+    }
+    
+    conn->fd = connfd;
+    conn->state = STATE_REQ;
+    conn->rbuf_size = 0;
+    conn->wbuf_size = 0;
+    conn->wbuf_sent = 0;
+    conn->idle_start = get_monotonic_usec();
+    dlist_insert_before(&g_data.idle_list, &conn->idle_list);
+    
+    conns_set(g_data.fd2conn, conn);
+    
+    return connfd;
 }
 
 static void conn_done(Conn *conn) {
-	conns_del(g_data.fd2conn, conn->fd);
-	(void) close(conn->fd);
-	dlist_detach(&conn->idle_list);
-	free(conn);
+    epoll_ctl(g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);  // Remove from epoll
+    conns_del(g_data.fd2conn, conn->fd);
+    close(conn->fd);
+    dlist_detach(&conn->idle_list);
+    free(conn);
 }
 
 static void state_req(Cache* cache, Conn *conn);
@@ -116,6 +118,8 @@ static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, Str
 	}
 
 	char **cmd = malloc(n * sizeof(char*));
+	if (!cmd)
+		die("Out of memory cmd");
 	size_t cmd_size = 0;
 
 	size_t pos = 4;
@@ -131,6 +135,8 @@ static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, Str
 			goto CLEANUP;
 		}
 		cmd[cmd_size] = (char*) (calloc(sz + 1, sizeof(char)));
+		if (!cmd[cmd_size])
+			die("Out of memory");
 		memcpy(cmd[cmd_size], &req[pos + 4], sz);
 		cmd_size++;
 		pos += 4 + sz;
@@ -171,7 +177,7 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 	}
 
 	String *out = str_init(NULL);
-	int32_t err = do_request(cache, &conn->rbuf[4], len, out);
+	int32_t err = do_request(cache, &conn->rbuf[*start_index + 4], len, out);
 	if (err) {
 		msg("bad req");
 		conn->state = STATE_END;
@@ -180,7 +186,7 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 	}
 	size_t wlen = str_size(out);
 
-	if ((conn->wbuf_size + wlen) > K_MAX_MSG) {
+	if ((conn->wbuf_size + wlen + 4) > K_MAX_MSG) {
 		// cannot append to the write buffer the current message (too long), need to write!
 		conn->state = STATE_RES;
 		state_res(conn);
@@ -384,6 +390,7 @@ int main(void) {
 		die("epoll_create1");
 	}
 
+	g_data.epfd = epfd;
 	event.events = EPOLLIN | EPOLLET;
 	event.data.fd = fd;
 	if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1) {
@@ -401,27 +408,28 @@ int main(void) {
 		for (int i = 0; i < enfd_count; ++i) {
 			if (events[i].data.fd == fd) {
 				int conn_fd = accept_new_conn(fd);
-				if (conn_fd > -1) {
-					struct epoll_event ev;
-					ev.data.fd = conn_fd;
-					ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-					epoll_ctl(epfd, EPOLL_CTL_ADD, ev.data.fd, &ev);
-				}
-			} else if (events[i].events & EPOLLIN) {
+				if (conn_fd == -1)
+					continue;
+				struct epoll_event ev;
+				ev.data.fd = conn_fd;
+				ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+				epoll_ctl(epfd, EPOLL_CTL_ADD, ev.data.fd, &ev);
+			} else {
 				Conn *conn = conns_get(g_data.fd2conn, events[i].data.fd);
-				connection_io(cache, conn);
-				if (conn->state == STATE_END) {
-					// client closed normally, or something bad happened.
-					// destroy this connection
-					conn_done(conn);
+				if (!conn) continue;  // Already cleaned up
+				
+				if (events[i].events & (EPOLLHUP | EPOLLERR)) {
+				    conn_done(conn);
+				    continue;  // Don't process further
 				}
-			}
-			if (events[i].events & (EPOLLHUP | EPOLLHUP | EPOLLERR)) {
-				Conn *conn = conns_get(g_data.fd2conn, events[i].data.fd);
-				if (conn) {
+				
+				if (events[i].events & (EPOLLIN | EPOLLOUT)) {
+				    connection_io(cache, conn);
+				    if (conn->state == STATE_END) {
 					conn_done(conn);
+				    }
 				}
-			}
+			    }
 		}
 		process_timers(cache);
 	}

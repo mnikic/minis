@@ -282,6 +282,8 @@ static void do_set(Cache *cache, char **cmd, String *out) {
 		strcpy(ent->val, cmd[2]);
 	} else {
 		Entry *ent = malloc(sizeof(Entry));
+		if (!ent)
+			die("Out of memory in do_set");
 		ent->key = calloc(strlen(cmd[1]) + 1, sizeof(char));
 		strcpy(ent->key, cmd[1]);
 		ent->node.hcode = key.node.hcode;

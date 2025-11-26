@@ -207,6 +207,8 @@ int main(int argc, char **argv) {
 
     size_t size = 0;
     char** cmds = malloc(sizeof(char*) * (size_t) argc);
+    if (!cmds)
+        die("Out of memory cmds");
     for (int i = 1; i < argc; ++i) 
         cmds[size++] = argv[i];
     int32_t err = send_req(fd, cmds, size);

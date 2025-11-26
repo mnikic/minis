@@ -11,14 +11,15 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include "connections.h"
+#include "common.h"
 
 
 static void grow(Conns *this, size_t new_capacity) {
     if (new_capacity <= (2 * (this->capacity))) {
         new_capacity = 2 * this->capacity;
     }
-    this->conns_all = realloc(this->conns_all,
-            sizeof(Conn) * (new_capacity / 32) + 1);
+    //this->conns_all = realloc(this->conns_all,
+     //       sizeof(Conn) * (new_capacity / 32) + 1);
     this->conns_all = realloc(this->conns_all, sizeof(Conn) * new_capacity);
     this->conns_by_fd = realloc(this->conns_by_fd,
             sizeof(Value*) * new_capacity);
@@ -67,6 +68,8 @@ void conns_set(Conns *this, Conn *connection) {
         this->conns_all[old_value->ind_in_all] = *connection;
     } else {
         Value *value = (Value*) malloc(sizeof(Value));
+        if (!value)
+            die ("Out of memory conns_set");
         value->value = connection;
         value->ind_in_all =(uint32_t) this->size;
 
@@ -111,9 +114,8 @@ void conns_free(Conns *this) {
         return;
     }
     for (size_t i = 0; i < this->capacity; i++) {
-        free((this->conns_all));
+        free(this->conns_all + i);
     }
-    free(this->conns_all);
     free(this->conns_by_fd);
 }
 
