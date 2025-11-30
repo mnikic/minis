@@ -11,28 +11,31 @@
 
 
 static void *worker(void *arg) {
-    TheadPool *tp = (TheadPool *)arg;
+    ThreadPool *tp = (ThreadPool *)arg;
     while (1) {
         pthread_mutex_lock(&tp->mu);
         // wait for the condition: a non-empty queue
-        while (dq_empty(&tp->queue)) {
+        while (dq_empty(tp->queue)) {
             pthread_cond_wait(&tp->not_empty, &tp->mu);
         }
 
         // got the job
-        Work* w = (Work*)dq_peek_front(&tp->queue);
-        dq_pop_front(&tp->queue);
+        Work* w = (Work*)dq_peek_front(tp->queue);
+        dq_pop_front(tp->queue);
         pthread_mutex_unlock(&tp->mu);
 
         // do the work
         w->f(w->arg);
+        // clean up!
+        free(w);
     }
     return NULL;
 }
 
-void thread_pool_init(TheadPool *tp, size_t num_threads) {
+void thread_pool_init(ThreadPool *tp, size_t num_threads) {
     assert(num_threads > 0);
 
+    tp->queue = dq_init();
     int rv = pthread_mutex_init(&tp->mu, NULL);
     assert(rv == 0);
     rv = pthread_cond_init(&tp->not_empty, NULL);
@@ -48,13 +51,13 @@ void thread_pool_init(TheadPool *tp, size_t num_threads) {
     }
 }
 
-void thread_pool_queue(TheadPool *tp, void (*f)(void *), void *arg) {
-    Work w;
-    w.f = f;
-    w.arg = arg;
+void thread_pool_queue(ThreadPool *tp, void (*f)(void *), void *arg) {
+    Work *w = malloc(sizeof(Work));
+    w->f = f;
+    w->arg = arg;
 
     pthread_mutex_lock(&tp->mu);
-    dq_push_back(&tp->queue, &w);
+    dq_push_back(tp->queue, w);
     pthread_cond_signal(&tp->not_empty);
     pthread_mutex_unlock(&tp->mu);
 }

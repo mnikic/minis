@@ -6,7 +6,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
-#include "strings.h"
+#include "buffer.h"
 #include "heap.h"
 #include "cache.h"
 #include "zset.h"
@@ -69,7 +69,7 @@ static void h_scan(HTab *tab, void (*f)(HNode*, void*), void *arg) {
 }
 
 static void cb_scan(HNode *node, void *arg) {
-	String *out = (String*) arg;
+	Buffer *out = (Buffer *) arg;
 	out_str(out, container_of(node, Entry, node)->key);
 }
 
@@ -85,53 +85,57 @@ static int str2int(const char *s, int64_t *out) {
 	return endp == s + strlen(s);
 }
 
-// zadd zset score name
-static void do_zadd(Cache *cache, char **cmd, String *out) {
-	double score = 0;
-	if (!str2dbl(cmd[2], &score)) {
-		out_err(out, ERR_ARG, "expect fp number");
-		return;
-	}
+static void do_zadd(Cache *cache, char **cmd, Buffer *out) {
+    double score = 0;
+    if (!str2dbl(cmd[2], &score)) {
+        out_err(out, ERR_ARG, "expect fp number");
+        return;
+    }
 
-	Entry key;
-	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
-	HNode *hnode = hm_lookup(&cache->db, &key.node, &entry_eq);
+    Entry key;
+    key.key = cmd[1];
+    key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
+    HNode *hnode = hm_lookup(&cache->db, &key.node, &entry_eq);
 
-	Entry *ent = NULL;
-	if (!hnode) {
-		ent = malloc(sizeof(Entry));
-		memset(ent, 0, sizeof(Entry));
-		if (!ent) {
-			abort();
-		}
-		ent->key = calloc(strlen(key.key) + 1, sizeof(char));
-		if (!ent->key) {
-			abort();
-		}
-		strcpy(ent->key, key.key);
-		ent->node.hcode = key.node.hcode;
-		ent->type = T_ZSET;
-		ent->zset = malloc(sizeof(ZSet));
-		if (!ent->zset)
-			die("Couldnt allocate zset");
-		memset(ent->zset, 0, sizeof(ZSet));
-		ent->heap_idx = (size_t) -1;
-		hm_insert(&cache->db, &ent->node);
-	} else {
-		ent = container_of(hnode, Entry, node);
-		if (ent->type != T_ZSET) {
-			out_err(out, ERR_TYPE, "expect zset");
-		}
-	}
+    Entry *ent = NULL;
+    if (!hnode) {
+        ent = malloc(sizeof(Entry));
+        if (!ent) die("Out of memory");
+        memset(ent, 0, sizeof(Entry));
+        
+        ent->key = calloc(strlen(key.key) + 1, sizeof(char));
+        if (!ent->key) {
+            free(ent);
+            die("Out of memory");
+        }
+        strcpy(ent->key, key.key);
+        
+        ent->zset = malloc(sizeof(ZSet));
+        if (!ent->zset) {
+            free(ent->key);
+            free(ent);
+            die("Couldn't allocate zset");
+        }
+        memset(ent->zset, 0, sizeof(ZSet));
+        
+        ent->node.hcode = key.node.hcode;
+        ent->type = T_ZSET;
+        ent->heap_idx = (size_t) -1;
+        hm_insert(&cache->db, &ent->node);
+    } else {
+        ent = container_of(hnode, Entry, node);
+        if (ent->type != T_ZSET) {
+            out_err(out, ERR_TYPE, "expect zset");
+            return;  
+        }
+    }
 
-// add or update the tuple
-	const char *name = cmd[3];
-	int added = zset_add(ent->zset, name, strlen(name), score);
-	out_int(out, (int64_t) added);
+    const char *name = cmd[3];
+    int added = zset_add(ent->zset, name, strlen(name), score);
+    out_int(out, (int64_t) added);
 }
 
-static int expect_zset(Cache *cache, String *out, char *s, Entry **ent) {
+static int expect_zset(Cache *cache, Buffer *out, char *s, Entry **ent) {
 	Entry key;
 	key.key = s;
 	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
@@ -150,7 +154,7 @@ static int expect_zset(Cache *cache, String *out, char *s, Entry **ent) {
 }
 
 // zrem zset name
-static void do_zrem(Cache *cache, char **cmd, String *out) {
+static void do_zrem(Cache *cache, char **cmd, Buffer *out) {
 	Entry *ent = NULL;
 	if (!expect_zset(cache, out, cmd[1], &ent)) {
 		return;
@@ -164,7 +168,7 @@ static void do_zrem(Cache *cache, char **cmd, String *out) {
 }
 
 // zscore zset name
-static void do_zscore(Cache *cache, char **cmd, String *out) {
+static void do_zscore(Cache *cache, char **cmd, Buffer *out) {
 	Entry *ent = NULL;
 	if (!expect_zset(cache, out, cmd[1], &ent)) {
 		return;
@@ -179,7 +183,7 @@ static void do_zscore(Cache *cache, char **cmd, String *out) {
 }
 
 // zquery zset score name offset limit
-static void do_zquery(Cache *cache, char **cmd, String *out) {
+static void do_zquery(Cache *cache, char **cmd, Buffer *out) {
 // parse args
 	double score = 0;
 	if (!str2dbl(cmd[2], &score)) {
@@ -200,8 +204,8 @@ static void do_zquery(Cache *cache, char **cmd, String *out) {
 // get the zset
 	Entry *ent = NULL;
 	if (!expect_zset(cache, out, cmd[1], &ent)) {
-		if (str_char_at(out, 0) == SER_NIL) {
-			str_clear(out);
+		if (buf_len(out) > 0 && buf_data(out)[0] == SER_NIL) {
+			buf_clear(out);
 			out_arr(out, (uint32_t) 0);
 		}
 		return;
@@ -216,7 +220,7 @@ static void do_zquery(Cache *cache, char **cmd, String *out) {
 	znode = znode_offset(znode, offset);
 
 	// output
-	size_t idx = out_bgn_arr(out);
+	size_t idx = out_arr_begin(out);
 	uint32_t n = 0;
 	while (znode && (int64_t) n < limit) {
 		out_str_size(out, znode->name, znode->len);
@@ -224,7 +228,7 @@ static void do_zquery(Cache *cache, char **cmd, String *out) {
 		znode = znode_offset(znode, +1);
 		n += 2;
 	}
-	out_end_arr(out,idx, n);
+	out_arr_end(out, idx, n);
 }
 
 // set or remove the TTL
@@ -247,14 +251,14 @@ static void entry_set_ttl(Cache *cache, Entry *ent, int64_t ttl_ms) {
 	}
 }
 
-static void do_keys(Cache *cache, char **cmd, String *out) {
+static void do_keys(Cache *cache, char **cmd, Buffer *out) {
 	(void) cmd;
 	out_arr(out, (uint32_t) hm_size(&cache->db));
 	h_scan(&cache->db.ht1, &cb_scan, out);
 	h_scan(&cache->db.ht2, &cb_scan, out);
 }
 
-static void do_del(Cache *cache, char **cmd, String *out) {
+static void do_del(Cache *cache, char **cmd, Buffer *out) {
 	Entry key;
 	key.key = cmd[1];
 	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
@@ -270,30 +274,49 @@ static void do_del(Cache *cache, char **cmd, String *out) {
 	out_int(out, node ? 1 : 0);
 }
 
-static void do_set(Cache *cache, char **cmd, String *out) {
-	Entry key;
-	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
+static void do_set(Cache *cache, char **cmd, Buffer *out) {
+    Entry key;
+    key.key = cmd[1];
+    key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 
-	HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
-	if (node) {
-		Entry *ent = container_of(node, Entry, node);
-		ent->val = calloc(strlen(cmd[2]) + 1, sizeof(char));
-		strcpy(ent->val, cmd[2]);
-	} else {
-		Entry *ent = malloc(sizeof(Entry));
-		if (!ent)
-			die("Out of memory in do_set");
-		ent->key = calloc(strlen(cmd[1]) + 1, sizeof(char));
-		strcpy(ent->key, cmd[1]);
-		ent->node.hcode = key.node.hcode;
-		ent->val = calloc(strlen(cmd[2]) + 1, sizeof(char));
-		strcpy(ent->val, cmd[2]);
-		ent->heap_idx = (size_t) -1;
-		ent->type = T_STR;
-		hm_insert(&cache->db, &ent->node);
-	}
-	out_nil(out);
+    HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
+    if (node) {
+        Entry *ent = container_of(node, Entry, node);
+        if (ent->type != T_STR) {
+            out_err(out, ERR_TYPE, "key exists with different type");
+	    return;
+        }
+        if (ent->val) {
+            free(ent->val);
+        }
+        ent->val = calloc(strlen(cmd[2]) + 1, sizeof(char));
+        if (!ent->val) die("Out of memory"); 
+        strcpy(ent->val, cmd[2]);
+    } else {
+        Entry *ent = malloc(sizeof(Entry));
+        if (!ent) die("Out of memory in do_set");
+        
+        ent->key = calloc(strlen(cmd[1]) + 1, sizeof(char));
+        if (!ent->key) {
+            free(ent);
+            die("Out of memory");
+        }
+        strcpy(ent->key, cmd[1]);
+        
+        ent->val = calloc(strlen(cmd[2]) + 1, sizeof(char));
+        if (!ent->val) {
+            free(ent->key);
+            free(ent);
+            die("Out of memory");
+        }
+        strcpy(ent->val, cmd[2]);
+        
+        ent->node.hcode = key.node.hcode;
+        ent->heap_idx = (size_t) -1;
+        ent->type = T_STR;
+        hm_insert(&cache->db, &ent->node);
+    }
+    out_nil(out);
 }
 
 static void entry_del_async(void *arg) {
@@ -318,24 +341,27 @@ static void entry_del(Cache *cache, Entry *ent) {
 	}
 }
 
-static void do_get(Cache *cache, char **cmd, String *out) {
-	Entry key;
-	key.key = cmd[1];
-	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
+static void do_get(Cache *cache, char **cmd, Buffer *out) {
+    Entry key;
+    key.key = cmd[1];
+    key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
 
-	HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
-	if (!node) {
-		out_nil(out);
-		return;
-	}
+    HNode *node = hm_lookup(&cache->db, &key.node, &entry_eq);
+    if (!node) {
+        out_nil(out);
+        return;
+    }
 
-	char *val = container_of(node, Entry, node)->val;
-	int val_size = sizeof val - 1;
-	assert(val_size <= K_MAX_MSG);
-	out_str(out, val);
+    Entry *ent = container_of(node, Entry, node);
+    if (ent->type != T_STR || !ent->val) {
+        out_nil(out);
+        return;
+    }
+    
+    out_str(out, ent->val);
 }
 
-static void do_expire(Cache *cache, char **cmd, String *out) {
+static void do_expire(Cache *cache, char **cmd, Buffer *out) {
 	int64_t ttl_ms = 0;
 	if (!str2int(cmd[2], &ttl_ms)) {
 		out_err(out, ERR_ARG, "expect int64");
@@ -354,7 +380,7 @@ static void do_expire(Cache *cache, char **cmd, String *out) {
 	out_int(out, node ? 1 : 0);
 }
 
-static void do_ttl(Cache *cache, char **cmd, String *out) {
+static void do_ttl(Cache *cache, char **cmd, Buffer *out) {
 	Entry key;
 	key.key = cmd[1];
 	key.node.hcode = str_hash((uint8_t*) key.key, strlen(key.key));
@@ -376,7 +402,7 @@ static void do_ttl(Cache *cache, char **cmd, String *out) {
 	out_int(out, (int64_t) (expire_at > now_us ? (expire_at - now_us) / 1000 : 0));
 }
 
-void cache_execute(Cache *cache, char **cmd, size_t size, String *out) {
+void cache_execute(Cache *cache, char **cmd, size_t size, Buffer *out) {
 	if (size == 1 && cmd_is(cmd[0], "keys")) {
 		do_keys(cache, cmd, out);
 	} else if (size == 2 && cmd_is(cmd[0], "get")) {
@@ -408,6 +434,7 @@ int hnode_same(HNode *lhs, HNode *rhs) {
 
 Cache* cache_init(void) {
 	Cache* cache = (Cache*) malloc(sizeof(Cache));
+	if (!cache) die("Out of memory in cache_init");
 	memset(cache, 0, sizeof(Cache));
 	hm_init(&cache->db);
 	thread_pool_init(&cache->tp, 4);

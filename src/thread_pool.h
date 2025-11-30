@@ -21,12 +21,12 @@ typedef struct work {
 
 typedef  struct thead_pool {
     pthread_t* threads;
-    t_deque queue;
+    t_deque* queue;
     pthread_mutex_t mu;
     pthread_cond_t not_empty;
-} TheadPool;
+} ThreadPool;
 
-void thread_pool_init(TheadPool *tp, size_t num_threads);
-void thread_pool_queue(TheadPool *tp, void (*f)(void *), void *arg);
+void thread_pool_init(ThreadPool *tp, size_t num_threads);
+void thread_pool_queue(ThreadPool *tp, void (*f)(void *), void *arg);
 
 #endif /* THREAD_POOL_H_ */

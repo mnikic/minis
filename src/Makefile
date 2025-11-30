@@ -18,7 +18,7 @@ ifeq ($(CC),gcc)
 	CFLAGS += -Wjump-misses-init -Wlogical-op
 endif
 
-SERVER_SRC = server.c connections.c list.c out.c hashtable.c zset.c strings.c \
+SERVER_SRC = server.c connections.c list.c out.c hashtable.c zset.c buffer.c \
              common.c avl.c heap.c thread_pool.c deque.c cache.c
 SERVER_OBJ = $(SERVER_SRC:.c=.o)
 

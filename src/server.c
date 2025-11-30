@@ -22,7 +22,7 @@
 #include <sys/epoll.h>
 #include "cache.h"
 #include "connections.h"
-#include "strings.h"
+#include "buffer.h"
 #include "common.h"
 #include "out.h"
 
@@ -38,7 +38,7 @@ enum {
 
 static struct {
 	// a map of all client connections, keyed by fd
-	Conns *fd2conn;
+	ConnPool *fd2conn;
 	// timers for idle connections
 	DList idle_list;
 	int epfd;
@@ -85,14 +85,14 @@ static int32_t accept_new_conn(int fd) {
     conn->idle_start = get_monotonic_usec();
     dlist_insert_before(&g_data.idle_list, &conn->idle_list);
     
-    conns_set(g_data.fd2conn, conn);
+    connpool_add(g_data.fd2conn, conn);
     
     return connfd;
 }
 
 static void conn_done(Conn *conn) {
     epoll_ctl(g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);  // Remove from epoll
-    conns_del(g_data.fd2conn, conn->fd);
+    connpool_remove(g_data.fd2conn, conn->fd);
     close(conn->fd);
     dlist_detach(&conn->idle_list);
     free(conn);
@@ -101,7 +101,7 @@ static void conn_done(Conn *conn) {
 static void state_req(Cache* cache, Conn *conn);
 static void state_res(Conn *conn);
 
-static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, String *out) {
+static int32_t do_request(Cache* cache, const uint8_t *req, uint32_t reqlen, Buffer *out) {
 	int return_value = 0;
 
 	if (reqlen < 4) {
@@ -176,15 +176,15 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 		return false;
 	}
 
-	String *out = str_init(NULL);
+	Buffer *out = buf_new();
 	int32_t err = do_request(cache, &conn->rbuf[*start_index + 4], len, out);
 	if (err) {
 		msg("bad req");
 		conn->state = STATE_END;
-		str_free(out);
+		buf_free(out);
 		return false;
 	}
-	size_t wlen = str_size(out);
+	size_t wlen = buf_len(out);
 
 	if ((conn->wbuf_size + wlen + 4) > K_MAX_MSG) {
 		// cannot append to the write buffer the current message (too long), need to write!
@@ -194,7 +194,7 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 
 	// generating echoing response
 	memcpy(&conn->wbuf[conn->wbuf_size], &wlen, 4);
-	memcpy(&conn->wbuf[conn->wbuf_size + 4], str_data(out), wlen);
+	memcpy(&conn->wbuf[conn->wbuf_size + 4], buf_data(out), wlen);
 	conn->wbuf_size += 4 + wlen;
 	*start_index += 4 + len;
 
@@ -203,7 +203,7 @@ static int32_t try_one_request(Cache* cache, Conn *conn, uint32_t *start_index) 
 		conn->state = STATE_RES;
 		state_res(conn);
 	}
-	str_free(out);
+	buf_free(out);
 	return (conn->state == STATE_REQ);
 }
 
@@ -379,8 +379,8 @@ int main(void) {
 	}
 	printf("The server is listening on port %i.\n", PORT);
 
-	// a hash table of all client connections, keyed by fd
-	g_data.fd2conn = conns_new(10);
+	// a sparse set of all client connections, keyed by fd
+	g_data.fd2conn = connpool_new(10);
 
 	// set the listen fd to nonblocking mode
 	fd_set_nb(fd);
@@ -415,7 +415,7 @@ int main(void) {
 				ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
 				epoll_ctl(epfd, EPOLL_CTL_ADD, ev.data.fd, &ev);
 			} else {
-				Conn *conn = conns_get(g_data.fd2conn, events[i].data.fd);
+				Conn *conn = connpool_lookup(g_data.fd2conn, events[i].data.fd);
 				if (!conn) continue;  // Already cleaned up
 				
 				if (events[i].events & (EPOLLHUP | EPOLLERR)) {

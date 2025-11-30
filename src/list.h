@@ -23,5 +23,4 @@ void dlist_detach(DList *node);
 
 void dlist_insert_before(DList *target, DList *rookie);
 
-
 #endif /* LIST_H_ */

@@ -4,125 +4,186 @@
  *  Created on: Jun 12, 2023
  *      Author: loshmi
  */
-
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include "connections.h"
 #include "common.h"
 
-
-static void grow(Conns *this, size_t new_capacity) {
-    if (new_capacity <= (2 * (this->capacity))) {
-        new_capacity = 2 * this->capacity;
+static void connpool_grow(ConnPool *pool, size_t new_capacity) {
+    if (new_capacity <= pool->capacity * 2) {
+        new_capacity = pool->capacity * 2;
     }
-    //this->conns_all = realloc(this->conns_all,
-     //       sizeof(Conn) * (new_capacity / 32) + 1);
-    this->conns_all = realloc(this->conns_all, sizeof(Conn) * new_capacity);
-    this->conns_by_fd = realloc(this->conns_by_fd,
-            sizeof(Value*) * new_capacity);
-    this->capacity = new_capacity;
+    
+    // Grow active connections array
+    Conn **new_active = realloc(pool->active, sizeof(Conn*) * new_capacity);
+    if (!new_active) {
+        die("Out of memory growing active connections");
+    }
+    pool->active = new_active;
+    
+    // Grow fd lookup table
+    PoolEntry **new_by_fd = realloc(pool->by_fd, sizeof(PoolEntry*) * new_capacity);
+    if (!new_by_fd) {
+        die("Out of memory growing fd table");
+    }
+    pool->by_fd = new_by_fd;
+    
+    // Initialize new slots
+    for (size_t i = pool->capacity; i < new_capacity; i++) {
+        pool->by_fd[i] = NULL;
+    }
+    
+    // Grow bitmap
+    size_t old_words = (pool->capacity / 32) + 1;
+    size_t new_words = (new_capacity / 32) + 1;
+    uint32_t *new_bitmap = realloc(pool->fd_bitmap, sizeof(uint32_t) * new_words);
+    if (!new_bitmap) {
+        die("Out of memory growing fd bitmap");
+    }
+    pool->fd_bitmap = new_bitmap;
+    
+    // Zero new bitmap words
+    for (size_t i = old_words; i < new_words; i++) {
+        pool->fd_bitmap[i] = 0;
+    }
+    
+    pool->capacity = new_capacity;
 }
 
-Conns* conns_new(uint32_t capacity) {
-    Conns *this = malloc(sizeof(Conns));
-    if (!this) {
+ConnPool* connpool_new(uint32_t capacity) {
+    ConnPool *pool = malloc(sizeof(ConnPool));
+    if (!pool) {
         return NULL;
     }
-    this->capacity = capacity;
-    this->presence = (uint32_t*) calloc((capacity / 32) + 1, sizeof(uint32_t));
-    if (!this->presence) {
-        free(this);
+    
+    pool->capacity = capacity;
+    pool->active_count = 0;
+    
+    pool->fd_bitmap = calloc((capacity / 32) + 1, sizeof(uint32_t));
+    if (!pool->fd_bitmap) {
+        free(pool);
         return NULL;
     }
-    this->conns_all = (Conn*) calloc(capacity, sizeof(Conn));
-    if (!this->conns_all) {
-        free(this->presence);
-        free(this);
+    
+    pool->active = calloc(capacity, sizeof(Conn*));
+    if (!pool->active) {
+        free(pool->fd_bitmap);
+        free(pool);
         return NULL;
     }
-    this->conns_by_fd = (Value**) calloc(capacity, sizeof(Value*));
-    if (!this->conns_by_fd) {
-        free(this->presence);
-        free(this->conns_all);
-        free(this);
+    
+    pool->by_fd = calloc(capacity, sizeof(PoolEntry*));
+    if (!pool->by_fd) {
+        free(pool->fd_bitmap);
+        free(pool->active);
+        free(pool);
         return NULL;
     }
-    this->size = 0;
-    return this;
+    
+    return pool;
 }
 
-void conns_set(Conns *this, Conn *connection) {
-    if (!this || !connection) {
+void connpool_add(ConnPool *pool, Conn *connection) {
+    if (!pool || !connection) {
         return;
     }
     assert(connection->fd >= 0);
-    if ((size_t) connection->fd >= this->capacity) {
-        grow(this, (size_t) connection->fd);
+    
+    if ((size_t)connection->fd >= pool->capacity) {
+        connpool_grow(pool, (size_t)connection->fd + 1);
     }
-    if (this->presence[connection->fd / 32] & 1 << connection->fd) {
-        Value *old_value = this->conns_by_fd[connection->fd];
-        old_value->value = connection;
-        this->conns_all[old_value->ind_in_all] = *connection;
+    
+    uint32_t word_idx = (uint32_t)connection->fd / 32;
+    uint32_t bit_idx = (uint32_t)connection->fd % 32;
+    
+    if (pool->fd_bitmap[word_idx] & (1U << bit_idx)) {
+        // Already exists, update it
+        PoolEntry *entry = pool->by_fd[connection->fd];
+        entry->conn = connection;
+        pool->active[entry->index_in_active] = connection;
     } else {
-        Value *value = (Value*) malloc(sizeof(Value));
-        if (!value)
-            die ("Out of memory conns_set");
-        value->value = connection;
-        value->ind_in_all =(uint32_t) this->size;
-
-        this->conns_by_fd[connection->fd] = value;
-        this->conns_all[this->size] = *connection;
-        (this->size)++;
-        this->presence[connection->fd / 32] |= 1 << connection->fd;
+        // New connection
+        PoolEntry *entry = malloc(sizeof(PoolEntry));
+        if (!entry) {
+            die("Out of memory adding connection");
+        }
+        entry->conn = connection;
+        entry->index_in_active = (uint32_t)pool->active_count;
+        
+        pool->by_fd[connection->fd] = entry;
+        pool->active[pool->active_count] = connection;
+        pool->active_count++;
+        pool->fd_bitmap[word_idx] |= (1U << bit_idx);
     }
 }
 
-void conns_del(Conns *this, int key) {
-    assert(key >= 0);
-    if (!this
-            || !((size_t) key <= ((this->capacity / 32 + 1) * 32)
-                    && (this->presence[key / 32] & 1 << key))) {
+void connpool_remove(ConnPool *pool, int fd) {
+    if (!pool || fd < 0 || (size_t)fd >= pool->capacity) {
         return;
     }
-
-    Value *old_value = this->conns_by_fd[key];
-    if ((size_t) key != this->size - 1) {
-        this->conns_all[old_value->ind_in_all] =
-                this->conns_all[this->size - 1];
-        this->conns_by_fd[this->conns_all[this->size - 1].fd]->ind_in_all =
-                old_value->ind_in_all;
+    
+    uint32_t word_idx = (uint32_t)fd / 32;
+    uint32_t bit_idx = (uint32_t)fd % 32;
+    
+    if (!(pool->fd_bitmap[word_idx] & (1U << bit_idx))) {
+        return;
     }
-    (this->size)--;
-    this->presence[key / 32] &= (uint32_t) ~(1 << key);
-
-    free(old_value);
-    this->conns_by_fd[key] = NULL;
+    
+    PoolEntry *entry = pool->by_fd[fd];
+    
+    // Swap with last active connection if not already last
+    if (entry->index_in_active != pool->active_count - 1) {
+        pool->active[entry->index_in_active] = pool->active[pool->active_count - 1];
+        pool->by_fd[pool->active[pool->active_count - 1]->fd]->index_in_active = 
+            entry->index_in_active;
+    }
+    
+    pool->active_count--;
+    pool->fd_bitmap[word_idx] &= ~(1U << bit_idx);
+    
+    free(entry);
+    pool->by_fd[fd] = NULL;
 }
 
-Conn* conns_get(Conns *this, int key) {
-    if (!this || !(this->presence[key / 32] & 1 << key)) {
+Conn* connpool_lookup(ConnPool *pool, int fd) {
+    if (!pool || fd < 0 || (size_t)fd >= pool->capacity) {
         return NULL;
     }
-    return this->conns_by_fd[key]->value;
+    
+    uint32_t word_idx = (uint32_t)fd / 32;
+    uint32_t bit_idx = (uint32_t)fd % 32;
+    
+    if (!(pool->fd_bitmap[word_idx] & (1U << bit_idx))) {
+        return NULL;
+    }
+    
+    return pool->by_fd[fd]->conn;
 }
 
-void conns_free(Conns *this) {
-    if (!this || this->capacity == 0) {
+void connpool_free(ConnPool *pool) {
+    if (!pool) {
         return;
     }
-    for (size_t i = 0; i < this->capacity; i++) {
-        free(this->conns_all + i);
+    
+    // Free all pool entries
+    for (size_t i = 0; i < pool->capacity; i++) {
+        if (pool->by_fd[i]) {
+            free(pool->by_fd[i]);
+        }
     }
-    free(this->conns_by_fd);
+    
+    free(pool->active);
+    free(pool->by_fd);
+    free(pool->fd_bitmap);
+    free(pool);
 }
 
-void conns_iter(Conns *this, Conn *array[], size_t *size) {
-    if (!this) {
+void connpool_iter(ConnPool *pool, Conn ***connections, size_t *count) {
+    if (!pool) {
         return;
     }
-    *size = this->size;
-    *array = this->conns_all;
+    *count = pool->active_count;
+    *connections = pool->active;
 }

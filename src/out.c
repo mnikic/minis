@@ -4,75 +4,96 @@
  *  Created on: Jun 15, 2023
  *      Author: loshmi
  */
+// out.c
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "out.h"
-#include "strings.h"
+#include "buffer.h"
 
-static uint32_t size(const char *string) {
-	if (string) {
-		return (uint32_t) strlen(string);
-	}
-	return 0;
+void out_nil(Buffer *out) {
+    buf_append_byte(out, SER_NIL);
 }
 
-void out_nil(String *out) {
-	str_appendC(out, SER_NIL);
+void out_str(Buffer *out, const char *val) {
+    if (!val) {
+        out_nil(out);
+        return;
+    }
+    
+    buf_append_byte(out, SER_STR);
+    uint32_t len = (uint32_t)strlen(val);
+    buf_append_u32_le(out, len);
+    buf_append_cstr(out, val);
 }
 
-void out_str(String *out, const char *val) {
-	str_appendC(out, SER_STR);
-	uint32_t len = size(val);
-	str_append_uint32(out, len);
-	str_appendCs(out, val);
+void out_str_size(Buffer *out, const char *s, size_t size) {
+    if (!s || size == 0) {
+        out_nil(out);
+        return;
+    }
+    
+    if (size > UINT32_MAX) {
+        // String too large for protocol
+        out_err(out, ERR_UNKNOWN, "String too large");
+        return;
+    }
+    
+    buf_append_byte(out, SER_STR);
+    uint32_t len = (uint32_t)size;
+    buf_append_u32_le(out, len);
+    buf_append_bytes(out, s, len);
 }
 
-void out_str_size(String *out, const char *s, size_t size) {
-	str_appendC(out, SER_STR);
-	uint32_t len = (uint32_t)size;
-	str_append_uint32(out, len);
-	str_appendCs_size(out, s, len);
+void out_int(Buffer *out, int64_t val) {
+    buf_append_byte(out, SER_INT);
+    buf_append_i64_le(out, val);
 }
 
-void out_int(String *out, int64_t val) {
-	str_appendC(out, SER_INT);
-	str_append_int64_t(out, val);
+void out_dbl(Buffer *out, double val) {
+    buf_append_byte(out, SER_DBL);
+    buf_append_double_le(out, val);
 }
 
-void out_dbl(String *out, double val) {
-	str_appendC(out, SER_DBL);
-	str_append_double(out, val);
+void out_err(Buffer *out, int32_t code, const char *msg) {
+    if (!msg) {
+        msg = "";
+    }
+    
+    buf_append_byte(out, SER_ERR);
+    uint32_t len = (uint32_t)strlen(msg);
+    buf_append_u32_le(out, (uint32_t)code);
+    buf_append_u32_le(out, len);
+    buf_append_cstr(out, msg);
 }
 
-void out_err(String *out, int32_t code, const char *msg) {
-	str_appendC(out, SER_ERR);
-	uint32_t len = size(msg);
-	str_append_uint32(out, (uint32_t) code);
-	str_append_uint32(out, len);
-	str_appendCs(out, msg);
+void out_arr(Buffer *out, uint32_t n) {
+    buf_append_byte(out, SER_ARR);
+    buf_append_u32_le(out, n);
 }
 
-void out_arr(String *out, uint32_t n) {
-	str_appendC(out, SER_ARR);
-	str_append_uint32(out, n);
+size_t out_arr_begin(Buffer *out) {
+    buf_append_byte(out, SER_ARR);
+    size_t pos = buf_len(out);
+    buf_append_u32_le(out, 0);  // Placeholder for count
+    return pos;
 }
 
-size_t out_bgn_arr(String *out) {
-	str_appendC(out, SER_ARR);
-	// append 4 0 chars for size that will later be updated
-	// and return the pointer to the beggining of them.
-	size_t start_pos = out->i;
-	str_append_uint32(out, (uint32_t) 0);
-	return start_pos;    // the `ctx` arg
-}
-
-void out_end_arr(String *out, size_t pos, uint32_t n) {
-	assert(out->data[pos - 1] == SER_ARR);
-	memcpy(&out->data[pos], &n, 4);
-}
-
-void out_update_arr(String *out, uint32_t n) {
-	str_append_uint32(out, n);
+bool out_arr_end(Buffer *out, size_t pos, uint32_t n) {
+    // Validate that pos points to an array type tag
+    if (pos == 0 || pos > buf_len(out)) {
+        return false;  // Invalid position
+    }
+    
+    const uint8_t *data = buf_data(out);
+    if (data[pos - 1] != SER_ARR) {
+        return false;  // Not an array at this position
+    }
+    
+    // Patch in the actual count
+    // Note: This directly modifies the buffer - needs const_cast
+    uint8_t *writable = (uint8_t *)data;
+    memcpy(&writable[pos], &n, sizeof(uint32_t));
+    return true;
 }
