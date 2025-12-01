@@ -13,9 +13,18 @@
 #include "zset.h"
 #include "common.h"
 
+// Initialize a zset
+void zset_init(ZSet *zset) {
+	if (!zset) return;
+	zset->tree = NULL;
+	hm_init(&zset->hmap);
+}
+
 static ZNode* znode_new(const char *name, size_t len, double score) {
-	ZNode *node = (ZNode*) malloc(sizeof(ZNode) + len);
-	assert(node);   // not a good idea in real projects
+	ZNode *node = malloc(sizeof(ZNode) + len);
+	if (!node) {
+		return NULL;
+	}
 	memset(node, 0, sizeof(ZNode) + len);
 	avl_init(&node->tree);
 	node->hmap.next = NULL;
@@ -26,8 +35,8 @@ static ZNode* znode_new(const char *name, size_t len, double score) {
 	return node;
 }
 
-static uint32_t min(size_t lhs, size_t rhs) {
-	return (uint32_t) (lhs < rhs ? lhs : rhs);
+static size_t min(size_t lhs, size_t rhs) {
+	return lhs < rhs ? lhs : rhs;
 }
 
 // compare by the (score, name) tuple
@@ -80,16 +89,24 @@ static void zset_update(ZSet *zset, ZNode *node, double score) {
 }
 
 // add a new (score, name) tuple, or update the score of the existing tuple
+// Returns: 1 = added new, 0 = updated existing, -1 = error
 int zset_add(ZSet *zset, const char *name, size_t len, double score) {
+	if (!zset || !name || len == 0) {
+		return -1;
+	}
+
 	ZNode *node = zset_lookup(zset, name, len);
 	if (node) {
 		zset_update(zset, node, score);
-		return false;
+		return 0;  // updated
 	} else {
 		node = znode_new(name, len, score);
+		if (!node) {
+			return -1;  // allocation failed
+		}
 		hm_insert(&zset->hmap, &node->hmap);
 		tree_add(zset, node);
-		return true;
+		return 1;  // added new
 	}
 }
 
@@ -114,7 +131,7 @@ static int hcmp(HNode *node, HNode *key) {
 
 // lookup by name
 ZNode* zset_lookup(ZSet *zset, const char *name, size_t len) {
-	if (!zset->tree) {
+	if (!zset || !name || !zset->tree) {
 		return NULL;
 	}
 
@@ -132,7 +149,7 @@ ZNode* zset_lookup(ZSet *zset, const char *name, size_t len) {
 
 // deletion by name
 ZNode* zset_pop(ZSet *zset, const char *name, size_t len) {
-	if (!zset->tree) {
+	if (!zset || !name || !zset->tree) {
 		return NULL;
 	}
 
@@ -152,23 +169,27 @@ ZNode* zset_pop(ZSet *zset, const char *name, size_t len) {
 
 // find the (score, name) tuple that is greater or equal to the argument.
 ZNode *zset_query(ZSet *zset, double score, const char *name, size_t len) {
-    AVLNode *found = NULL;
-    AVLNode *cur = zset->tree;
-    while (cur) {
-        if (zless1(cur, score, name, len)) {
-            cur = cur->right;
-        } else {
-            found = cur;    // candidate
-            cur = cur->left;
-        }
-    }
-    return found ? container_of(found, ZNode, tree) : NULL;
+	if (!zset || !name) {
+		return NULL;
+	}
+
+	AVLNode *found = NULL;
+	AVLNode *cur = zset->tree;
+	while (cur) {
+		if (zless1(cur, score, name, len)) {
+			cur = cur->right;
+		} else {
+			found = cur;    // candidate
+			cur = cur->left;
+		}
+	}
+	return found ? container_of(found, ZNode, tree) : NULL;
 }
 
 // offset into the succeeding or preceding node.
 ZNode *znode_offset(ZNode *node, int64_t offset) {
-    AVLNode *tnode = node ? avl_offset(&node->tree, offset) : NULL;
-    return tnode ? container_of(tnode, ZNode, tree) : NULL;
+	AVLNode *tnode = node ? avl_offset(&node->tree, offset) : NULL;
+	return tnode ? container_of(tnode, ZNode, tree) : NULL;
 }
 
 void znode_del(ZNode *node) {
@@ -186,6 +207,9 @@ static void tree_dispose(AVLNode *node) {
 
 // destroy the zset
 void zset_dispose(ZSet *zset) {
+	if (!zset) {
+		return;
+	}
 	tree_dispose(zset->tree);
 	hm_destroy(&zset->hmap);
 }

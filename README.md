@@ -9,18 +9,17 @@ I have also swapped out the usage of syscall POLL for EPOLL for networking. That
 I have also included a very crude make file that leaves a lot to be desired.
 
 Usage:
-1) cd src
-2) make
+1) make
 
-then start the server with:
+This will create a build folder and place all *.o files (build/obj) and executable files (in build/bin) there. Then start the server with:
 
-3) ./server
+2) ./build/bin/server
 
 Open another shell and start issuing commands with the client such as:
 
-./client set k 12
+./build/bin/client set k 12
 
-./client get k
+./build/bin/client get k
 
 etc.
 

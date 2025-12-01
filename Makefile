@@ -18,28 +18,47 @@ ifeq ($(CC),gcc)
 	CFLAGS += -Wjump-misses-init -Wlogical-op
 endif
 
+# --- Project structure ---
+SRC_DIR := src
+OBJ_DIR := build/obj
+BIN_DIR := build/bin
+
+# --- Sources ---
 SERVER_SRC = server.c connections.c list.c out.c hashtable.c zset.c buffer.c \
              common.c avl.c heap.c thread_pool.c deque.c cache.c
-SERVER_OBJ = $(SERVER_SRC:.c=.o)
 
 CLIENT_SRC = client.c common.c
-CLIENT_OBJ = $(CLIENT_SRC:.c=.o)
 
-#analyze:
-#	$(CC) $(CFLAGS) -fanalyzer $(SERVER_SRC) $(CLIENT_SRC) -c
+SERVER_OBJ = $(addprefix $(OBJ_DIR)/,$(SERVER_SRC:.c=.o))
+CLIENT_OBJ = $(addprefix $(OBJ_DIR)/,$(CLIENT_SRC:.c=.o))
 
-all: server client
+# --- Final binaries ---
+SERVER_BIN = $(BIN_DIR)/server
+CLIENT_BIN = $(BIN_DIR)/client
 
-server: $(SERVER_OBJ)
+all: $(SERVER_BIN) $(CLIENT_BIN)
+
+analyze:
+	mkdir -p build/analyze
+	cd build/analyze && \
+	$(CC) $(CFLAGS) -fanalyzer $(addprefix ../../$(SRC_DIR)/,$(SERVER_SRC) $(CLIENT_SRC)) -c
+
+
+# --- Build binaries ---
+$(SERVER_BIN): $(SERVER_OBJ)
+	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-client: $(CLIENT_OBJ)
+$(CLIENT_BIN): $(CLIENT_OBJ)
+	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-%.o: %.c
+# --- Compile C → object files ---
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	@mkdir -p $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f *.o server client
+	rm -rf build
 
-.PHONY: all clean #analyze
+.PHONY: all clean analyze

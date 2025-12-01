@@ -53,6 +53,7 @@ void thread_pool_init(ThreadPool *tp, size_t num_threads) {
 
 void thread_pool_queue(ThreadPool *tp, void (*f)(void *), void *arg) {
     Work *w = malloc(sizeof(Work));
+    if (!w) die("Out of memory at thread_pool_queue.");
     w->f = f;
     w->arg = arg;
 
