@@ -6,67 +6,91 @@
  */
 #include <stddef.h>
 #include <stdint.h>
-#include "heap.h"
-#include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
-
+#include <string.h>
+#include "heap.h"
+#include "common.h"
 
 void heap_init(Heap* heap) {
+	if (!heap) return;
+	
 	heap->size = 0;
 	heap->capacity = 10;
-	heap->items = (HeapItem*) malloc(sizeof(HeapItem) * heap->capacity);
+	heap->items = malloc(sizeof(HeapItem) * heap->capacity);
+	if (!heap->items) die("Failed to allocate memory for heap.");
+	
 }
 
 void heap_free(Heap* heap) {
-	if (heap == NULL) return;
+	if (!heap) return;
 	free(heap->items);
+	heap->items = NULL;
+	heap->size = 0;
+	heap->capacity = 0;
 }
 
 bool heap_empty(Heap* heap) {
-	return heap == NULL || heap->size == 0;
+	return !heap || heap->size == 0;
 }
 
 HeapItem* heap_top(Heap* heap) {
 	return heap_get(heap, 0);
 }
 
-
-// TODO: Do we need to remove anything here?
 HeapItem* heap_remove_idx(Heap* heap, size_t pos) {
-	if (heap == NULL || pos >= heap->size)
+	if (!heap || pos >= heap->size)
 		return NULL;
-	HeapItem* to_remove = &heap->items[heap->size - 1];
-	// erase an item from the heap
-	// by replacing it with the last item in the array.
+	
+	// Copy the item being removed (caller's responsibility to use immediately)
+	static HeapItem removed;
+	removed = heap->items[pos];
+	
+	// Replace with last item and shrink
 	heap->items[pos] = heap->items[heap->size - 1];
+	if (heap->items[pos].ref) {
+		*heap->items[pos].ref = pos;
+	}
 	heap->size--;
+	
 	if (pos < heap->size) {
 		heap_update(heap, pos);
 	}
-	return to_remove;
+	
+	return &removed;
 }
 
-// TODO: Do we need to accept a pointer or would a struct alone suffice.
 void heap_add(Heap* heap, HeapItem* item) {
-	if (heap == NULL) {
-		fprintf(stderr, "Cannot add items to a NULL heap.");
-		abort();
-	}
+	if (!heap) die("Cannot add items to a NULL heap.");
+	
+	if (!item) die("Cannot add NULL item to heap.");
+	
 	if (heap->size + 1 > heap->capacity) {
-		fprintf(stderr, "Current cap is: %lu, current size is: %lu, the requested new size is %lu\n", heap->capacity, heap->size, sizeof(HeapItem)* heap -> capacity * 2);
-		heap->items = realloc(heap->items, sizeof(HeapItem) * heap->capacity * 2);
-		if (heap->items == NULL) {
-			fprintf(stderr, "Couldn't not realocate memory to increase the capacity of the heap.");
+		// Check for overflow
+		if (heap->capacity > SIZE_MAX / 2) {
+			die("Heap capacity overflow.");
 			abort();
 		}
-		heap->capacity *= 2;
+		
+		size_t new_capacity = heap->capacity * 2;
+		HeapItem *new_items = realloc(heap->items, sizeof(HeapItem) * new_capacity);
+		if (!new_items) {
+			die("Could not reallocate memory to increase heap capacity.");
+		}
+		heap->items = new_items;
+		heap->capacity = new_capacity;
 	}
-	heap->items[heap->size++] = *item;
+	
+	heap->items[heap->size] = *item;
+	if (heap->items[heap->size].ref) {
+		*heap->items[heap->size].ref = heap->size;
+	}
+	heap->size++;
 	heap_update(heap, heap->size - 1);
 }
 
 HeapItem* heap_get(Heap* heap, size_t pos) {
-	if (heap == NULL || heap->size <= pos) return NULL;
+	if (!heap || pos >= heap->size) return NULL;
 	return &heap->items[pos];
 }
 
@@ -87,11 +111,15 @@ static void heap_up(Heap *heap, size_t pos) {
 	while (pos > 0 && heap->items[heap_parent(pos)].val > t.val) {
 		// swap with the parent
 		heap->items[pos] = heap->items[heap_parent(pos)];
-		*heap->items[pos].ref = pos;
+		if (heap->items[pos].ref) {
+			*heap->items[pos].ref = pos;
+		}
 		pos = heap_parent(pos);
 	}
 	heap->items[pos] = t;
-	*heap->items[pos].ref = pos;
+	if (heap->items[pos].ref) {
+		*heap->items[pos].ref = pos;
+	}
 }
 
 static void heap_down(Heap* heap, size_t pos) {
@@ -101,7 +129,8 @@ static void heap_down(Heap* heap, size_t pos) {
 		size_t l = heap_left(pos);
 		size_t r = heap_right(pos);
 		size_t min_pos = (size_t) -1;
-		size_t min_val = t.val;
+		uint64_t min_val = t.val;
+		
 		if (l < heap->size && heap->items[l].val < min_val) {
 			min_pos = l;
 			min_val = heap->items[l].val;
@@ -112,20 +141,26 @@ static void heap_down(Heap* heap, size_t pos) {
 		if (min_pos == (size_t) -1) {
 			break;
 		}
+		
 		// swap with the kid
 		heap->items[pos] = heap->items[min_pos];
-		*(heap->items[pos].ref) = pos;
+		if (heap->items[pos].ref) {
+			*heap->items[pos].ref = pos;
+		}
 		pos = min_pos;
 	}
 	heap->items[pos] = t;
-	*heap->items[pos].ref = pos;
+	if (heap->items[pos].ref) {
+		*heap->items[pos].ref = pos;
+	}
 }
 
 void heap_update(Heap* heap, size_t pos) {
+	if (!heap || pos >= heap->size) return;
+	
 	if (pos > 0 && heap->items[heap_parent(pos)].val > heap->items[pos].val) {
 		heap_up(heap, pos);
 	} else {
 		heap_down(heap, pos);
 	}
 }
-
