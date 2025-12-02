@@ -24,7 +24,7 @@ OBJ_DIR := build/obj
 BIN_DIR := build/bin
 
 # --- Sources ---
-SERVER_SRC = server.c connections.c list.c out.c hashtable.c zset.c buffer.c \
+SERVER_SRC = server.c server_loop.c connections.c list.c out.c hashtable.c zset.c buffer.c \
              common.c avl.c heap.c thread_pool.c deque.c cache.c
 
 CLIENT_SRC = client.c common.c

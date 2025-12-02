@@ -23,7 +23,7 @@
 #define SER_DBL 4		 // A double
 #define SER_ARR 5	   // Ar array
 
-#define PORT 1234
+#define DEFAULT_PORT 1234
 
 #define K_MAX_MSG 4096
 #define K_MAX_ARGS 100
@@ -39,5 +39,7 @@ uint64_t str_hash(const uint8_t *data, size_t len);
 void msg(const char *msg); 
 
 __attribute__((noreturn)) void die(const char *msg);
+
+uint16_t parse_port (int argc, char* argv[]);
 
 #endif /* COMMON_H_ */
