@@ -13,6 +13,10 @@ Although the main network processing uses a single-threaded, non-blocking I/O ev
 
 Because the application is fundamentally multi-threaded, running TSan is crucial to guarantee that all data structures shared between the main event loop and the background worker threads are correctly synchronized and free of data races.
 
+Network Byte Order
+
+Bytes are passed between the client and the server in Network Byte Order (big endian). This required some fiddling with custom conversions (hton_u32, hton_u64). I did not implement a conversion for the double type because the IEEE 754 standard does not mandate a single network byte order for floating-point numbers. Transmitting double as raw bytes introduces a portability issue in cases where the client and server have different float endianness, though it is often accepted for simplicity.
+
 Usage:
 
 make
