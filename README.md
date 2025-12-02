@@ -1,80 +1,100 @@
-minis
+**Minis: Tiny Redis Clone in C**
 
-Tiny redis clone in C
+This project was initially inspired by the concepts in the build-your-own.org/redis/ guide.
 
-This project was initially inspired by the concepts in the https://build-your-own.org/redis/ guide. However, it has evolved significatly into an implementation written entirely in pure C, diverging significantly through key architectural changes: swapping the networking foundation from poll to epoll for better non-blocking performance, implementing manual network byte order handling, and developing custom testing and build systems with full ASan/TSan/UBSan support.
+However, it has evolved significantly into a highly customized, production-ready implementation written entirely in pure C, diverging through key architectural changes:
 
-Design Notes: Why TSan?
+Swapping the networking foundation from poll to epoll for better non-blocking performance.
 
-Although the main network processing uses a single-threaded, non-blocking I/O event loop (EPOLL), the server uses a dedicated thread pool (thread_pool.c) to offload operations that might otherwise block the main thread, such as expiry of large objects or other  heavy computation.
+Implementing manual network byte order handling for protocol serialization.
 
-Because the application is fundamentally multi-threaded, running TSan is crucial to guarantee that all data structures shared between the main event loop and the background worker threads are correctly synchronized and free of data races.
+Building custom data structures (like the AVL tree for sorted sets).
 
-Network Byte Order
+Developing custom testing and build systems with full ASan/TSan/UBSan support.
 
-Bytes are passed between the client and the server in Network Byte Order (big endian). This required some fiddling with custom conversions (hton_u32, hton_u64). I did not implement a conversion for the double type because the IEEE 754 standard does not mandate a single network byte order for floating-point numbers. Transmitting double as raw bytes introduces a portability issue in cases where the client and server have different float endianness, though it is often accepted for simplicity.
+**Design Notes: Why TSan?**
 
-Usage:
+Although the main network processing uses a single-threaded, non-blocking I/O event loop (EPOLL), the server uses a dedicated thread pool (thread_pool.c) to offload operations that might otherwise block the main thread, such as expiry of large objects or other heavy computation.
 
+Because the application is fundamentally multi-threaded, running TSan (Thread Sanitizer) is crucial to guarantee that all data structures shared between the main event loop and the background worker threads are correctly synchronized and free of data races.
+
+**Network Byte Order**
+
+Bytes are passed between the client and the server in Network Byte Order (big endian). This required some fiddling with custom conversions (hton_u32, hton_u64).
+
+I did not implement a conversion for the double type because the IEEE 754 standard does not mandate a single network byte order for floating-point numbers. Transmitting double as raw bytes introduces a portability issue in cases where the client and server have different float endianness, though it is often accepted for simplicity.
+
+**Usage**
+
+1. Build and Run the Standard Server
+
+Build:
+
+```
 make
+```
 
-This will create a build folder and place all *.o files (build/obj) and executable files (in build/bin) there. Then start the server with:
+This creates a build folder containing all compiled objects (build/obj) and executables (build/bin).
 
+Start the Server:
+
+```
 ./build/bin/server
+```
 
-Open another shell and start issuing commands with the client such as:
 
+Use the Client (in a separate shell):
+
+```
 ./build/bin/client set k 12
-
 ./build/bin/client get k
+# etc.
+```
 
-etc.
 
-or (optionally)
 
-run the suite of tests with
-python src/test_cmds_extra.py
+2. Run Tests
 
-or 
+To run the full suite of integration tests (server must be running on the default port):
+
+```
 make test
+# or
+python src/test_cmds_extra.py
+```
 
-(server needs to be running on the default port for this work!!!)
 
-They should all be passing. if not either submit a PR or open an issue.
+All tests should be passing. If not, please submit a PR or open an issue!
 
-one can repeat it all but with
+3. Build with Sanitizers (Debugging)
 
-Build with: make asan
+You can repeat the process with various sanitizers to check for deeper issues. Note: Before switching between sanitizer builds and the regular build, it is important to run make clean!
 
-Start the server with: build/bin/server_asan
+Address Sanitizer (ASan)
 
-Run tests with: make test-asan
+Build: ```make asan```
 
-Tests should still pass, server should not crash, everything should still work (otherwise we have memory issues)
+Start Server: ```./build/bin/server_asan```
 
-or alternatively
+Run Tests: ```make test-asan```
 
-make ubsan
+Undefined Behavior Sanitizer (UBSan)
 
-build/bin/server_ubsan
+Build: ```make ubsan```
 
-make test-ubsan
+Start Server: ```./build/bin/server_ubsan```
 
-Same story, everything should just work.
+Run Tests:```make test-ubsan```
 
-or
+Thread Sanitizer (TSan)
 
-make tsan
+Build: ```make tsan```
 
-build/bin/server_tsan
+Start Server: ```./build/bin/server_tsan```
 
-Run tests with: make test-tsan
+Run Tests: ```make test-tsan```
 
-Again all should be squeeky clean.
+If any of the sanitizer builds reveal issues (crashes, errors, or data races), please open an issue!
 
-Note: before switching from asan/ubsan/tsan or regular build it is important to run make clean!
-
-If not send a PR or open and issue :).
-
-Thanks
+Thanks,
 M.
