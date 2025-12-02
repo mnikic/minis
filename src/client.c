@@ -209,8 +209,14 @@ int main(int argc, char **argv) {
     char** cmds = malloc(sizeof(char*) * (size_t) argc);
     if (!cmds)
         die("Out of memory cmds");
-    for (int i = 1; i < argc; ++i) 
+    for (int i = 1; i < argc; ++i) {
+        // Skip the -p flag and the argument that follows it (the port number)
+        if (strcmp(argv[i], "-p") == 0) {
+            i++; 
+            continue;
+        }
         cmds[size++] = argv[i];
+    }
     int32_t err = send_req(fd, cmds, size);
     if (err) {
         goto L_DONE;
