@@ -65,7 +65,7 @@ static void fd_set_nb(int fd) {
 }
 
 static int32_t accept_new_conn(int fd) {
-    struct sockaddr_in client_addr = {};
+    struct sockaddr_in client_addr = {0};
     socklen_t socklen = sizeof(client_addr);
     int connfd = accept(fd, (struct sockaddr*)&client_addr, &socklen);
     if (connfd < 0) {
@@ -355,7 +355,7 @@ static uint32_t next_timer_ms(Cache* cache) {
 
 int server_run(uint16_t port) {
     struct epoll_event event, events[MAX_EVENTS];
-    struct sockaddr_in addr = { };
+    struct sockaddr_in addr = {0};
     int epfd, fd, rv, val = 1;
 
     dlist_init(&g_data.idle_list);

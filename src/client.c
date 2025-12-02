@@ -196,7 +196,7 @@ int main(int argc, char **argv) {
         die("socket()");
     }
 
-    struct sockaddr_in addr = {};
+    struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_port = ntohs(parse_port(argc, argv));
     addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK);  // 127.0.0.1

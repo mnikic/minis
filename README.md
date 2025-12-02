@@ -1,4 +1,5 @@
-# minis
+iminis
+
 Tiny redis clone in C
 
 This is my attempt to play around with plain C and recreate a tiny slice of redis.
@@ -6,14 +7,19 @@ It mostly from the https://build-your-own.org/redis/, except that is all written
 and i instead wrote everything in pure C, this required changes and writing some utilities that are otherwise readily available in C++.
 I have also swapped out the usage of syscall POLL for EPOLL for networking. That required some changes as well.
 
-I have also included a very crude make file that leaves a lot to be desired.
+Design Notes: Why TSan?
+
+Although the main network processing uses a single-threaded, non-blocking I/O event loop (EPOLL), the server uses a dedicated thread pool (thread_pool.c) to offload operations that might otherwise block the main thread, such as disk persistence or heavy computation.
+
+Because the application is fundamentally multi-threaded, running TSan is crucial to guarantee that all data structures shared between the main event loop and the background worker threads are correctly synchronized and free of data races.
 
 Usage:
-1) make
+
+make
 
 This will create a build folder and place all *.o files (build/obj) and executable files (in build/bin) there. Then start the server with:
 
-2) ./build/bin/server
+./build/bin/server
 
 Open another shell and start issuing commands with the client such as:
 
@@ -25,9 +31,47 @@ etc.
 
 or (optionally)
 
-3) run the suite of tests with
+run the suite of tests with
 python src/test_cmds_extra.py
 
-They should all be passing. if not either submit a PR or open an issue.
-Thanks
+or 
+make test
 
+(server needs to be running on the default port for this work!!!)
+
+They should all be passing. if not either submit a PR or open an issue.
+
+one can repeat it all but with
+
+Build with: make asan
+
+Start the server with: build/bin/server_asan
+
+Run tests with: make test-asan
+
+Tests should still pass, server should not crash, everything should still work (otherwise we have memory issues)
+
+or alternatively
+
+make ubsan
+
+build/bin/server_ubsan
+
+make test-ubsan
+
+Same story, everything should just work.
+
+or
+
+make tsan
+
+build/bin/server_tsan
+
+Run tests with: make test-tsan
+
+Again all should be squeeky clean.
+
+If not send a PR or open and issue :).
+
+Thanks
+M.

@@ -4,7 +4,6 @@
  *  Created on: Jun 19, 2023
  *      Author: loshmi
  */
-
 #ifndef COMMON_H_
 #define COMMON_H_
 
@@ -27,10 +26,9 @@
 
 #define K_MAX_MSG 4096
 #define K_MAX_ARGS 100
-
-#define container_of(ptr, type, member) ({\
-	const typeof( ((type *)0)->member ) *__mptr = (ptr);\
-	(type *)( (char *)__mptr - offsetof(type,member) );})
+#define container_of(ptr, type, member) __extension__ ({\
+    const __typeof__( ((type *)0)->member ) *__mptr = (ptr);\
+    (type *)( (char *)__mptr - offsetof(type,member) );})
 
 uint64_t get_monotonic_usec(void); 
 
