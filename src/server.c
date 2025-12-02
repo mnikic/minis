@@ -9,7 +9,9 @@
 #include "server_loop.h"
 #include "common.h"
 
-int main(int argc, char *argv[]) {
-    // Start the server with the parsed or default port
-    return server_run(parse_port(argc, argv));
+int
+main (int argc, char *argv[])
+{
+  // Start the server with the parsed or default port
+  return server_run (parse_port (argc, argv));
 }

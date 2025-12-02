@@ -16,11 +16,11 @@
 #define ERR_ARG 4
 
 #define SER_NIL 0
-#define SER_ERR 1    // An error code and message
-#define SER_STR 2    // A string
-#define SER_INT 3    // A int64
-#define SER_DBL 4		 // A double
-#define SER_ARR 5	   // Ar array
+#define SER_ERR 1		// An error code and message
+#define SER_STR 2		// A string
+#define SER_INT 3		// A int64
+#define SER_DBL 4		// A double
+#define SER_ARR 5		// An array
 
 #define DEFAULT_PORT 1234
 
@@ -30,14 +30,17 @@
     const __typeof__( ((type *)0)->member ) *__mptr = (ptr);\
     (type *)( (char *)__mptr - offsetof(type,member) );})
 
-uint64_t get_monotonic_usec(void); 
+uint64_t get_monotonic_usec (void);
 
-uint64_t str_hash(const uint8_t *data, size_t len);
+uint64_t str_hash (const uint8_t * data, size_t len);
 
-void msg(const char *msg); 
+void msg (const char *msg);
 
-__attribute__((noreturn)) void die(const char *msg);
+__attribute__((noreturn))
+     void
+     die (const char *msg);
 
-uint16_t parse_port (int argc, char* argv[]);
+uint16_t
+parse_port (int argc, char *argv[]);
 
 #endif /* COMMON_H_ */
