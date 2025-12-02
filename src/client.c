@@ -49,31 +49,46 @@ const size_t k_max_msg = 4096;
 static int32_t
 send_req (int fd, char **cmd, size_t cmd_size)
 {
-  uint32_t len = 4;
+  // Calculate total length (4 bytes for array size + 4 bytes for each command length)
+  uint32_t total_len = 4;
   for (size_t i = 0; i < cmd_size; i++)
     {
-      len += (uint32_t) strlen (cmd[i]) + 4;
+      total_len += (uint32_t) strlen (cmd[i]) + 4;
     }
 
-  if (len > k_max_msg)
+  if (total_len > k_max_msg)
     {
       return -1;
     }
 
+  // Allocate buffer for header (4 bytes total length) + payload
   char wbuf[4 + k_max_msg];
-  memcpy (&wbuf[0], &len, 4);	// assume little endian
-  memcpy (&wbuf[4], &cmd_size, 4);
+
+  // 1. Serialize Total Length (uint32_t)
+  uint32_t net_total_len = htonl (total_len);
+  memcpy (&wbuf[0], &net_total_len, 4);
+
+  // 2. Serialize Array Size (uint32_t)
+  uint32_t net_cmd_size = htonl ((uint32_t) cmd_size);
+  memcpy (&wbuf[4], &net_cmd_size, 4);
+
   size_t cur = 8;
   for (size_t i = 0; i < cmd_size; i++)
     {
       char *s = cmd[i];
       size_t cmd_len = strlen (s);
       uint32_t p = (uint32_t) cmd_len;
-      memcpy (&wbuf[cur], &p, 4);
+
+      // 3. Serialize Command String Length (uint32_t)
+      uint32_t net_p = htonl (p);
+      memcpy (&wbuf[cur], &net_p, 4);
+
+      // 4. Copy Command String (Raw bytes, no swap needed)
       memcpy (&wbuf[cur + 4], s, cmd_len);
       cur += 4 + cmd_len;
     }
-  return write_all (fd, wbuf, 4 + len);
+  // The total size to write is the 4-byte header + the calculated payload length.
+  return write_all (fd, wbuf, 4 + total_len);
 }
 
 static int32_t
@@ -84,11 +99,16 @@ on_response (const uint8_t *data, size_t size)
       msg ("bad response");
       return -1;
     }
+
+  uint32_t len_net = 0;
+  uint32_t len_host = 0;
+
   switch (data[0])
     {
     case SER_NIL:
       printf ("(nil)\n");
       return 1;
+
     case SER_ERR:
       if (size < 1 + 8)
 	{
@@ -97,17 +117,26 @@ on_response (const uint8_t *data, size_t size)
 	}
       {
 	int32_t code = 0;
-	uint32_t len = 0;
-	memcpy (&code, &data[1], 4);
-	memcpy (&len, &data[1 + 4], 4);
-	if (size < 1 + 8 + len)
+	// Code is 4 bytes, Length is 4 bytes. Both are uint32_t network order.
+
+	// Deserialize Code (uint32_t)
+	uint32_t code_net = 0;
+	memcpy (&code_net, &data[1], 4);
+	code = (int32_t) ntohl (code_net);
+
+	// Deserialize Length (uint32_t)
+	memcpy (&len_net, &data[1 + 4], 4);
+	len_host = ntohl (len_net);
+
+	if (size < 1 + 8 + len_host)
 	  {
 	    msg ("bad response");
 	    return -1;
 	  }
-	printf ("(err) %d %.*s\n", code, len, &data[1 + 8]);
-	return (int32_t) (1 + 8 + len);
+	printf ("(err) %d %.*s\n", code, len_host, &data[1 + 8]);
+	return (int32_t) (1 + 8 + len_host);
       }
+
     case SER_STR:
       if (size < 1 + 4)
 	{
@@ -115,16 +144,19 @@ on_response (const uint8_t *data, size_t size)
 	  return -1;
 	}
       {
-	uint32_t len = 0;
-	memcpy (&len, &data[1], 4);
-	if (size < 1 + 4 + len)
+	// Deserialize Length (uint32_t)
+	memcpy (&len_net, &data[1], 4);
+	len_host = ntohl (len_net);
+
+	if (size < 1 + 4 + len_host)
 	  {
 	    msg ("bad response");
 	    return -1;
 	  }
-	printf ("(str) %.*s\n", len, &data[1 + 4]);
-	return (int32_t) (1 + 4 + len);
+	printf ("(str) %.*s\n", len_host, &data[1 + 4]);
+	return (int32_t) (1 + 4 + len_host);
       }
+
     case SER_INT:
       if (size < 1 + 8)
 	{
@@ -132,12 +164,19 @@ on_response (const uint8_t *data, size_t size)
 	  return -1;
 	}
       {
-	int64_t val = 0;
-	memcpy (&val, &data[1], 8);
+	// Deserialize 64-bit Integer
+	uint64_t val_net = 0;
+	memcpy (&val_net, &data[1], 8);
+	int64_t val = (int64_t) ntohll (val_net);
+
 	printf ("(int) %ld\n", val);
 	return 1 + 8;
       }
+
     case SER_DBL:
+      // NOTE: Network conversion for doubles is non-standard.
+      // Floating point standards (IEEE 754) often rely on raw byte order.
+      // For simplicity and common practice double is treate as raw bytes, but this is a *potential* portability issue. 
       if (size < 1 + 8)
 	{
 	  msg ("bad response");
@@ -149,6 +188,7 @@ on_response (const uint8_t *data, size_t size)
 	printf ("(dbl) %g\n", val);
 	return 1 + 8;
       }
+
     case SER_ARR:
       if (size < 1 + 4)
 	{
@@ -156,11 +196,13 @@ on_response (const uint8_t *data, size_t size)
 	  return -1;
 	}
       {
-	uint32_t len = 0;
-	memcpy (&len, &data[1], 4);
-	printf ("(arr) len=%u\n", len);
+	// Deserialize Array Length (uint32_t)
+	memcpy (&len_net, &data[1], 4);
+	len_host = ntohl (len_net);
+
+	printf ("(arr) len=%u\n", len_host);
 	size_t arr_bytes = 1 + 4;
-	for (uint32_t i = 0; i < len; ++i)
+	for (uint32_t i = 0; i < len_host; ++i)
 	  {
 	    int32_t rv = on_response (&data[arr_bytes], size - arr_bytes);
 	    if (rv < 0)
@@ -172,6 +214,7 @@ on_response (const uint8_t *data, size_t size)
 	printf ("(arr) end\n");
 	return (int32_t) arr_bytes;
       }
+
     default:
       msg ("bad response");
       return -1;
@@ -198,16 +241,21 @@ read_res (int fd)
       return err;
     }
 
-  uint32_t len = 0;
-  memcpy (&len, rbuf, 4);	// assume little endian
-  if (len > k_max_msg)
+  uint32_t len_net = 0;
+  uint32_t len_host = 0;
+
+  // Deserialize Total Length (uint32_t)
+  memcpy (&len_net, rbuf, 4);
+  len_host = ntohl (len_net);
+
+  if (len_host > k_max_msg)
     {
       msg ("too long");
       return -1;
     }
 
   // reply body
-  err = read_full (fd, &rbuf[4], len);
+  err = read_full (fd, &rbuf[4], len_host);
   if (err)
     {
       msg ("read() error");
@@ -215,8 +263,8 @@ read_res (int fd)
     }
 
   // print the result
-  int32_t rv = on_response ((uint8_t *) & rbuf[4], len);
-  if (rv > 0 && (uint32_t) rv != len)
+  int32_t rv = on_response ((uint8_t *) & rbuf[4], len_host);
+  if (rv > 0 && (uint32_t) rv != len_host)
     {
       msg ("bad response");
       rv = -1;

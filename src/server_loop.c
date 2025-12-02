@@ -128,6 +128,8 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
     }
   uint32_t n = 0;
   memcpy (&n, &req[0], 4);
+  n = ntohl (n);
+
   if (n > K_MAX_ARGS)
     {
       out_err (out, ERR_UNKNOWN, "Unknown cmd");
@@ -153,6 +155,8 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 	}
       uint32_t sz = 0;
       memcpy (&sz, &req[pos], 4);
+      sz = ntohl (sz);
+
       if (pos + 4 + sz > reqlen)
 	{
 	  return_value = -1;	// trailing garbage
@@ -196,6 +200,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
     }
   uint32_t len = 0;
   memcpy (&len, &conn->rbuf[*start_index], 4);
+  len = ntohl (len);
+
   if (len > K_MAX_MSG)
     {
       msg ("too long");
@@ -227,7 +233,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
     }
 
   // generating echoing response
-  memcpy (&conn->wbuf[conn->wbuf_size], &wlen, 4);
+  uint32_t nwlen = htonl ((uint32_t) wlen);
+  memcpy (&conn->wbuf[conn->wbuf_size], &nwlen, 4);
   memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (out), wlen);
   conn->wbuf_size += 4 + wlen;
   *start_index += 4 + len;
@@ -447,8 +454,8 @@ server_run (uint16_t port)
 
   addr.sin_family = AF_INET;
   // Use the passed-in port instead of a hardcoded constant
-  addr.sin_port = ntohs (port);
-  addr.sin_addr.s_addr = ntohl (0);	// wildcard address 0.0.0.0
+  addr.sin_port = htons (port);	// Correct usage of htons on host port
+  addr.sin_addr.s_addr = htonl (0);	// wildcard address 0.0.0.0
   rv = bind (fd, (const struct sockaddr *) &addr, sizeof (addr));
   if (rv)
     {

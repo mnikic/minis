@@ -1,6 +1,7 @@
 // buffer.c
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include "buffer.h"
 #include "common.h"
 
@@ -120,46 +121,53 @@ buf_append_byte (Buffer *buf, uint8_t byte)
 }
 
 void
-buf_append_u32_le (Buffer *buf, uint32_t value)
+buf_append_u32 (Buffer *buf, uint32_t value)
 {
   if (!buf)
     return;
 
   if (!buf_ensure_space (buf, sizeof (uint32_t)))
     {
-      die ("Out of memory in buf_append_u32_le");
+      die ("Out of memory in buf_append_u32");
     }
 
-  memcpy (&buf->data[buf->length], &value, sizeof (uint32_t));
+  // Convert to Network Byte Order before copying
+  uint32_t nval = hton_u32 (value);
+
+  memcpy (&buf->data[buf->length], &nval, sizeof (uint32_t));
   buf->length += sizeof (uint32_t);
 }
 
 void
-buf_append_i64_le (Buffer *buf, int64_t value)
+buf_append_i64 (Buffer *buf, int64_t value)
 {
   if (!buf)
     return;
 
   if (!buf_ensure_space (buf, sizeof (int64_t)))
     {
-      die ("Out of memory in buf_append_i64_le");
+      die ("Out of memory in buf_append_i64");
     }
 
-  memcpy (&buf->data[buf->length], &value, sizeof (int64_t));
+  // Convert to Network Byte Order before copying
+  uint64_t nval = hton_u64 ((uint64_t) value);
+
+  memcpy (&buf->data[buf->length], &nval, sizeof (int64_t));
   buf->length += sizeof (int64_t);
 }
 
 void
-buf_append_double_le (Buffer *buf, double value)
+buf_append_double (Buffer *buf, double value)
 {
   if (!buf)
     return;
 
   if (!buf_ensure_space (buf, sizeof (double)))
     {				// FIXED: correct size
-      die ("Out of memory in buf_append_double_le");
+      die ("Out of memory in buf_append_double");
     }
 
+  // Note: Double is copied as-is (host byte order) for simplicity in this protocol.
   memcpy (&buf->data[buf->length], &value, sizeof (double));
   buf->length += sizeof (double);
 }
