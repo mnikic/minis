@@ -1,5 +1,25 @@
 #!/usr/bin/env python3
 
+import shlex
+import subprocess
+import sys
+import re
+import os
+
+# The relative path to the client executable as defined in the test cases
+CLIENT_EXECUTABLE_REL_PATH = '../build/bin/client'
+
+# --- Path Invariance Setup ---
+# 1. Get the directory of the currently executing script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+# 2. Construct the absolute, invariant path to the client executable
+# os.path.normpath resolves the '..' segments correctly
+client_executable_abs_path = os.path.normpath(
+    os.path.join(script_dir, CLIENT_EXECUTABLE_REL_PATH)
+)
+# ------------------------------
+
+
 CASES = r'''
 # Basic zset operations
 $ ../build/bin/client zscore asdf n1
@@ -203,6 +223,7 @@ $ ../build/bin/client set emptykey ""
 (nil)
 $ ../build/bin/client get emptykey
 (str) 
+
 $ ../build/bin/client del emptykey
 (int) 1
 
@@ -344,10 +365,6 @@ $ ../build/bin/client del delquery
 (int) 1
 '''
 
-import shlex
-import subprocess
-import sys
-import re
 
 # Special validation rules for commands with non-deterministic output
 def validate_output(cmd, expected, actual):
@@ -358,10 +375,11 @@ def validate_output(cmd, expected, actual):
         if match_expected and match_actual:
             expected_val = int(match_expected.group(1))
             actual_val = int(match_actual.group(1))
-            # For positive expected values, actual should be <= expected and > 0
+            # For positive expected values (TTL), actual should be <= expected and > 0
             if expected_val > 0:
+                # Allow a small window for execution time
                 return 0 < actual_val <= expected_val
-            # For -1 (no expiry), expect exact match
+            # For -1 (no expiry) or -2 (non-existent key), expect exact match
             else:
                 return actual_val == expected_val
     
@@ -390,22 +408,31 @@ passed = 0
 failed = 0
 
 for i, (cmd, expect) in enumerate(zip(cmds, outputs)):
+    # Inject the absolute path into the command string
+    invariant_cmd = cmd.replace(CLIENT_EXECUTABLE_REL_PATH, client_executable_abs_path)
+
     try:
-        out = subprocess.check_output(shlex.split(cmd), stderr=subprocess.STDOUT).decode('utf-8')
+        out = subprocess.check_output(shlex.split(invariant_cmd), stderr=subprocess.STDOUT).decode('utf-8')
         if validate_output(cmd, expect, out):
             passed += 1
             print(f"  Test {i+1}/{len(cmds)}: PASSED")
         else:
             failed += 1
             print(f"  Test {i+1}/{len(cmds)}: FAILED")
-            print(f"  Command: {cmd}")
+            print(f"  Command: {invariant_cmd}")
             print(f"  Expected:\n{expect}")
             print(f"  Got:\n{out}")
     except subprocess.CalledProcessError as e:
         failed += 1
         print(f"✗ Test {i+1}/{len(cmds)}: ERROR")
-        print(f"  Command: {cmd}")
+        print(f"  Command: {invariant_cmd}")
         print(f"  Error: {e}")
+    except FileNotFoundError:
+        failed += 1
+        print(f"✗ Test {i+1}/{len(cmds)}: FATAL ERROR")
+        print(f"  Could not find client executable at: {client_executable_abs_path}")
+        print(f"  Please ensure the client is built at the expected relative path: {CLIENT_EXECUTABLE_REL_PATH} (relative to this script).")
+
 
 print(f"\n{'='*60}")
 print(f"Results: {passed} passed, {failed} failed out of {len(cmds)} tests")

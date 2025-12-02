@@ -23,4 +23,11 @@ Open another shell and start issuing commands with the client such as:
 
 etc.
 
+or (optionally)
+
+3) run the suite of tests with
+python src/test_cmds_extra.py
+
+They should all be passing. if not either submit a PR or open an issue.
+Thanks
 

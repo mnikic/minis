@@ -20,8 +20,8 @@
 #define SER_ERR 1    // An error code and message
 #define SER_STR 2    // A string
 #define SER_INT 3    // A int64
-#define SER_DBL 4 	 // A double
-#define SER_ARR 5	 // Ar array
+#define SER_DBL 4		 // A double
+#define SER_ARR 5	   // Ar array
 
 #define PORT 1234
 
