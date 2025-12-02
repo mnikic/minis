@@ -1,15 +1,12 @@
-iminis
+minis
 
 Tiny redis clone in C
 
-This is my attempt to play around with plain C and recreate a tiny slice of redis.
-It mostly from the https://build-your-own.org/redis/, except that is all written in C++ over there
-and i instead wrote everything in pure C, this required changes and writing some utilities that are otherwise readily available in C++.
-I have also swapped out the usage of syscall POLL for EPOLL for networking. That required some changes as well.
+This project was initially inspired by the concepts in the https://build-your-own.org/redis/ guide. However, it has evolved significatly into an implementation written entirely in pure C, diverging significantly through key architectural changes: swapping the networking foundation from poll to epoll for better non-blocking performance, implementing manual network byte order handling, and developing custom testing and build systems with full ASan/TSan/UBSan support.
 
 Design Notes: Why TSan?
 
-Although the main network processing uses a single-threaded, non-blocking I/O event loop (EPOLL), the server uses a dedicated thread pool (thread_pool.c) to offload operations that might otherwise block the main thread, such as disk persistence or heavy computation.
+Although the main network processing uses a single-threaded, non-blocking I/O event loop (EPOLL), the server uses a dedicated thread pool (thread_pool.c) to offload operations that might otherwise block the main thread, such as expiry of large objects or other  heavy computation.
 
 Because the application is fundamentally multi-threaded, running TSan is crucial to guarantee that all data structures shared between the main event loop and the background worker threads are correctly synchronized and free of data races.
 
@@ -74,6 +71,8 @@ build/bin/server_tsan
 Run tests with: make test-tsan
 
 Again all should be squeeky clean.
+
+Note: before switching from asan/ubsan/tsan or regular build it is important to run make clean!
 
 If not send a PR or open and issue :).
 
