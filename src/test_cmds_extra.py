@@ -318,6 +318,21 @@ $ {CLIENT_EXECUTABLE_REL_PATH} pttl noexp
 $ {CLIENT_EXECUTABLE_REL_PATH} del noexp
 (int) 1
 
+# Test pttl and pexpire on key with short expiry
+$ {CLIENT_EXECUTABLE_REL_PATH} set shortxp value
+(nil)
+$ {CLIENT_EXECUTABLE_REL_PATH} get shortxp
+(str) value
+$ {CLIENT_EXECUTABLE_REL_PATH} pttl shortxp
+(int) -1
+$ {CLIENT_EXECUTABLE_REL_PATH} pexpire shortxp 100
+(int) 1
+$ {CLIENT_EXECUTABLE_REL_PATH} get shortxp
+(str) value
+$ sleep 0.15
+$ {CLIENT_EXECUTABLE_REL_PATH} get shortxp
+(nil)
+
 # Test sequential operations
 $ {CLIENT_EXECUTABLE_REL_PATH} set seq1 val1
 (nil)
