@@ -359,17 +359,18 @@ const uint64_t k_idle_timeout_ms = 5 * 1000;
 static void
 process_timers (Cache *cache)
 {
-  // the extra 1000us is for the ms resolution of epoll()
-  uint64_t now_us = get_monotonic_usec () + 1000;
-
+  uint64_t now_us = get_monotonic_usec ();
 
   while (!dlist_empty (&g_data.idle_list))
     {
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
       uint64_t next_us = next->idle_start + k_idle_timeout_ms * 1000;
-      if (next_us >= now_us + 1000)
+
+      // If the next connection's expiry time is strictly in the future, 
+      // we stop checking the list as the rest of the list (being newer) 
+      // will also not be ready.
+      if (next_us > now_us)
 	{
-	  // not ready, the extra 1000us is for the ms resolution of epoll()
 	  break;
 	}
 
