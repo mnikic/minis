@@ -3,7 +3,6 @@
  * Name          : server.c
  * Author        : Milos
  * Description   : Core networking logic (epoll event loop, connection handling).
- * Now callable as a function with configurable port.
  *============================================================================
  */
 
@@ -21,6 +20,7 @@
 #include <time.h>
 #include <netinet/ip.h>
 #include <sys/epoll.h>
+#include <signal.h>		// Required for signal handling
 
 #include "cache.h"
 #include "connections.h"
@@ -48,7 +48,18 @@ static struct
   // timers for idle connections
   DList idle_list;
   int epfd;
+  // FLAG: Set by signal handler to exit the main loop gracefully
+  volatile sig_atomic_t terminate_flag;
 } g_data;
+
+// Signal handler function
+static void
+sigint_handler (int sig)
+{
+  (void) sig;			// Avoid unused parameter warning
+  g_data.terminate_flag = 1;
+  fprintf (stderr, "\nSignal caught. Setting terminate flag...\n");
+}
 
 static void
 fd_set_nb (int fd)
@@ -77,10 +88,16 @@ accept_new_conn (int fd)
   struct sockaddr_in client_addr = { 0 };
   socklen_t socklen = sizeof (client_addr);
   int connfd = accept (fd, (struct sockaddr *) &client_addr, &socklen);
+
   if (connfd < 0)
     {
+      if (errno == EAGAIN)
+	{
+	  // No more connections to accept
+	  return -1;
+	}
       msg ("accept() error");
-      return -1;		// Don't close anything
+      return -2;		// Distinguish between no connection (-1) and critical error (-2)
     }
 
   fd_set_nb (connfd);
@@ -88,7 +105,8 @@ accept_new_conn (int fd)
   if (!conn)
     {
       close (connfd);		// Close the connection fd
-      return -1;
+      die ("Out of memory for connection");
+      return -2;
     }
 
   conn->fd = connfd;
@@ -249,7 +267,7 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   return (conn->state == STATE_REQ);
 }
 
-static int32_t
+static bool
 try_fill_buffer (Cache *cache, Conn *conn)
 {
   // try to fill the buffer
@@ -263,7 +281,6 @@ try_fill_buffer (Cache *cache, Conn *conn)
   while (rv < 0 && errno == EINTR);
   if (rv < 0 && errno == EAGAIN)
     {
-      // got EAGAIN, stop.
       return false;
     }
   if (rv < 0)
@@ -323,7 +340,6 @@ try_flush_buffer (Conn *conn)
   while (rv < 0 && errno == EINTR);
   if (rv < 0 && errno == EAGAIN)
     {
-      // got EAGAIN, stop.
       return false;
     }
   if (rv < 0)
@@ -364,17 +380,19 @@ process_timers (Cache *cache)
   while (!dlist_empty (&g_data.idle_list))
     {
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
+
       uint64_t next_us = next->idle_start + k_idle_timeout_ms * 1000;
 
-      // If the next connection's expiry time is strictly in the future, 
-      // we stop checking the list as the rest of the list (being newer) 
+      // If the next connection's expiry time is strictly in the future,
+      // we stop checking the list as the rest of the list (being newer)
       // will also not be ready.
       if (next_us > now_us)
 	{
 	  break;
 	}
 
-      printf ("removing idle connection: %d\n", next->fd);
+      fprintf (stderr, "removing idle connection: %d\n", next->fd);
+      // conn_done removes 'next' from all structures and frees the memory.
       conn_done (next);
     }
 
@@ -409,6 +427,8 @@ next_timer_ms (Cache *cache)
 {
   uint64_t now_us = get_monotonic_usec ();
   uint64_t next_us = (uint64_t) - 1;
+  uint32_t final_timeout;
+
   // idle timers
   if (!dlist_empty (&g_data.idle_list))
     {
@@ -417,22 +437,28 @@ next_timer_ms (Cache *cache)
     }
 
   uint64_t from_cache = cache_next_expiry (cache);
+
   if (from_cache != (uint64_t) - 1 && from_cache < next_us)
     {
       next_us = from_cache;
     }
 
+
   if (next_us == (uint64_t) - 1)
     {
-      return 10000;		// no timer, the value doesn't matter
+      final_timeout = 10000;	// no timer, the value doesn't matter
+      return final_timeout;
     }
 
   if (next_us <= now_us)
     {
       // missed?
-      return 0;
+      final_timeout = 0;
+      return final_timeout;
     }
-  return (uint32_t) ((next_us - now_us) / 1000);
+
+  final_timeout = (uint32_t) ((next_us - now_us) / 1000);
+  return final_timeout;
 }
 
 int
@@ -440,71 +466,91 @@ server_run (uint16_t port)
 {
   struct epoll_event event, events[MAX_EVENTS];
   struct sockaddr_in addr = { 0 };
-  int epfd, fd, rv, val = 1;
+  int listen_fd, rv, val = 1;
+  g_data.terminate_flag = 0;	// Initialize termination flag
+
+  // Setup signal handler for graceful shutdown
+  struct sigaction sa = { 0 };
+  sa.sa_handler = sigint_handler;
+  sigaction (SIGINT, &sa, NULL);
+  sigaction (SIGTERM, &sa, NULL);
+  sigaction (SIGQUIT, &sa, NULL);
 
   dlist_init (&g_data.idle_list);
   Cache *cache = cache_init ();
-  fd = socket (AF_INET, SOCK_STREAM, 0);
-  if (fd < 0)
+  listen_fd = socket (AF_INET, SOCK_STREAM, 0);
+  if (listen_fd < 0)
     {
       die ("socket()");
       return -1;
     }
 
-  setsockopt (fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
+  setsockopt (listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
 
   addr.sin_family = AF_INET;
   addr.sin_port = htons (port);	// Correct usage of htons on host port
   addr.sin_addr.s_addr = htonl (0);	// wildcard address 0.0.0.0
-  rv = bind (fd, (const struct sockaddr *) &addr, sizeof (addr));
+  rv = bind (listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
   if (rv)
     {
       die ("bind()");
-      close (fd);
+      close (listen_fd);
       return -1;
     }
 
-  // listen
-  rv = listen (fd, SOMAXCONN);
+  rv = listen (listen_fd, SOMAXCONN);
   if (rv)
     {
       die ("listen()");
-      close (fd);
+      close (listen_fd);
       return -1;
     }
-  printf ("The server is listening on port %i.\n", port);
+  fprintf (stderr, "The server is listening on port %i.\n", port);
 
   // a sparse set of all client connections, keyed by fd
   g_data.fd2conn = connpool_new (10);
 
   // set the listen fd to nonblocking mode
-  fd_set_nb (fd);
+  fd_set_nb (listen_fd);
 
-  epfd = epoll_create1 (0);
+  int epfd = epoll_create1 (0);
   if (epfd == -1)
     {
       die ("epoll_create1");
-      close (fd);
+      close (listen_fd);
       return -1;
     }
 
   g_data.epfd = epfd;
+  // Use EPOLLET for high performance, requiring the drain loop below
   event.events = EPOLLIN | EPOLLET;
-  event.data.fd = fd;
-  if (epoll_ctl (epfd, EPOLL_CTL_ADD, fd, &event) == -1)
+  event.data.fd = listen_fd;
+  if (epoll_ctl (epfd, EPOLL_CTL_ADD, listen_fd, &event) == -1)
     {
       die ("epoll ctl: listen_sock!");
-      close (fd);
+      close (listen_fd);
       close (epfd);
       return -1;
     }
-  while (true)
+
+  while (!g_data.terminate_flag)	// Use the flag to control the loop
     {
       int timeout_ms = (int) next_timer_ms (cache);
+
       // epoll for active fds
       int enfd_count = epoll_wait (epfd, events, MAX_EVENTS, timeout_ms);
+
+      if (g_data.terminate_flag)
+	{
+	  break;		// Re-check flag after potential long wait
+	}
+
       if (enfd_count < 0)
 	{
+	  if (errno == EINTR)
+	    {
+	      continue;		// Signal interrupted, but we handled it above
+	    }
 	  die ("epoll_wait");
 	  continue;		// Keep looping unless a fatal error occurs
 	}
@@ -512,42 +558,85 @@ server_run (uint16_t port)
       // process active connections
       for (int i = 0; i < enfd_count; ++i)
 	{
-	  if (events[i].data.fd == fd)
+	  if (events[i].data.fd == listen_fd)
 	    {
-	      int conn_fd = accept_new_conn (fd);
-	      if (conn_fd == -1)
-		continue;
-	      struct epoll_event ev;
-	      ev.data.fd = conn_fd;
-	      ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-	      epoll_ctl (epfd, EPOLL_CTL_ADD, ev.data.fd, &ev);
+	      while (1)
+		{
+		  int conn_fd = accept_new_conn (listen_fd);
+
+		  if (conn_fd < 0)
+		    {
+		      // -1 means EAGAIN/EWOULDBLOCK (no more connections), stop draining
+		      // -2 means critical error (OOM or failed accept)
+		      if (conn_fd == -1)
+			{
+			  break;
+			}
+		      // Critical error: break the drain loop and continue the main loop
+		      break;
+		    }
+
+		  // Successfully accepted, now register with epoll
+		  struct epoll_event ev;
+		  ev.data.fd = conn_fd;
+		  ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+		  if (epoll_ctl (epfd, EPOLL_CTL_ADD, ev.data.fd, &ev) == -1)
+		    {
+		      msg ("epoll ctl: new conn registration failed");
+		      close (conn_fd);	// ensure we don't leak FD if epoll_ctl fails
+		    }
+		}		// end while(1) drain loop
 	    }
 	  else
 	    {
 	      Conn *conn =
 		connpool_lookup (g_data.fd2conn, events[i].data.fd);
 	      if (!conn)
-		continue;	// Already cleaned up
+		{
+		  continue;	// Already cleaned up
+		}
 
 	      if (events[i].events & (EPOLLHUP | EPOLLERR))
 		{
-		  conn_done (conn);
-		  continue;	// Don't process further
+		  // Mark for termination, but allow any pending I/O to run if available
+		  conn->state = STATE_END;
 		}
 
 	      if (events[i].events & (EPOLLIN | EPOLLOUT))
 		{
 		  connection_io (cache, conn);
-		  if (conn->state == STATE_END)
-		    {
-		      conn_done (conn);
-		    }
+		}
+
+	      if (conn->state == STATE_END)
+		{
+		  conn_done (conn);
 		}
 	    }
 	}
       process_timers (cache);
     }
 
-  // Unreachable!
+  // --- GRACEFUL SHUTDOWN AND RESOURCE CLEANUP ---
+  fprintf (stderr,
+	   "\nServer shutting down gracefully. Cleaning up resources...\n");
+  Conn **connections;
+  size_t count;
+  connpool_iter (g_data.fd2conn, &connections, &count);
+
+  for (size_t i = count - 1; i < count; i--)
+    {
+      Conn *conn = connections[i];
+      fprintf (stderr, "Forcing cleanup of active connection: %d\n",
+	       conn->fd);
+      conn_done (conn);
+    }
+
+  connpool_free (g_data.fd2conn);
+  //cache_free(cache);
+
+  close (listen_fd);
+  close (epfd);
+  fprintf (stderr, "Cleanup complete.\n");
+
   return 0;
 }

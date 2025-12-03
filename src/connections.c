@@ -1,8 +1,8 @@
 /*
  * connections.c
  *
- *  Created on: Jun 12, 2023
- *      Author: loshmi
+ * Created on: Jun 12, 2023
+ * Author: loshmi
  */
 #include <assert.h>
 #include <stdint.h>
@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include "connections.h"
 #include "common.h"
+
+// 
 
 static void
 connpool_grow (ConnPool *pool, size_t new_capacity)
@@ -160,19 +162,33 @@ connpool_remove (ConnPool *pool, int fd)
     }
 
   PoolEntry *entry = pool->by_fd[fd];
+  size_t removed_index = entry->index_in_active;
 
-  // Swap with last active connection if not already last
-  if (entry->index_in_active != pool->active_count - 1)
+  // If the connection is not the last in the active list, swap it with the last one.
+  if (removed_index != pool->active_count - 1)
     {
-      pool->active[entry->index_in_active] =
-	pool->active[pool->active_count - 1];
-      pool->by_fd[pool->active[pool->active_count - 1]->fd]->index_in_active =
-	entry->index_in_active;
+      // 1. Get the connection pointer that is currently at the end of the active array.
+      Conn *moved_conn = pool->active[pool->active_count - 1];
+
+      // 2. Move the last connection into the freed slot.
+      pool->active[removed_index] = moved_conn;
+
+      // 3. Update the PoolEntry of the moved connection to reflect its new index.
+      PoolEntry *moved_entry = pool->by_fd[moved_conn->fd];
+      moved_entry->index_in_active = (uint32_t) removed_index;
+    }
+
+  // CRITICAL FIX: Clear the pointer in the vacated slot at the end of the active array.
+  // This ensures the array is clean after the swap/removal.
+  if (pool->active_count > 0)
+    {
+      pool->active[pool->active_count - 1] = NULL;
     }
 
   pool->active_count--;
   pool->fd_bitmap[word_idx] &= ~(1U << bit_idx);
 
+  // Final cleanup of the entry itself
   free (entry);
   pool->by_fd[fd] = NULL;
 }
