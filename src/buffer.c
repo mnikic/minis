@@ -163,7 +163,7 @@ buf_append_double (Buffer *buf, double value)
     return;
 
   if (!buf_ensure_space (buf, sizeof (double)))
-    {				// FIXED: correct size
+    {
       die ("Out of memory in buf_append_double");
     }
 

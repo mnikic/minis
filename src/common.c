@@ -47,9 +47,6 @@ __attribute__((noreturn))
   abort ();
 }
 
-/**
- * @brief Prints usage information.
- */
 static void
 usage (const char *prog_name)
 {
@@ -64,7 +61,6 @@ parse_port (int argc, char *argv[])
 {
   int port = DEFAULT_PORT;
 
-  // Simple argument parsing for the port number
   for (int i = 1; i < argc; ++i)
     {
       if (strcmp (argv[i], "-p") == 0)

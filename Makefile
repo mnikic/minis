@@ -16,7 +16,6 @@ LDFLAGS_BASE=-pthread \
          -Wl,-z,relro,-z,now \
          -Wl,--as-needed -Wl,--no-copy-dt-needed-entries
 
-# Determine the active flags
 CFLAGS = $(CFLAGS_BASE)
 LDFLAGS = $(LDFLAGS_BASE)
 
@@ -26,23 +25,17 @@ endif
 
 # --- Sanitizer Configurations ---
 # Note: Sanitizers are mutually exclusive and require separate builds.
-# Use -O1 for ASan/TSan builds as they are sometimes incompatible with -O2.
 BASE_SANITIZE_FLAGS = -g -O1 -fno-omit-frame-pointer
 
-# Address Sanitizer (ASan)
 CFLAGS_ASAN = $(BASE_SANITIZE_FLAGS) -fsanitize=address
 LDFLAGS_ASAN = -fsanitize=address
 
-# Undefined Behavior Sanitizer (UBSan)
-# Can often use -O2 without issues
 CFLAGS_UBSAN = -g -O2 -fno-omit-frame-pointer -fsanitize=undefined
 LDFLAGS_UBSAN = -fsanitize=undefined
 
-# Thread Sanitizer (TSan) - ESSENTIAL FOR MULTITHREADING
 CFLAGS_TSAN = $(BASE_SANITIZE_FLAGS) -fsanitize=thread
 LDFLAGS_TSAN = -fsanitize=thread
 
-# --- Project structure ---
 SRC_DIR := src
 OBJ_DIR := build/obj
 BIN_DIR := build/bin
@@ -89,11 +82,8 @@ $(CLIENT_BIN): $(CLIENT_OBJ)
 # --- Build binaries (Sanitized) ---
 # ------------------------------------
 
-# Target to build Address Sanitizer binaries
 asan: $(SERVER_ASAN_BIN) $(CLIENT_ASAN_BIN)
 
-# Apply ASan CFLAGS/LDFLAGS for the ASan targets and their prerequisites.
-# This forces the object files to be compiled with the sanitizer flags.
 $(SERVER_ASAN_BIN): CFLAGS := $(CFLAGS_ASAN)
 $(SERVER_ASAN_BIN): LDFLAGS := $(LDFLAGS_ASAN)
 $(SERVER_ASAN_BIN): $(SERVER_OBJ)
@@ -106,10 +96,8 @@ $(CLIENT_ASAN_BIN): $(CLIENT_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-# Target to build Undefined Behavior Sanitizer binaries
 ubsan: $(SERVER_UBSAN_BIN) $(CLIENT_UBSAN_BIN)
 
-# Apply UBSan CFLAGS/LDFLAGS for the UBSan targets and their prerequisites.
 $(SERVER_UBSAN_BIN): CFLAGS := $(CFLAGS_UBSAN)
 $(SERVER_UBSAN_BIN): LDFLAGS := $(LDFLAGS_UBSAN)
 $(SERVER_UBSAN_BIN): $(SERVER_OBJ)
@@ -124,10 +112,8 @@ $(CLIENT_UBSAN_BIN): $(CLIENT_OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@chmod +x $@
 
-# Target to build Thread Sanitizer binaries
 tsan: $(SERVER_TSAN_BIN) $(CLIENT_TSAN_BIN)
 
-# Apply TSan CFLAGS/LDFLAGS for the TSan targets and their prerequisites.
 $(SERVER_TSAN_BIN): CFLAGS := $(CFLAGS_TSAN)
 $(SERVER_TSAN_BIN): LDFLAGS := $(LDFLAGS_TSAN)
 $(SERVER_TSAN_BIN): $(SERVER_OBJ)
@@ -143,13 +129,11 @@ $(CLIENT_TSAN_BIN): $(CLIENT_OBJ)
 	@chmod +x $@
 
 # --- Compile C to object files ---
-# This rule needs to be flexible to use the correct CFLAGS if a sanitizer target is called.
-# We will use target-specific variables here.
-
 # Default rule uses standard CFLAGS
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+	
 # --- Test Targets ---
 TEST_SCRIPT = src/test_cmds_extra.py
 

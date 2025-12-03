@@ -2,7 +2,7 @@
 
 This project was initially inspired by the concepts in the build-your-own.org/redis/ guide.
 
-However, it has evolved significantly into a highly customized, production-ready implementation written entirely in pure C, diverging through key architectural changes:
+However, it has evolved significatly into an implementation written entirely in pure C, diverging significantly through key architectural changes: swapping the networking foundation from poll to epoll for better non-blocking performance, implementing manual network byte order handling, and developing custom testing and build systems with full ASan/TSan/UBSan support.
 
 Swapping the networking foundation from poll to epoll for better non-blocking performance.
 

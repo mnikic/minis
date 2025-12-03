@@ -399,7 +399,7 @@ connection_io (Cache *cache, Conn *conn)
     }
   else
     {
-      assert (0);		// not expected
+      assert (0);
     }
 }
 
@@ -453,7 +453,6 @@ server_run (uint16_t port)
   setsockopt (fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
 
   addr.sin_family = AF_INET;
-  // Use the passed-in port instead of a hardcoded constant
   addr.sin_port = htons (port);	// Correct usage of htons on host port
   addr.sin_addr.s_addr = htonl (0);	// wildcard address 0.0.0.0
   rv = bind (fd, (const struct sockaddr *) &addr, sizeof (addr));
@@ -548,6 +547,6 @@ server_run (uint16_t port)
       process_timers (cache);
     }
 
-  // Unreachable, but returning 0 for function signature compliance
+  // Unreachable!
   return 0;
 }

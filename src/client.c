@@ -18,7 +18,7 @@ read_full (int fd, char *buf, size_t n)
       ssize_t rv = read (fd, buf, n);
       if (rv <= 0)
 	{
-	  return -1;		// error, or unexpected EOF
+	  return -1;
 	}
       assert ((size_t) rv <= n);
       n -= (size_t) rv;
@@ -35,7 +35,7 @@ write_all (int fd, const char *buf, size_t n)
       ssize_t rv = write (fd, buf, n);
       if (rv <= 0)
 	{
-	  return -1;		// error
+	  return -1;
 	}
       assert ((size_t) rv <= n);
       n -= (size_t) rv;
@@ -64,11 +64,9 @@ send_req (int fd, char **cmd, size_t cmd_size)
   // Allocate buffer for header (4 bytes total length) + payload
   char wbuf[4 + k_max_msg];
 
-  // 1. Serialize Total Length (uint32_t)
   uint32_t net_total_len = htonl (total_len);
   memcpy (&wbuf[0], &net_total_len, 4);
 
-  // 2. Serialize Array Size (uint32_t)
   uint32_t net_cmd_size = htonl ((uint32_t) cmd_size);
   memcpy (&wbuf[4], &net_cmd_size, 4);
 
@@ -79,15 +77,12 @@ send_req (int fd, char **cmd, size_t cmd_size)
       size_t cmd_len = strlen (s);
       uint32_t p = (uint32_t) cmd_len;
 
-      // 3. Serialize Command String Length (uint32_t)
       uint32_t net_p = htonl (p);
       memcpy (&wbuf[cur], &net_p, 4);
 
-      // 4. Copy Command String (Raw bytes, no swap needed)
       memcpy (&wbuf[cur + 4], s, cmd_len);
       cur += 4 + cmd_len;
     }
-  // The total size to write is the 4-byte header + the calculated payload length.
   return write_all (fd, wbuf, 4 + total_len);
 }
 
@@ -117,7 +112,6 @@ on_response (const uint8_t *data, size_t size)
 	}
       {
 	int32_t code = 0;
-	// Code is 4 bytes, Length is 4 bytes. Both are uint32_t network order.
 
 	// Deserialize Code (uint32_t)
 	uint32_t code_net = 0;
@@ -262,7 +256,6 @@ read_res (int fd)
       return err;
     }
 
-  // print the result
   int32_t rv = on_response ((uint8_t *) & rbuf[4], len_host);
   if (rv > 0 && (uint32_t) rv != len_host)
     {
