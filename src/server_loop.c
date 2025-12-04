@@ -14,12 +14,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <stdbool.h>
 #include <time.h>
+#include <netinet/ip.h>
 #include <sys/epoll.h>
 #include <signal.h>
-#include <netinet/in.h>
 
 #include "cache.h"
 #include "connections.h"
@@ -31,7 +32,7 @@
 
 #define MAX_EVENTS 10000
 #define MAX_CHUNKS 16
-#define K_IDLE_TIMEOUT_US 5000000;
+#define K_IDLE_TIMEOUT_US 5000000
 
 enum
 {
@@ -146,6 +147,21 @@ conn_done (Conn *conn)
 static void state_req (Cache * cache, Conn * conn);
 static void state_res (Conn * conn);
 
+// New helper function to dynamically set the epoll events for a connection
+static void
+conn_set_epoll_events (Conn *conn, uint32_t events)
+{
+  struct epoll_event event;
+  event.data.fd = conn->fd;
+  // Always use EPOLLET (Edge Triggered)
+  event.events = events | EPOLLET;
+
+  if (epoll_ctl (g_data.epfd, EPOLL_CTL_MOD, conn->fd, &event) == -1)
+    {
+      msg ("epoll ctl: MOD failed");
+    }
+}
+
 // returns true on success, false otherwise (must write error to 'out' on failure)
 static bool
 do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
@@ -155,30 +171,30 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
       out_err (out, ERR_MALFORMED, "Request too short for argument count");
       return false;
     }
-  uint32_t size = 0;
-  memcpy (&size, &req[0], 4);
-  size = ntohl (size);
+  uint32_t num = 0;
+  memcpy (&num, &req[0], 4);
+  num = ntohl (num);
 
-  if (size > K_MAX_ARGS)
+  if (num > K_MAX_ARGS)
     {
       out_err (out, ERR_UNKNOWN, "Too many arguments");
       return false;
     }
-  if (size < 1)
+  if (num < 1)
     {
       out_err (out, ERR_MALFORMED,
 	       "Must have at least one argument (the command)");
       return false;
     }
 
-  char **cmd = calloc (size, sizeof *cmd);
+  char **cmd = calloc (num, sizeof (char *));
   if (!cmd)
     die ("Out of memory cmd");
   size_t cmd_size = 0;
 
   bool success = false;
   size_t pos = 4;
-  while (size--)
+  while (num--)
     {
       if (pos + 4 > reqlen)
 	{
@@ -295,6 +311,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
     {
       // we read it all, try to send!
       conn->state = STATE_RES;
+      // Add EPOLLOUT when we transition to STATE_RES
+      conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
     }
 
   // Continue processing requests if the connection is still in the request state
@@ -306,24 +324,24 @@ try_fill_buffer (Cache *cache, Conn *conn)
 {
   // try to fill the buffer
   assert (conn->rbuf_size < sizeof (conn->rbuf));
-  ssize_t ret_val = 0;
+  ssize_t ret = 0;
   do
     {
       size_t cap = sizeof (conn->rbuf) - conn->rbuf_size;
-      ret_val = read (conn->fd, &conn->rbuf[conn->rbuf_size], cap);
+      ret = read (conn->fd, &conn->rbuf[conn->rbuf_size], cap);
     }
-  while (ret_val < 0 && errno == EINTR);
-  if (ret_val < 0 && errno == EAGAIN)
+  while (ret < 0 && errno == EINTR);
+  if (ret < 0 && errno == EAGAIN)
     {
       return false;
     }
-  if (ret_val < 0)
+  if (ret < 0)
     {
       msg ("read() error");
       conn->state = STATE_END;
       return false;
     }
-  if (ret_val == 0)
+  if (ret == 0)
     {
       if (conn->rbuf_size > 0)
 	{
@@ -334,7 +352,7 @@ try_fill_buffer (Cache *cache, Conn *conn)
     }
 
   uint32_t start_index = conn->rbuf_size;
-  conn->rbuf_size += (uint32_t) ret_val;
+  conn->rbuf_size += (uint32_t) ret;
   assert (conn->rbuf_size <= sizeof (conn->rbuf));
 
   int processed = 0;
@@ -370,24 +388,24 @@ state_req (Cache *cache, Conn *conn)
 static bool
 try_flush_buffer (Conn *conn)
 {
-  ssize_t ret_val = 0;
+  ssize_t ret = 0;
   do
     {
       size_t remain = conn->wbuf_size - conn->wbuf_sent;
-      ret_val = write (conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
+      ret = write (conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
     }
-  while (ret_val < 0 && errno == EINTR);
-  if (ret_val < 0 && errno == EAGAIN)
+  while (ret < 0 && errno == EINTR);
+  if (ret < 0 && errno == EAGAIN)
     {
       return false;
     }
-  if (ret_val < 0)
+  if (ret < 0)
     {
       msg ("write() error");
       conn->state = STATE_END;
       return false;
     }
-  conn->wbuf_sent += (size_t) ret_val;
+  conn->wbuf_sent += (size_t) ret;
   assert (conn->wbuf_sent <= conn->wbuf_size);
   if (conn->wbuf_sent == conn->wbuf_size)
     {
@@ -401,6 +419,9 @@ try_flush_buffer (Conn *conn)
 	}
 
       conn->state = STATE_REQ;
+      // Remove EPOLLOUT when we transition back to STATE_REQ
+      conn_set_epoll_events (conn, EPOLLIN);
+
       return false;
     }
   // still got some data in wbuf, could try to write again
@@ -422,10 +443,12 @@ process_timers (Cache *cache)
 
   while (!dlist_empty (&g_data.idle_list))
     {
+      // --- Start Pragma for clang-diagnostic-cast-align suppression ---
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
 #pragma GCC diagnostic pop
+      // --- End Pragma for clang-diagnostic-cast-align suppression ---
 
       uint64_t next_us = next->idle_start + K_IDLE_TIMEOUT_US;
 
@@ -492,7 +515,9 @@ handle_listener_event (int listen_fd)
       // Successfully accepted, now register with epoll
       struct epoll_event event;
       event.data.fd = conn_fd;
-      event.events = EPOLLIN | EPOLLOUT | EPOLLET;
+      // Only register for EPOLLIN (read events) initially.
+      // EPOLLOUT will be added dynamically when data is ready to be sent.
+      event.events = EPOLLIN | EPOLLET;
       if (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1)
 	{
 	  msg ("epoll ctl: new conn registration failed");
@@ -531,7 +556,7 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
 
 // Dispatches epoll events to the appropriate handler (listener or connection).
 static void
-process_active_events (Cache *cache, int count, struct epoll_event *events,
+process_active_events (Cache *cache, struct epoll_event *events, int count,
 		       int listen_fd)
 {
   for (int i = 0; i < count; ++i)
@@ -566,8 +591,6 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
     }
 
   connpool_free (g_data.fd2conn);
-
-  // TODO: implemnt this please :)
   //cache_free(cache);
 
   // Close server file descriptors
@@ -582,10 +605,10 @@ static int
 initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 {
   struct sockaddr_in addr = { 0 };
-  int ret_val, val = 1;
+  int ret, val = 1;
   struct epoll_event event;
 
-  // Create Listening Socket
+  // 1. Create Listening Socket
   *listen_fd = socket (AF_INET, SOCK_STREAM, 0);
   if (*listen_fd < 0)
     {
@@ -595,19 +618,21 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 
   setsockopt (*listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
 
+  // 2. Bind
   addr.sin_family = AF_INET;
   addr.sin_port = htons (port);
   addr.sin_addr.s_addr = htonl (0);
-  ret_val = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
-  if (ret_val)
+  ret = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
+  if (ret)
     {
       die ("bind()");
       close (*listen_fd);
       return -1;
     }
 
-  ret_val = listen (*listen_fd, SOMAXCONN);
-  if (ret_val)
+  // 3. Listen
+  ret = listen (*listen_fd, SOMAXCONN);
+  if (ret)
     {
       die ("listen()");
       close (*listen_fd);
@@ -619,7 +644,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   g_data.fd2conn = connpool_new (10);
   fd_set_nb (*listen_fd);
 
-  // Create Epoll Instance
+  // 4. Create Epoll Instance
   *epfd = epoll_create1 (0);
   if (*epfd == -1)
     {
@@ -629,14 +654,16 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
     }
   g_data.epfd = *epfd;
 
-  // Register Listener with Epoll
-  event.events = EPOLLIN | EPOLLOUT | EPOLLET;
+  // 5. Register Listener with Epoll
+  // Listener only needs EPOLLIN
+  event.events = EPOLLIN | EPOLLET;
   event.data.fd = *listen_fd;
   if (epoll_ctl (*epfd, EPOLL_CTL_ADD, *listen_fd, &event) == -1)
     {
+      die ("epoll ctl: listen_sock!");
       close (*listen_fd);
       close (*epfd);
-      die ("epoll ctl: listen_sock!");
+      return -1;
     }
 
   return 0;			// Success
@@ -652,10 +679,13 @@ next_timer_ms (Cache *cache)
   // idle timers
   if (!dlist_empty (&g_data.idle_list))
     {
+      // --- Start Pragma for clang-diagnostic-cast-align suppression ---
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
 #pragma GCC diagnostic pop
+      // --- End Pragma for clang-diagnostic-cast-align suppression ---
+
       next_us = next->idle_start + K_IDLE_TIMEOUT_US;
     }
 
@@ -665,6 +695,7 @@ next_timer_ms (Cache *cache)
     {
       next_us = from_cache;
     }
+
 
   if (next_us == (uint64_t) - 1)
     {
@@ -702,13 +733,13 @@ server_run (uint16_t port)
   dlist_init (&g_data.idle_list);
   Cache *cache = cache_init ();
 
-  // Server Initialization
+  // Phase 1: Server Initialization
   if (initialize_server_core (port, &listen_fd, &epfd) != 0)
     {
       return -1;
     }
 
-  // Main Event Loop
+  // Phase 2: Main Event Loop
   while (!g_data.terminate_flag)	// Use the flag to control the loop
     {
       int timeout_ms = (int) next_timer_ms (cache);
@@ -729,13 +760,13 @@ server_run (uint16_t port)
       // process active connections (listener and client events)
       if (enfd_count > 0)
 	{
-	  process_active_events (cache, enfd_count, events, listen_fd);
+	  process_active_events (cache, events, enfd_count, listen_fd);
 	}
 
       process_timers (cache);
     }
 
-  // Graceful shutdown and resource cleanup
+  // Phase 3: Graceful shutdown and resource cleanup
   cleanup_server_resources (cache, listen_fd, epfd);
 
   return 0;
