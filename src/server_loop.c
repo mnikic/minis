@@ -135,14 +135,13 @@ conn_done (Conn *conn)
 static void state_req (Cache * cache, Conn * conn);
 static void state_res (Conn * conn);
 
-static int32_t
+// returns true on success, false otherwise
+static bool
 do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 {
-  int return_value = 0;
-
   if (reqlen < 4)
     {
-      return -1;
+      return false;
     }
   uint32_t n = 0;
   memcpy (&n, &req[0], 4);
@@ -151,11 +150,11 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
   if (n > K_MAX_ARGS)
     {
       out_err (out, ERR_UNKNOWN, "Unknown cmd");
-      return -1;
+      return false;
     }
   if (n < 1)
     {
-      return -1;
+      return false;
     }
 
   char **cmd = calloc (n, sizeof (char *));
@@ -163,12 +162,12 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
     die ("Out of memory cmd");
   size_t cmd_size = 0;
 
+  bool success = false;
   size_t pos = 4;
   while (n--)
     {
       if (pos + 4 > reqlen)
 	{
-	  return_value = -1;
 	  goto CLEANUP;
 	}
       uint32_t sz = 0;
@@ -177,7 +176,6 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 
       if (pos + 4 + sz > reqlen)
 	{
-	  return_value = -1;	// trailing garbage
 	  goto CLEANUP;
 	}
       cmd[cmd_size] = (char *) (calloc (sz + 1, sizeof (char)));
@@ -191,13 +189,13 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
   if (pos != reqlen)
     {
       out_err (out, ERR_MALFORMED, "Malformed request");
-      return_value = -1;	// trailing garbage
       goto CLEANUP;
-
     }
   cache_execute (cache, cmd, cmd_size, out);
+  success = true;
 
-CLEANUP:for (size_t i = 0; i < cmd_size; i++)
+CLEANUP:
+  for (size_t i = 0; i < cmd_size; i++)
     {
       if (cmd[i])
 	{
@@ -206,7 +204,7 @@ CLEANUP:for (size_t i = 0; i < cmd_size; i++)
     }
   free (cmd);
 
-  return return_value;
+  return success;
 }
 
 static bool
@@ -235,8 +233,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
     }
 
   Buffer *out = buf_new ();
-  int32_t err = do_request (cache, &conn->rbuf[*start_index + 4], len, out);
-  if (err)
+  bool success = do_request (cache, &conn->rbuf[*start_index + 4], len, out);
+  if (!success)
     {
       msg ("bad req");
       conn->state = STATE_END;
