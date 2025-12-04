@@ -15,6 +15,7 @@
 #define ERR_2BIG 2
 #define ERR_TYPE 3
 #define ERR_ARG 4
+#define ERR_MALFORMED 5
 
 #define SER_NIL 0
 #define SER_ERR 1		// An error code and message

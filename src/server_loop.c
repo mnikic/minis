@@ -190,11 +190,13 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 
   if (pos != reqlen)
     {
+      out_err (out, ERR_MALFORMED, "Malformed request");
       return_value = -1;	// trailing garbage
       goto CLEANUP;
 
     }
   cache_execute (cache, cmd, cmd_size, out);
+
 CLEANUP:for (size_t i = 0; i < cmd_size; i++)
     {
       if (cmd[i])
@@ -408,7 +410,6 @@ connection_io (Cache *cache, Conn *conn)
   conn->idle_start = get_monotonic_usec ();
   dlist_detach (&conn->idle_list);
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
-
   if (conn->state == STATE_REQ)
     {
       state_req (cache, conn);
@@ -603,14 +604,15 @@ server_run (uint16_t port)
 		  conn->state = STATE_END;
 		}
 
-	      if (events[i].events & (EPOLLIN | EPOLLOUT))
-		{
-		  connection_io (cache, conn);
-		}
-
 	      if (conn->state == STATE_END)
 		{
 		  conn_done (conn);
+		  continue;
+		}
+
+	      if (events[i].events & (EPOLLIN | EPOLLOUT))
+		{
+		  connection_io (cache, conn);
 		}
 	    }
 	}
