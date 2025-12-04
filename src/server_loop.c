@@ -20,7 +20,7 @@
 #include <time.h>
 #include <netinet/ip.h>
 #include <sys/epoll.h>
-#include <signal.h>		// Required for signal handling
+#include <signal.h>
 
 #include "cache.h"
 #include "connections.h"
@@ -30,6 +30,7 @@
 #include "server_loop.h"
 
 #define MAX_EVENTS 10000
+#define MAX_CHUNKS 16
 
 enum
 {
@@ -56,9 +57,8 @@ static struct
 static void
 sigint_handler (int sig)
 {
-  (void) sig;			// Avoid unused parameter warning
+  (void) sig;
   g_data.terminate_flag = 1;
-  fprintf (stderr, "\nSignal caught. Setting terminate flag...\n");
 }
 
 static void
@@ -158,7 +158,7 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
       return -1;
     }
 
-  char **cmd = malloc (n * sizeof (char *));
+  char **cmd = calloc (n, sizeof (char *));
   if (!cmd)
     die ("Out of memory cmd");
   size_t cmd_size = 0;
@@ -207,7 +207,7 @@ CLEANUP:for (size_t i = 0; i < cmd_size; i++)
   return return_value;
 }
 
-static int32_t
+static bool
 try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
 {
   // try to parse a request from the buffer
@@ -247,10 +247,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
     {
       // cannot append to the write buffer the current message (too long), need to write!
       conn->state = STATE_RES;
-      state_res (conn);
     }
 
-  // generating echoing response
   uint32_t nwlen = htonl ((uint32_t) wlen);
   memcpy (&conn->wbuf[conn->wbuf_size], &nwlen, 4);
   memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (out), wlen);
@@ -261,7 +259,6 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
     {
       // we read it all, try to send!
       conn->state = STATE_RES;
-      state_res (conn);
     }
   buf_free (out);
   return (conn->state == STATE_REQ);
@@ -295,10 +292,6 @@ try_fill_buffer (Cache *cache, Conn *conn)
 	{
 	  msg ("unexpected EOF");
 	}
-      else
-	{
-	  //msg("EOF");
-	}
       conn->state = STATE_END;
       return false;
     }
@@ -307,8 +300,12 @@ try_fill_buffer (Cache *cache, Conn *conn)
   conn->rbuf_size += (uint32_t) rv;
   assert (conn->rbuf_size <= sizeof (conn->rbuf));
 
+
+  int processed = 0;
   while (try_one_request (cache, conn, &start_index))
     {
+      if (++processed >= MAX_CHUNKS)
+	break;
     }
 
   uint32_t remain = conn->rbuf_size - start_index;
@@ -317,6 +314,10 @@ try_fill_buffer (Cache *cache, Conn *conn)
       memmove (conn->rbuf, &conn->rbuf[start_index], remain);
     }
   conn->rbuf_size = remain;
+  if (conn->state == STATE_RES)
+    {
+      state_res (conn);
+    }
   return (conn->state == STATE_REQ);
 }
 
@@ -328,7 +329,7 @@ state_req (Cache *cache, Conn *conn)
     }
 }
 
-static int32_t
+static bool
 try_flush_buffer (Conn *conn)
 {
   ssize_t rv = 0;
@@ -370,7 +371,7 @@ state_res (Conn *conn)
     }
 }
 
-const uint64_t k_idle_timeout_ms = 5 * 1000;
+const uint64_t k_idle_timeout_us = 5 * 1000 * 1000;
 
 static void
 process_timers (Cache *cache)
@@ -381,7 +382,7 @@ process_timers (Cache *cache)
     {
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
 
-      uint64_t next_us = next->idle_start + k_idle_timeout_ms * 1000;
+      uint64_t next_us = next->idle_start + k_idle_timeout_us;
 
       // If the next connection's expiry time is strictly in the future,
       // we stop checking the list as the rest of the list (being newer)
@@ -433,7 +434,7 @@ next_timer_ms (Cache *cache)
   if (!dlist_empty (&g_data.idle_list))
     {
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
-      next_us = next->idle_start + k_idle_timeout_ms * 1000;
+      next_us = next->idle_start + k_idle_timeout_us;
     }
 
   uint64_t from_cache = cache_next_expiry (cache);
