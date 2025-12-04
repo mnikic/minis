@@ -1,0 +1,28 @@
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  misc-*,
+  performance-*,
+  readability-*,
+  -bugprone-narrowing-conversions,
+  -readability-magic-numbers,
+  -readability-braces-around-statements,
+  -readability-function-size,
+  -readability-isolate-declaration,
+  -modernize-*,
+  -cppcoreguidelines-*,
+  -hicpp-*,
+  -android-*,
+  -google-*,
+  -portability-*,
+  -llvm-*,
+  -zircon-*
+
+
+WarningsAsErrors: '*'
+
+CheckOptions:
+  - key: bugprone-sizeof-expression.WarnOnSizeOfLiteral
+    value: '1'
+
+ExtraArgs: [-std=gnu11, -D_GNU_SOURCE]
