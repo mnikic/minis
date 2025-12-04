@@ -9,7 +9,9 @@ CFLAGS_BASE=-std=gnu11 -O2 -g -pthread \
         -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 \
         -fstack-protector-strong -fstack-clash-protection \
         -fstrict-flex-arrays=3 \
-        -Wpedantic
+        -Wpedantic -Wundef -Wcast-align -Wswitch-enum \
+	-Wno-unused-parameter -Wfloat-equal -Wcast-qual -Wstrict-overflow=2
+
 
 LDFLAGS_BASE=-pthread \
          -Wl,-z,nodlopen -Wl,-z,noexecstack \

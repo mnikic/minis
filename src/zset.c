@@ -6,12 +6,15 @@
  */
 
 #include <assert.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include "zset.h"
 #include "common.h"
+
+#define EPSILON 1e-9
 
 // Initialize a zset
 void
@@ -34,7 +37,7 @@ znode_new (const char *name, size_t len, double score)
   memset (node, 0, sizeof (ZNode) + len);
   avl_init (&node->tree);
   node->hmap.next = NULL;
-  node->hmap.hcode = str_hash ((uint8_t *) name, len);
+  node->hmap.hcode = str_hash ((const uint8_t *) name, len);
   node->score = score;
   node->len = len;
   memcpy (&node->name[0], name, len);
@@ -52,10 +55,11 @@ static bool
 zless1 (AVLNode *lhs, double score, const char *name, size_t len)
 {
   ZNode *zl = container_of (lhs, ZNode, tree);
-  if (zl->score != score)
+  if (fabs (zl->score - score) > EPSILON)	// Not equal within epsilon
     {
       return zl->score < score;
     }
+  // Scores are equal (within epsilon), compare by name
   int rv = memcmp (zl->name, name, min (zl->len, len));
   if (rv != 0)
     {
@@ -100,7 +104,7 @@ tree_add (ZSet *zset, ZNode *node)
 static void
 zset_update (ZSet *zset, ZNode *node, double score)
 {
-  if (node->score == score)
+  if (fabs (node->score - score) < EPSILON)
     {
       return;
     }
@@ -173,7 +177,7 @@ zset_lookup (ZSet *zset, const char *name, size_t len)
     }
 
   HKey key;
-  key.node.hcode = str_hash ((uint8_t *) name, len);
+  key.node.hcode = str_hash ((const uint8_t *) name, len);
   key.name = name;
   key.len = len;
   HNode *found = hm_lookup (&zset->hmap, &key.node, &hcmp);
@@ -195,7 +199,7 @@ zset_pop (ZSet *zset, const char *name, size_t len)
     }
 
   HKey key;
-  key.node.hcode = str_hash ((uint8_t *) name, len);
+  key.node.hcode = str_hash ((const uint8_t *) name, len);
   key.name = name;
   key.len = len;
   HNode *found = hm_pop (&zset->hmap, &key.node, &hcmp);

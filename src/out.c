@@ -12,6 +12,7 @@
 #include "out.h"
 #include "buffer.h"
 
+
 void
 out_nil (Buffer *out)
 {
@@ -104,12 +105,12 @@ bool
 out_arr_end (Buffer *out, size_t pos, uint32_t n)
 {
   // Validate that pos points to an array type tag
-  if (pos == 0 || pos > buf_len (out))
+  if (!out || pos == 0 || pos > buf_len (out))
     {
       return false;		// Invalid position
     }
 
-  const uint8_t *data = buf_data (out);
+  uint8_t *data = out->data;
   if (data[pos - 1] != SER_ARR)
     {
       return false;		// Not an array at this position
