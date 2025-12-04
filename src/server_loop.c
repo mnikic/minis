@@ -564,6 +564,8 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
     }
 
   connpool_free (g_data.fd2conn);
+
+  // TODO: implemnt this please :)
   //cache_free(cache);
 
   // Close server file descriptors
@@ -581,7 +583,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   int rv, val = 1;
   struct epoll_event event;
 
-  // 1. Create Listening Socket
+  // Create Listening Socket
   *listen_fd = socket (AF_INET, SOCK_STREAM, 0);
   if (*listen_fd < 0)
     {
@@ -591,7 +593,6 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 
   setsockopt (*listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
 
-  // 2. Bind
   addr.sin_family = AF_INET;
   addr.sin_port = htons (port);
   addr.sin_addr.s_addr = htonl (0);
@@ -603,7 +604,6 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
       return -1;
     }
 
-  // 3. Listen
   rv = listen (*listen_fd, SOMAXCONN);
   if (rv)
     {
@@ -617,7 +617,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   g_data.fd2conn = connpool_new (10);
   fd_set_nb (*listen_fd);
 
-  // 4. Create Epoll Instance
+  // Create Epoll Instance
   *epfd = epoll_create1 (0);
   if (*epfd == -1)
     {
@@ -627,15 +627,14 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
     }
   g_data.epfd = *epfd;
 
-  // 5. Register Listener with Epoll
+  // Register Listener with Epoll
   event.events = EPOLLIN | EPOLLOUT | EPOLLET;
   event.data.fd = *listen_fd;
   if (epoll_ctl (*epfd, EPOLL_CTL_ADD, *listen_fd, &event) == -1)
     {
-      die ("epoll ctl: listen_sock!");
       close (*listen_fd);
       close (*epfd);
-      return -1;
+      die ("epoll ctl: listen_sock!");
     }
 
   return 0;			// Success
