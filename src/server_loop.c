@@ -62,6 +62,17 @@ sigint_handler (int sig)
   g_data.terminate_flag = 1;
 }
 
+// Sets up handlers for graceful server termination signals.
+static void
+setup_signal_handlers (void)
+{
+  struct sigaction sa = { 0 };
+  sa.sa_handler = sigint_handler;
+  sigaction (SIGINT, &sa, NULL);
+  sigaction (SIGTERM, &sa, NULL);
+  sigaction (SIGQUIT, &sa, NULL);
+}
+
 static void
 fd_set_nb (int fd)
 {
@@ -561,6 +572,75 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
   msg ("Cleanup complete.");
 }
 
+// Initializes the core server components (socket, bind, listen, epoll).
+// Returns 0 on success, -1 on failure. Sets listen_fd and epfd on success.
+static int
+initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
+{
+  struct sockaddr_in addr = { 0 };
+  int rv, val = 1;
+  struct epoll_event event;
+
+  // 1. Create Listening Socket
+  *listen_fd = socket (AF_INET, SOCK_STREAM, 0);
+  if (*listen_fd < 0)
+    {
+      die ("socket()");
+      return -1;
+    }
+
+  setsockopt (*listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
+
+  // 2. Bind
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons (port);
+  addr.sin_addr.s_addr = htonl (0);
+  rv = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
+  if (rv)
+    {
+      die ("bind()");
+      close (*listen_fd);
+      return -1;
+    }
+
+  // 3. Listen
+  rv = listen (*listen_fd, SOMAXCONN);
+  if (rv)
+    {
+      die ("listen()");
+      close (*listen_fd);
+      return -1;
+    }
+  fprintf (stderr, "The server is listening on port %i.\n", port);
+
+  // Initialize connection pool and set non-blocking
+  g_data.fd2conn = connpool_new (10);
+  fd_set_nb (*listen_fd);
+
+  // 4. Create Epoll Instance
+  *epfd = epoll_create1 (0);
+  if (*epfd == -1)
+    {
+      die ("epoll_create1");
+      close (*listen_fd);
+      return -1;
+    }
+  g_data.epfd = *epfd;
+
+  // 5. Register Listener with Epoll
+  event.events = EPOLLIN | EPOLLOUT | EPOLLET;
+  event.data.fd = *listen_fd;
+  if (epoll_ctl (*epfd, EPOLL_CTL_ADD, *listen_fd, &event) == -1)
+    {
+      die ("epoll ctl: listen_sock!");
+      close (*listen_fd);
+      close (*epfd);
+      return -1;
+    }
+
+  return 0;			// Success
+}
+
 static uint32_t
 next_timer_ms (Cache *cache)
 {
@@ -581,7 +661,6 @@ next_timer_ms (Cache *cache)
     {
       next_us = from_cache;
     }
-
 
   if (next_us == (uint64_t) - 1)
     {
@@ -608,75 +687,24 @@ next_timer_ms (Cache *cache)
 int
 server_run (uint16_t port)
 {
-  struct epoll_event event, events[MAX_EVENTS];
-  struct sockaddr_in addr = { 0 };
-  int listen_fd, rv, val = 1;
+  struct epoll_event events[MAX_EVENTS];
+  int listen_fd = -1;
+  int epfd = -1;
   g_data.terminate_flag = 0;	// Initialize termination flag
 
   // Setup signal handler for graceful shutdown
-  struct sigaction sa = { 0 };
-  sa.sa_handler = sigint_handler;
-  sigaction (SIGINT, &sa, NULL);
-  sigaction (SIGTERM, &sa, NULL);
-  sigaction (SIGQUIT, &sa, NULL);
+  setup_signal_handlers ();
 
   dlist_init (&g_data.idle_list);
   Cache *cache = cache_init ();
-  listen_fd = socket (AF_INET, SOCK_STREAM, 0);
-  if (listen_fd < 0)
+
+  // Server Initialization
+  if (initialize_server_core (port, &listen_fd, &epfd) != 0)
     {
-      die ("socket()");
       return -1;
     }
 
-  setsockopt (listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
-
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons (port);	// Correct usage of htons on host port
-  addr.sin_addr.s_addr = htonl (0);	// wildcard address 0.0.0.0
-  rv = bind (listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
-  if (rv)
-    {
-      die ("bind()");
-      close (listen_fd);
-      return -1;
-    }
-
-  rv = listen (listen_fd, SOMAXCONN);
-  if (rv)
-    {
-      die ("listen()");
-      close (listen_fd);
-      return -1;
-    }
-  fprintf (stderr, "The server is listening on port %i.\n", port);
-
-  // a sparse set of all client connections, keyed by fd
-  g_data.fd2conn = connpool_new (10);
-
-  // set the listen fd to nonblocking mode
-  fd_set_nb (listen_fd);
-
-  int epfd = epoll_create1 (0);
-  if (epfd == -1)
-    {
-      die ("epoll_create1");
-      close (listen_fd);
-      return -1;
-    }
-
-  g_data.epfd = epfd;
-  // Use EPOLLET for high performance, requiring the drain loop
-  event.events = EPOLLIN | EPOLLOUT | EPOLLET;
-  event.data.fd = listen_fd;
-  if (epoll_ctl (epfd, EPOLL_CTL_ADD, listen_fd, &event) == -1)
-    {
-      die ("epoll ctl: listen_sock!");
-      close (listen_fd);
-      close (epfd);
-      return -1;
-    }
-
+  // Main Event Loop
   while (!g_data.terminate_flag)	// Use the flag to control the loop
     {
       int timeout_ms = (int) next_timer_ms (cache);
