@@ -1,6 +1,6 @@
 /*
  *============================================================================
- * Name          : server.c
+ * Name          : server_loop.c
  * Author        : Milos
  * Description   : Core networking logic (epoll event loop, connection handling).
  *============================================================================
@@ -31,6 +31,7 @@
 
 #define MAX_EVENTS 10000
 #define MAX_CHUNKS 16
+#define K_IDLE_TIMEOUT_US 5000000;
 
 enum
 {
@@ -104,7 +105,7 @@ accept_new_conn (int fd)
   Conn *conn = (Conn *) malloc (sizeof (Conn));
   if (!conn)
     {
-      close (connfd);		// Close the connection fd
+      close (connfd);
       die ("Out of memory for connection");
       return -2;
     }
@@ -135,7 +136,7 @@ conn_done (Conn *conn)
 static void state_req (Cache * cache, Conn * conn);
 static void state_res (Conn * conn);
 
-// returns true on success, false otherwise
+// returns true on success, false otherwise (must write error to 'out' on failure)
 static bool
 do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 {
@@ -155,7 +156,8 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
     }
   if (n < 1)
     {
-      out_err (out, ERR_MALFORMED, "Command must have at least one argument");
+      out_err (out, ERR_MALFORMED,
+	       "Must have at least one argument (the command)");
       return false;
     }
 
@@ -180,6 +182,8 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 
       if (pos + 4 + sz > reqlen)
 	{
+	  out_err (out, ERR_MALFORMED,
+		   "Argument count mismatch: data length exceeds packet size");
 	  goto CLEANUP;
 	}
       cmd[cmd_size] = (char *) (calloc (sz + 1, sizeof (char)));
@@ -192,9 +196,11 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 
   if (pos != reqlen)
     {
-      out_err (out, ERR_MALFORMED, "Malformed request");
+      out_err (out, ERR_MALFORMED, "Trailing garbage in request");
       goto CLEANUP;
     }
+
+  // If we reach here, the packet structure is valid, execute the command
   cache_execute (cache, cmd, cmd_size, out);
   success = true;
 
@@ -207,6 +213,33 @@ CLEANUP:
 	}
     }
   free (cmd);
+
+  return success;
+}
+
+// Executes the request, prepares the response packet (length prefix + data),
+// and appends it to conn->wbuf.
+// Returns the success status of the request execution (do_request).
+// The response data length is passed back via out_wlen.
+static bool
+execute_and_buffer_response (Cache *cache, Conn *conn,
+			     const uint8_t *req_data, uint32_t req_len,
+			     size_t *out_wlen)
+{
+  Buffer *out = buf_new ();
+  bool success = do_request (cache, req_data, req_len, out);
+
+  size_t wlen = buf_len (out);
+  uint32_t nwlen = htonl ((uint32_t) wlen);
+
+  // Append length header (4 bytes) and response data (wlen) to wbuf
+  memcpy (&conn->wbuf[conn->wbuf_size], &nwlen, 4);
+  memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (out), wlen);
+
+  conn->wbuf_size += 4 + wlen;
+
+  buf_free (out);
+  *out_wlen = wlen;		// Pass the response length back out
 
   return success;
 }
@@ -236,19 +269,15 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
       return false;
     }
 
-  Buffer *out = buf_new ();
-  bool success = do_request (cache, &conn->rbuf[*start_index + 4], len, out);
-  size_t wlen = buf_len (out);
-  uint32_t nwlen = htonl ((uint32_t) wlen);
-  memcpy (&conn->wbuf[conn->wbuf_size], &nwlen, 4);
-  memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (out), wlen);
-  conn->wbuf_size += 4 + wlen;
+  size_t wlen = 0;		// wlen is needed for the state transition check below
+  bool success =
+    execute_and_buffer_response (cache, conn, &conn->rbuf[*start_index + 4],
+				 len, &wlen);
   *start_index += 4 + len;
-  buf_free (out);
 
   if (!success)
     {
-      msg ("bad req");
+      msg ("bad req, closing connection");
       conn->state = STATE_END;
     }
   else if (*start_index >= conn->rbuf_size
@@ -257,6 +286,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
       // we read it all, try to send!
       conn->state = STATE_RES;
     }
+
+  // Continue processing requests if the connection is still in the request state
   return (conn->state == STATE_REQ);
 }
 
@@ -296,7 +327,6 @@ try_fill_buffer (Cache *cache, Conn *conn)
   conn->rbuf_size += (uint32_t) rv;
   assert (conn->rbuf_size <= sizeof (conn->rbuf));
 
-
   int processed = 0;
   while (try_one_request (cache, conn, &start_index))
     {
@@ -310,7 +340,9 @@ try_fill_buffer (Cache *cache, Conn *conn)
       memmove (conn->rbuf, &conn->rbuf[start_index], remain);
     }
   conn->rbuf_size = remain;
-  if (conn->state == STATE_RES)
+
+  // If we ended up in STATE_RES due to a finished read or bad request, transition to state_res
+  if (conn->state == STATE_RES || conn->state == STATE_END)
     {
       state_res (conn);
     }
@@ -349,10 +381,16 @@ try_flush_buffer (Conn *conn)
   assert (conn->wbuf_sent <= conn->wbuf_size);
   if (conn->wbuf_sent == conn->wbuf_size)
     {
-      // response was fully sent, change state back
-      conn->state = STATE_REQ;
+      // response was fully sent, change state back or finalize
       conn->wbuf_sent = 0;
       conn->wbuf_size = 0;
+
+      if (conn->state == STATE_END)
+	{
+	  return false;		// Done writing the error response, let the loop clean up
+	}
+
+      conn->state = STATE_REQ;
       return false;
     }
   // still got some data in wbuf, could try to write again
@@ -367,8 +405,6 @@ state_res (Conn *conn)
     }
 }
 
-const uint64_t k_idle_timeout_us = 5 * 1000 * 1000;
-
 static void
 process_timers (Cache *cache)
 {
@@ -378,7 +414,7 @@ process_timers (Cache *cache)
     {
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
 
-      uint64_t next_us = next->idle_start + k_idle_timeout_us;
+      uint64_t next_us = next->idle_start + K_IDLE_TIMEOUT_US;
 
       // If the next connection's expiry time is strictly in the future,
       // we stop checking the list as the rest of the list (being newer)
@@ -404,6 +440,7 @@ connection_io (Cache *cache, Conn *conn)
   conn->idle_start = get_monotonic_usec ();
   dlist_detach (&conn->idle_list);
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+
   if (conn->state == STATE_REQ)
     {
       state_req (cache, conn);
@@ -418,6 +455,112 @@ connection_io (Cache *cache, Conn *conn)
     }
 }
 
+// Drains the listening socket and registers all newly accepted connections
+// with the epoll instance.
+static void
+handle_listener_event (int listen_fd)
+{
+  int epfd = g_data.epfd;	// Get epfd from global data
+
+  while (1)
+    {
+      int conn_fd = accept_new_conn (listen_fd);
+      if (conn_fd < 0)
+	{
+	  // -1 means EAGAIN/EWOULDBLOCK (no more connections), stop draining
+	  // -2 means critical error (OOM or failed accept)
+	  if (conn_fd == -1)
+	    {
+	      break;
+	    }
+	  break;
+	}
+
+      // Successfully accepted, now register with epoll
+      struct epoll_event ev;
+      ev.data.fd = conn_fd;
+      ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+      if (epoll_ctl (epfd, EPOLL_CTL_ADD, ev.data.fd, &ev) == -1)
+	{
+	  msg ("epoll ctl: new conn registration failed");
+	  close (conn_fd);	// ensure we don't leak FD if epoll_ctl fails
+	}
+    }				// end while(1) drain loop
+}
+
+// Handles an epoll event for an active client connection (not the listener).
+static void
+handle_connection_event (Cache *cache, struct epoll_event *ev)
+{
+  Conn *conn = connpool_lookup (g_data.fd2conn, ev->data.fd);
+  if (!conn)
+    {
+      return;			// Already cleaned up or invalid fd
+    }
+
+  if (ev->events & (EPOLLHUP | EPOLLERR))
+    {
+      // Mark for termination, but allow any pending I/O to run if available
+      conn->state = STATE_END;
+    }
+
+  if (conn->state == STATE_END)
+    {
+      conn_done (conn);
+      return;
+    }
+
+  if (ev->events & (EPOLLIN | EPOLLOUT))
+    {
+      connection_io (cache, conn);
+    }
+}
+
+// Dispatches epoll events to the appropriate handler (listener or connection).
+static void
+process_active_events (Cache *cache, struct epoll_event *events, int count,
+		       int listen_fd)
+{
+  for (int i = 0; i < count; ++i)
+    {
+      if (events[i].data.fd == listen_fd)
+	{
+	  handle_listener_event (listen_fd);
+	}
+      else
+	{
+	  handle_connection_event (cache, &events[i]);
+	}
+    }
+}
+
+// Performs graceful shutdown, closes all active connections, and cleans up resources.
+static void
+cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
+{
+  msg ("\nServer shutting down gracefully. Cleaning up resources...");
+  Conn **connections;
+  size_t count;
+  connpool_iter (g_data.fd2conn, &connections, &count);
+
+  // Close all active client connections
+  for (size_t i = count - 1; i < count; i--)
+    {
+      Conn *conn = connections[i];
+      fprintf (stderr, "Forcing cleanup of active connection: %d\n",
+	       conn->fd);
+      conn_done (conn);
+    }
+
+  connpool_free (g_data.fd2conn);
+  //cache_free(cache);
+
+  // Close server file descriptors
+  close (listen_fd);
+  close (epfd);
+  msg ("Cleanup complete.");
+}
+
 static uint32_t
 next_timer_ms (Cache *cache)
 {
@@ -429,7 +572,7 @@ next_timer_ms (Cache *cache)
   if (!dlist_empty (&g_data.idle_list))
     {
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
-      next_us = next->idle_start + k_idle_timeout_us;
+      next_us = next->idle_start + K_IDLE_TIMEOUT_US;
     }
 
   uint64_t from_cache = cache_next_expiry (cache);
@@ -454,6 +597,11 @@ next_timer_ms (Cache *cache)
     }
 
   final_timeout = (uint32_t) ((next_us - now_us) / 1000);
+  // Ensure a minimum timeout of 1ms to prevent continuous, tight loops in epoll_wait
+  if (final_timeout == 0)
+    {
+      final_timeout = 1;
+    }
   return final_timeout;
 }
 
@@ -518,8 +666,8 @@ server_run (uint16_t port)
     }
 
   g_data.epfd = epfd;
-  // Use EPOLLET for high performance, requiring the drain loop below
-  event.events = EPOLLIN | EPOLLET;
+  // Use EPOLLET for high performance, requiring the drain loop
+  event.events = EPOLLIN | EPOLLOUT | EPOLLET;
   event.data.fd = listen_fd;
   if (epoll_ctl (epfd, EPOLL_CTL_ADD, listen_fd, &event) == -1)
     {
@@ -532,15 +680,12 @@ server_run (uint16_t port)
   while (!g_data.terminate_flag)	// Use the flag to control the loop
     {
       int timeout_ms = (int) next_timer_ms (cache);
-
       // epoll for active fds
       int enfd_count = epoll_wait (epfd, events, MAX_EVENTS, timeout_ms);
-
       if (g_data.terminate_flag)
 	{
 	  break;		// Re-check flag after potential long wait
 	}
-
       if (enfd_count < 0)
 	{
 	  if (errno == EINTR)
@@ -548,92 +693,18 @@ server_run (uint16_t port)
 	      continue;		// Signal interrupted, but we handled it above
 	    }
 	  die ("epoll_wait");
-	  continue;		// Keep looping unless a fatal error occurs
 	}
-
-      // process active connections
-      for (int i = 0; i < enfd_count; ++i)
+      // process active connections (listener and client events)
+      if (enfd_count > 0)
 	{
-	  if (events[i].data.fd == listen_fd)
-	    {
-	      while (1)
-		{
-		  int conn_fd = accept_new_conn (listen_fd);
-
-		  if (conn_fd < 0)
-		    {
-		      // -1 means EAGAIN/EWOULDBLOCK (no more connections), stop draining
-		      // -2 means critical error (OOM or failed accept)
-		      if (conn_fd == -1)
-			{
-			  break;
-			}
-		      // Critical error: break the drain loop and continue the main loop
-		      break;
-		    }
-
-		  // Successfully accepted, now register with epoll
-		  struct epoll_event ev;
-		  ev.data.fd = conn_fd;
-		  ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-		  if (epoll_ctl (epfd, EPOLL_CTL_ADD, ev.data.fd, &ev) == -1)
-		    {
-		      msg ("epoll ctl: new conn registration failed");
-		      close (conn_fd);	// ensure we don't leak FD if epoll_ctl fails
-		    }
-		}		// end while(1) drain loop
-	    }
-	  else
-	    {
-	      Conn *conn =
-		connpool_lookup (g_data.fd2conn, events[i].data.fd);
-	      if (!conn)
-		{
-		  continue;	// Already cleaned up
-		}
-
-	      if (events[i].events & (EPOLLHUP | EPOLLERR))
-		{
-		  // Mark for termination, but allow any pending I/O to run if available
-		  conn->state = STATE_END;
-		}
-
-	      if (conn->state == STATE_END)
-		{
-		  conn_done (conn);
-		  continue;
-		}
-
-	      if (events[i].events & (EPOLLIN | EPOLLOUT))
-		{
-		  connection_io (cache, conn);
-		}
-	    }
+	  process_active_events (cache, events, enfd_count, listen_fd);
 	}
+
       process_timers (cache);
     }
 
-  // --- GRACEFUL SHUTDOWN AND RESOURCE CLEANUP ---
-  fprintf (stderr,
-	   "\nServer shutting down gracefully. Cleaning up resources...\n");
-  Conn **connections;
-  size_t count;
-  connpool_iter (g_data.fd2conn, &connections, &count);
-
-  for (size_t i = count - 1; i < count; i--)
-    {
-      Conn *conn = connections[i];
-      fprintf (stderr, "Forcing cleanup of active connection: %d\n",
-	       conn->fd);
-      conn_done (conn);
-    }
-
-  connpool_free (g_data.fd2conn);
-  //cache_free(cache);
-
-  close (listen_fd);
-  close (epfd);
-  fprintf (stderr, "Cleanup complete.\n");
+  // Graceful shutdown and resource cleanup
+  cleanup_server_resources (cache, listen_fd, epfd);
 
   return 0;
 }
