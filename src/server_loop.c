@@ -141,6 +141,7 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 {
   if (reqlen < 4)
     {
+      out_err (out, ERR_MALFORMED, "Request too short for argument count");
       return false;
     }
   uint32_t n = 0;
@@ -149,11 +150,12 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 
   if (n > K_MAX_ARGS)
     {
-      out_err (out, ERR_UNKNOWN, "Unknown cmd");
+      out_err (out, ERR_UNKNOWN, "Too many arguments");
       return false;
     }
   if (n < 1)
     {
+      out_err (out, ERR_MALFORMED, "Command must have at least one argument");
       return false;
     }
 
@@ -168,6 +170,8 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
     {
       if (pos + 4 > reqlen)
 	{
+	  out_err (out, ERR_MALFORMED,
+		   "Argument count mismatch: missing length header");
 	  goto CLEANUP;
 	}
       uint32_t sz = 0;
@@ -234,33 +238,25 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
 
   Buffer *out = buf_new ();
   bool success = do_request (cache, &conn->rbuf[*start_index + 4], len, out);
-  if (!success)
-    {
-      msg ("bad req");
-      conn->state = STATE_END;
-      buf_free (out);
-      return false;
-    }
   size_t wlen = buf_len (out);
-
-  if ((conn->wbuf_size + wlen + 4) > K_MAX_MSG)
-    {
-      // cannot append to the write buffer the current message (too long), need to write!
-      conn->state = STATE_RES;
-    }
-
   uint32_t nwlen = htonl ((uint32_t) wlen);
   memcpy (&conn->wbuf[conn->wbuf_size], &nwlen, 4);
   memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (out), wlen);
   conn->wbuf_size += 4 + wlen;
   *start_index += 4 + len;
+  buf_free (out);
 
-  if (*start_index >= conn->rbuf_size)
+  if (!success)
+    {
+      msg ("bad req");
+      conn->state = STATE_END;
+    }
+  else if (*start_index >= conn->rbuf_size
+	   || (conn->wbuf_size + wlen + 4) > K_MAX_MSG)
     {
       // we read it all, try to send!
       conn->state = STATE_RES;
     }
-  buf_free (out);
   return (conn->state == STATE_REQ);
 }
 
