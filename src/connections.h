@@ -42,9 +42,9 @@ typedef struct
 } ConnPool;
 
 ConnPool *connpool_new (uint32_t capacity);
-Conn *connpool_lookup (ConnPool * pool, int fd);
+Conn *connpool_lookup (ConnPool * pool, int file_des);
 void connpool_add (ConnPool * pool, Conn * connection);
-void connpool_remove (ConnPool * pool, int fd);
+void connpool_remove (ConnPool * pool, int file_des);
 void connpool_free (ConnPool * pool);
 void connpool_iter (ConnPool * pool, Conn *** connections, size_t *count);
 

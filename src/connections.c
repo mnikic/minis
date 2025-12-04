@@ -146,22 +146,22 @@ connpool_add (ConnPool *pool, Conn *connection)
 }
 
 void
-connpool_remove (ConnPool *pool, int fd)
+connpool_remove (ConnPool *pool, int file_desc)
 {
-  if (!pool || fd < 0 || (size_t) fd >= pool->capacity)
+  if (!pool || file_desc < 0 || (size_t) file_desc >= pool->capacity)
     {
       return;
     }
 
-  uint32_t word_idx = (uint32_t) fd / 32;
-  uint32_t bit_idx = (uint32_t) fd % 32;
+  uint32_t word_idx = (uint32_t) file_desc / 32;
+  uint32_t bit_idx = (uint32_t) file_desc % 32;
 
   if (!(pool->fd_bitmap[word_idx] & (1U << bit_idx)))
     {
       return;
     }
 
-  PoolEntry *entry = pool->by_fd[fd];
+  PoolEntry *entry = pool->by_fd[file_desc];
   size_t removed_index = entry->index_in_active;
 
   // If the connection is not the last in the active list, swap it with the last one.
@@ -178,8 +178,6 @@ connpool_remove (ConnPool *pool, int fd)
       moved_entry->index_in_active = (uint32_t) removed_index;
     }
 
-  // CRITICAL FIX: Clear the pointer in the vacated slot at the end of the active array.
-  // This ensures the array is clean after the swap/removal.
   if (pool->active_count > 0)
     {
       pool->active[pool->active_count - 1] = NULL;
@@ -190,26 +188,26 @@ connpool_remove (ConnPool *pool, int fd)
 
   // Final cleanup of the entry itself
   free (entry);
-  pool->by_fd[fd] = NULL;
+  pool->by_fd[file_desc] = NULL;
 }
 
 Conn *
-connpool_lookup (ConnPool *pool, int fd)
+connpool_lookup (ConnPool *pool, int file_des)
 {
-  if (!pool || fd < 0 || (size_t) fd >= pool->capacity)
+  if (!pool || file_des < 0 || (size_t) file_des >= pool->capacity)
     {
       return NULL;
     }
 
-  uint32_t word_idx = (uint32_t) fd / 32;
-  uint32_t bit_idx = (uint32_t) fd % 32;
+  uint32_t word_idx = (uint32_t) file_des / 32;
+  uint32_t bit_idx = (uint32_t) file_des % 32;
 
   if (!(pool->fd_bitmap[word_idx] & (1U << bit_idx)))
     {
       return NULL;
     }
 
-  return pool->by_fd[fd]->conn;
+  return pool->by_fd[file_des]->conn;
 }
 
 void

@@ -40,6 +40,8 @@ entry_destroy (Entry *ent)
       zset_dispose (ent->zset);
       free (ent->zset);
       break;
+    default:
+      break;
     }
   if (ent->key)
     free (ent->key);
@@ -57,15 +59,19 @@ cmd_is (const char *word, const char *cmd)
 static int
 entry_eq (HNode *lhs, HNode *rhs)
 {
-  Entry *le = container_of (lhs, Entry, node);
-  Entry *re = container_of (rhs, Entry, node);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  Entry *lentry = container_of (lhs, Entry, node);
+  Entry *rentry = container_of (rhs, Entry, node);
+#pragma GCC diagnostic pop
+
   return lhs->hcode == rhs->hcode
-    && (le != NULL && re != NULL && le->key != NULL && re->key != NULL
-	&& strcmp (le->key, re->key) == 0);
+    && (lentry != NULL && rentry != NULL && lentry->key != NULL
+	&& rentry->key != NULL && strcmp (lentry->key, rentry->key) == 0);
 }
 
 static void
-h_scan (HTab *tab, void (*f) (HNode *, void *), void *arg)
+h_scan (HTab *tab, void (*func) (HNode *, void *), void *arg)
 {
   if (tab->size == 0)
     {
@@ -76,7 +82,7 @@ h_scan (HTab *tab, void (*f) (HNode *, void *), void *arg)
       HNode *node = tab->tab[i];
       while (node)
 	{
-	  f (node, arg);
+	  func (node, arg);
 	  node = node->next;
 	}
     }
@@ -86,23 +92,26 @@ static void
 cb_scan (HNode *node, void *arg)
 {
   Buffer *out = (Buffer *) arg;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
   out_str (out, container_of (node, Entry, node)->key);
+#pragma GCC diagnostic pop
 }
 
 static int
-str2dbl (const char *s, double *out)
+str2dbl (const char *string, double *out)
 {
   char *endp = NULL;
-  *out = strtod (s, &endp);
-  return endp == s + strlen (s) && !isnan (*out);
+  *out = strtod (string, &endp);
+  return endp == string + strlen (string) && !isnan (*out);
 }
 
 static int
-str2int (const char *s, int64_t *out)
+str2int (const char *string, int64_t *out)
 {
   char *endp = NULL;
-  *out = strtoll (s, &endp, 10);
-  return endp == s + strlen (s);
+  *out = strtoll (string, &endp, 10);
+  return endp == string + strlen (string);
 }
 
 static void
@@ -152,7 +161,11 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
     }
   else
     {
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
       ent = container_of (hnode, Entry, node);
+#pragma GCC diagnostic pop
       if (ent->type != T_ZSET)
 	{
 	  out_err (out, ERR_TYPE, "expect zset");
@@ -166,10 +179,10 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
 }
 
 static int
-expect_zset (Cache *cache, Buffer *out, char *s, Entry **ent)
+expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent)
 {
   Entry key;
-  key.key = s;
+  key.key = string;
   key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
   HNode *hnode = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (!hnode)
@@ -178,7 +191,11 @@ expect_zset (Cache *cache, Buffer *out, char *s, Entry **ent)
       return false;
     }
 
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
   *ent = container_of (hnode, Entry, node);
+#pragma GCC diagnostic pop
   if ((*ent)->type != T_ZSET)
     {
       out_err (out, ERR_TYPE, "expect zset");
@@ -273,15 +290,15 @@ do_zquery (Cache *cache, char **cmd, Buffer *out)
 
   // output
   size_t idx = out_arr_begin (out);
-  uint32_t n = 0;
-  while (znode && (int64_t) n < limit)
+  uint32_t num = 0;
+  while (znode && (int64_t) num < limit)
     {
       out_str_size (out, znode->name, znode->len);
       out_dbl (out, znode->score);
       znode = znode_offset (znode, +1);
-      n += 2;
+      num += 2;
     }
-  out_arr_end (out, idx, n);
+  out_arr_end (out, idx, num);
 }
 
 // set or remove the TTL
@@ -301,13 +318,13 @@ entry_set_ttl (Cache *cache, Entry *ent, int64_t ttl_ms)
 	  // add an new item to the heap
 	  HeapItem item;
 	  item.ref = &ent->heap_idx;
-	  item.val = get_monotonic_usec () + (uint64_t) ttl_ms *1000;
+	  item.val = get_monotonic_usec () + (uint64_t) (ttl_ms * 1000);
 	  heap_add (&cache->heap, &item);
 	}
       else
 	{
 	  heap_get (&cache->heap, pos)->val =
-	    get_monotonic_usec () + (uint64_t) ttl_ms *1000;
+	    get_monotonic_usec () + (uint64_t) (ttl_ms * 1000);
 	  heap_update (&cache->heap, pos);
 	}
     }
@@ -332,7 +349,10 @@ do_del (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_pop (&cache->db, &key.node, &entry_eq);
   if (node)
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
       Entry *entry = container_of (node, Entry, node);
+#pragma GCC diagnostic pop
       if (entry->heap_idx != (size_t) -1)
 	{
 	  heap_remove_idx (&cache->heap, entry->heap_idx);
@@ -352,7 +372,10 @@ do_set (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (node)
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
       Entry *ent = container_of (node, Entry, node);
+#pragma GCC diagnostic pop
       if (ent->type != T_STR)
 	{
 	  out_err (out, ERR_TYPE, "key exists with different type");
@@ -416,6 +439,8 @@ entry_del (Cache *cache, Entry *ent)
     case T_ZSET:
       too_big = hm_size (&ent->zset->hmap) > k_large_container_size;
       break;
+    default:
+      break;
     }
 
   if (too_big)
@@ -442,7 +467,11 @@ do_get (Cache *cache, char **cmd, Buffer *out)
       return;
     }
 
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
   Entry *ent = container_of (node, Entry, node);
+#pragma GCC diagnostic pop
   if (ent->type != T_STR || !ent->val)
     {
       out_nil (out);
@@ -469,7 +498,11 @@ do_expire (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (node)
     {
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
       Entry *ent = container_of (node, Entry, node);
+#pragma GCC diagnostic pop
       entry_set_ttl (cache, ent, ttl_ms);
     }
   out_int (out, node ? 1 : 0);
@@ -489,7 +522,10 @@ do_ttl (Cache *cache, char **cmd, Buffer *out)
       return;
     }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
   Entry *ent = container_of (node, Entry, node);
+#pragma GCC diagnostic pop
   if (ent->heap_idx == (size_t) -1)
     {
       out_int (out, -1);
@@ -578,8 +614,11 @@ cache_evict (Cache *cache, uint64_t now_us)
   size_t nworks = 0;
   while (!heap_empty (&cache->heap) && heap_top (&cache->heap)->val < now_us)
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
       Entry *ent =
 	container_of (heap_top (&cache->heap)->ref, Entry, heap_idx);
+#pragma GCC diagnostic pop
       HNode *node = hm_pop (&cache->db, &ent->node, &hnode_same);
       assert (node == &ent->node);
       entry_del (cache, ent);

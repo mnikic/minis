@@ -4,6 +4,8 @@ Checks: >
   misc-*,
   performance-*,
   readability-*,
+  -misc-include-cleaner,
+  -bugprone-multi-level-implicit-pointer-conversion,
   -bugprone-narrowing-conversions,
   -readability-magic-numbers,
   -readability-braces-around-statements,
@@ -18,11 +20,8 @@ Checks: >
   -llvm-*,
   -zircon-*
 
-
 WarningsAsErrors: '*'
 
 CheckOptions:
   - key: bugprone-sizeof-expression.WarnOnSizeOfLiteral
     value: '1'
-
-ExtraArgs: [-std=gnu11, -D_GNU_SOURCE]

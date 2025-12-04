@@ -14,13 +14,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <stdbool.h>
 #include <time.h>
-#include <netinet/ip.h>
 #include <sys/epoll.h>
 #include <signal.h>
+#include <netinet/in.h>
 
 #include "cache.h"
 #include "connections.h"
@@ -28,6 +27,7 @@
 #include "common.h"
 #include "out.h"
 #include "server_loop.h"
+#include "list.h"
 
 #define MAX_EVENTS 10000
 #define MAX_CHUNKS 16
@@ -66,28 +66,27 @@ sigint_handler (int sig)
 static void
 setup_signal_handlers (void)
 {
-  struct sigaction sa = { 0 };
-  sa.sa_handler = sigint_handler;
-  sigaction (SIGINT, &sa, NULL);
-  sigaction (SIGTERM, &sa, NULL);
-  sigaction (SIGQUIT, &sa, NULL);
+  struct sigaction sig_action = { 0 };
+  sig_action.sa_handler = sigint_handler;
+  sigaction (SIGINT, &sig_action, NULL);
+  sigaction (SIGTERM, &sig_action, NULL);
+  sigaction (SIGQUIT, &sig_action, NULL);
 }
 
 static void
-fd_set_nb (int fd)
+fd_set_nb (int file_des)
 {
   errno = 0;
-  int flags = fcntl (fd, F_GETFL, 0);
+  int flags = fcntl (file_des, F_GETFL, 0);
   if (errno)
     {
       die ("fcntl error");
-      return;
     }
 
   flags |= O_NONBLOCK;
 
   errno = 0;
-  (void) fcntl (fd, F_SETFL, flags);
+  (void) fcntl (file_des, F_SETFL, flags);
   if (errno)
     {
       die ("fcntl error");
@@ -95,11 +94,11 @@ fd_set_nb (int fd)
 }
 
 static int32_t
-accept_new_conn (int fd)
+accept_new_conn (int file_des)
 {
   struct sockaddr_in client_addr = { 0 };
   socklen_t socklen = sizeof (client_addr);
-  int connfd = accept (fd, (struct sockaddr *) &client_addr, &socklen);
+  int connfd = accept (file_des, (struct sockaddr *) &client_addr, &socklen);
 
   if (connfd < 0)
     {
@@ -156,30 +155,30 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
       out_err (out, ERR_MALFORMED, "Request too short for argument count");
       return false;
     }
-  uint32_t n = 0;
-  memcpy (&n, &req[0], 4);
-  n = ntohl (n);
+  uint32_t size = 0;
+  memcpy (&size, &req[0], 4);
+  size = ntohl (size);
 
-  if (n > K_MAX_ARGS)
+  if (size > K_MAX_ARGS)
     {
       out_err (out, ERR_UNKNOWN, "Too many arguments");
       return false;
     }
-  if (n < 1)
+  if (size < 1)
     {
       out_err (out, ERR_MALFORMED,
 	       "Must have at least one argument (the command)");
       return false;
     }
 
-  char **cmd = calloc (n, sizeof (char *));
+  char **cmd = calloc (size, sizeof *cmd);
   if (!cmd)
     die ("Out of memory cmd");
   size_t cmd_size = 0;
 
   bool success = false;
   size_t pos = 4;
-  while (n--)
+  while (size--)
     {
       if (pos + 4 > reqlen)
 	{
@@ -187,22 +186,22 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 		   "Argument count mismatch: missing length header");
 	  goto CLEANUP;
 	}
-      uint32_t sz = 0;
-      memcpy (&sz, &req[pos], 4);
-      sz = ntohl (sz);
+      uint32_t siz = 0;
+      memcpy (&siz, &req[pos], 4);
+      siz = ntohl (siz);
 
-      if (pos + 4 + sz > reqlen)
+      if (pos + 4 + siz > reqlen)
 	{
 	  out_err (out, ERR_MALFORMED,
 		   "Argument count mismatch: data length exceeds packet size");
 	  goto CLEANUP;
 	}
-      cmd[cmd_size] = (char *) (calloc (sz + 1, sizeof (char)));
+      cmd[cmd_size] = (char *) (calloc (siz + 1, sizeof (char)));
       if (!cmd[cmd_size])
 	die ("Out of memory");
-      memcpy (cmd[cmd_size], &req[pos + 4], sz);
+      memcpy (cmd[cmd_size], &req[pos + 4], siz);
       cmd_size++;
-      pos += 4 + sz;
+      pos += 4 + siz;
     }
 
   if (pos != reqlen)
@@ -307,24 +306,24 @@ try_fill_buffer (Cache *cache, Conn *conn)
 {
   // try to fill the buffer
   assert (conn->rbuf_size < sizeof (conn->rbuf));
-  ssize_t rv = 0;
+  ssize_t ret_val = 0;
   do
     {
       size_t cap = sizeof (conn->rbuf) - conn->rbuf_size;
-      rv = read (conn->fd, &conn->rbuf[conn->rbuf_size], cap);
+      ret_val = read (conn->fd, &conn->rbuf[conn->rbuf_size], cap);
     }
-  while (rv < 0 && errno == EINTR);
-  if (rv < 0 && errno == EAGAIN)
+  while (ret_val < 0 && errno == EINTR);
+  if (ret_val < 0 && errno == EAGAIN)
     {
       return false;
     }
-  if (rv < 0)
+  if (ret_val < 0)
     {
       msg ("read() error");
       conn->state = STATE_END;
       return false;
     }
-  if (rv == 0)
+  if (ret_val == 0)
     {
       if (conn->rbuf_size > 0)
 	{
@@ -335,7 +334,7 @@ try_fill_buffer (Cache *cache, Conn *conn)
     }
 
   uint32_t start_index = conn->rbuf_size;
-  conn->rbuf_size += (uint32_t) rv;
+  conn->rbuf_size += (uint32_t) ret_val;
   assert (conn->rbuf_size <= sizeof (conn->rbuf));
 
   int processed = 0;
@@ -371,24 +370,24 @@ state_req (Cache *cache, Conn *conn)
 static bool
 try_flush_buffer (Conn *conn)
 {
-  ssize_t rv = 0;
+  ssize_t ret_val = 0;
   do
     {
       size_t remain = conn->wbuf_size - conn->wbuf_sent;
-      rv = write (conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
+      ret_val = write (conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
     }
-  while (rv < 0 && errno == EINTR);
-  if (rv < 0 && errno == EAGAIN)
+  while (ret_val < 0 && errno == EINTR);
+  if (ret_val < 0 && errno == EAGAIN)
     {
       return false;
     }
-  if (rv < 0)
+  if (ret_val < 0)
     {
       msg ("write() error");
       conn->state = STATE_END;
       return false;
     }
-  conn->wbuf_sent += (size_t) rv;
+  conn->wbuf_sent += (size_t) ret_val;
   assert (conn->wbuf_sent <= conn->wbuf_size);
   if (conn->wbuf_sent == conn->wbuf_size)
     {
@@ -423,7 +422,10 @@ process_timers (Cache *cache)
 
   while (!dlist_empty (&g_data.idle_list))
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
+#pragma GCC diagnostic pop
 
       uint64_t next_us = next->idle_start + K_IDLE_TIMEOUT_US;
 
@@ -488,10 +490,10 @@ handle_listener_event (int listen_fd)
 	}
 
       // Successfully accepted, now register with epoll
-      struct epoll_event ev;
-      ev.data.fd = conn_fd;
-      ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-      if (epoll_ctl (epfd, EPOLL_CTL_ADD, ev.data.fd, &ev) == -1)
+      struct epoll_event event;
+      event.data.fd = conn_fd;
+      event.events = EPOLLIN | EPOLLOUT | EPOLLET;
+      if (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1)
 	{
 	  msg ("epoll ctl: new conn registration failed");
 	  close (conn_fd);	// ensure we don't leak FD if epoll_ctl fails
@@ -501,15 +503,15 @@ handle_listener_event (int listen_fd)
 
 // Handles an epoll event for an active client connection (not the listener).
 static void
-handle_connection_event (Cache *cache, struct epoll_event *ev)
+handle_connection_event (Cache *cache, struct epoll_event *event)
 {
-  Conn *conn = connpool_lookup (g_data.fd2conn, ev->data.fd);
+  Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
   if (!conn)
     {
       return;			// Already cleaned up or invalid fd
     }
 
-  if (ev->events & (EPOLLHUP | EPOLLERR))
+  if (event->events & (EPOLLHUP | EPOLLERR))
     {
       // Mark for termination, but allow any pending I/O to run if available
       conn->state = STATE_END;
@@ -521,7 +523,7 @@ handle_connection_event (Cache *cache, struct epoll_event *ev)
       return;
     }
 
-  if (ev->events & (EPOLLIN | EPOLLOUT))
+  if (event->events & (EPOLLIN | EPOLLOUT))
     {
       connection_io (cache, conn);
     }
@@ -529,7 +531,7 @@ handle_connection_event (Cache *cache, struct epoll_event *ev)
 
 // Dispatches epoll events to the appropriate handler (listener or connection).
 static void
-process_active_events (Cache *cache, struct epoll_event *events, int count,
+process_active_events (Cache *cache, int count, struct epoll_event *events,
 		       int listen_fd)
 {
   for (int i = 0; i < count; ++i)
@@ -580,7 +582,7 @@ static int
 initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 {
   struct sockaddr_in addr = { 0 };
-  int rv, val = 1;
+  int ret_val, val = 1;
   struct epoll_event event;
 
   // Create Listening Socket
@@ -596,16 +598,16 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   addr.sin_family = AF_INET;
   addr.sin_port = htons (port);
   addr.sin_addr.s_addr = htonl (0);
-  rv = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
-  if (rv)
+  ret_val = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
+  if (ret_val)
     {
       die ("bind()");
       close (*listen_fd);
       return -1;
     }
 
-  rv = listen (*listen_fd, SOMAXCONN);
-  if (rv)
+  ret_val = listen (*listen_fd, SOMAXCONN);
+  if (ret_val)
     {
       die ("listen()");
       close (*listen_fd);
@@ -650,7 +652,10 @@ next_timer_ms (Cache *cache)
   // idle timers
   if (!dlist_empty (&g_data.idle_list))
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
+#pragma GCC diagnostic pop
       next_us = next->idle_start + K_IDLE_TIMEOUT_US;
     }
 
@@ -724,7 +729,7 @@ server_run (uint16_t port)
       // process active connections (listener and client events)
       if (enfd_count > 0)
 	{
-	  process_active_events (cache, events, enfd_count, listen_fd);
+	  process_active_events (cache, enfd_count, events, listen_fd);
 	}
 
       process_timers (cache);

@@ -1,5 +1,4 @@
 CC=gcc
-# Base CFLAGS for production/standard builds
 CFLAGS_BASE=-std=gnu11 -O2 -g -pthread \
         -Wall -Wextra -Werror -Wno-unused-parameter \
         -Wformat=2 -Werror=format-security \

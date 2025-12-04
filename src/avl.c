@@ -7,6 +7,7 @@
 
 #include "avl.h"
 #include <stddef.h>
+#include <stdlib.h>
 
 static uint32_t
 avl_depth (AVLNode *node)
@@ -114,8 +115,8 @@ avl_fix (AVLNode *node)
   while (1)
     {
       avl_update (node);
-      uint32_t l = avl_depth (node->left);
-      uint32_t r = avl_depth (node->right);
+      uint32_t left = avl_depth (node->left);
+      uint32_t right = avl_depth (node->right);
       AVLNode **from = NULL;
 
       if (node->parent)
@@ -124,11 +125,11 @@ avl_fix (AVLNode *node)
 	    ? &node->parent->left : &node->parent->right;
 	}
 
-      if (l == r + 2)
+      if (left == right + 2)
 	{
 	  node = avl_fix_left (node);
 	}
-      else if (l + 2 == r)
+      else if (left + 2 == right)
 	{
 	  node = avl_fix_right (node);
 	}
@@ -149,79 +150,115 @@ avl_del (AVLNode *node)
   if (!node)
     return NULL;
 
-  if (node->right == NULL)
+  AVLNode *parent = node->parent;
+  AVLNode *child = NULL;
+
+  // Node has 0 or 1 child (excluding the two-child case handled later)
+  if (node->left == NULL || node->right == NULL)
     {
-      // no right subtree, replace the node with the left subtree
-      AVLNode *parent = node->parent;
-      if (node->left)
+      // Determine the replacement child (could be NULL)
+      child = node->left ? node->left : node->right;
+
+      if (child)
 	{
-	  node->left->parent = parent;
+	  // Update child's parent pointer
+	  child->parent = parent;
 	}
+
       if (parent)
 	{
-	  // attach the left subtree to the parent
+	  // Link parent to the child (the replacement)
 	  if (parent->left == node)
 	    {
-	      parent->left = node->left;
+	      parent->left = child;
 	    }
 	  else
 	    {
-	      parent->right = node->left;
+	      parent->right = child;
 	    }
+	  // Freeing 'node' is left to the caller.
 	  return avl_fix (parent);
 	}
-      else
-	{
-	  // removing root
-	  return node->left;
-	}
+
+      // If 'node' was the root of the entire tree
+      // Freeing 'node' is left to the caller.
+      return child;		// The new root (may be NULL)
+    }
+
+  // Case 2: Node has two children.
+  // Replace 'node' content with its successor (leftmost node in right subtree).
+  AVLNode *victim = node->right;
+  while (victim->left)
+    {
+      victim = victim->left;
+    }
+
+  // The successor is the 'victim' (it has at most one right child).
+
+  // Find the node that loses a child (where rebalancing must start) ---
+  AVLNode *victim_parent = victim->parent;
+  AVLNode *fix_start = victim_parent;	// The node where the structural change begins
+
+  // Remove the victim from its current spot (iteratively) ---
+  child = victim->right;	// Victim has no left child, only a right child (or NULL)
+
+  if (child)
+    {
+      child->parent = victim_parent;
+    }
+
+  // Update the victim's parent to point to the victim's child
+  if (victim_parent->left == victim)
+    {
+      victim_parent->left = child;
     }
   else
     {
-      // swap the node with its next sibling (leftmost node in right subtree)
-      AVLNode *victim = node->right;
-      while (victim->left)
-	{
-	  victim = victim->left;
-	}
+      // This handles victim_parent->right == victim
+      victim_parent->right = child;
+    }
 
-      AVLNode *root = avl_del (victim);
+  // Replace the node being deleted with th
 
-      // Copy node's structure to victim
-      victim->left = node->left;
-      victim->right = node->right;
-      victim->parent = node->parent;
+  // Victim takes the place of the node-to-be-deleted
+  victim->left = node->left;
+  victim->right = node->right;
+  victim->parent = node->parent;
 
-      // Update children's parent pointers
-      if (victim->left)
-	{
-	  victim->left->parent = victim;
-	}
-      if (victim->right)
-	{
-	  victim->right->parent = victim;
-	}
+  // Update the children of the deleted node to point to the new replacement (victim)
+  if (victim->left)
+    {
+      victim->left->parent = victim;
+    }
+  if (victim->right)
+    {
+      victim->right->parent = victim;
+    }
 
-      // Update parent's child pointer
-      AVLNode *parent = node->parent;
-      if (parent)
+  // Update the parent of the deleted node to point to the replacement (victim)
+  if (parent)
+    {
+      if (parent->left == node)
 	{
-	  if (parent->left == node)
-	    {
-	      parent->left = victim;
-	    }
-	  else
-	    {
-	      parent->right = victim;
-	    }
-	  return root;
+	  parent->left = victim;
 	}
       else
 	{
-	  // removing root
-	  return victim;
+	  parent->right = victim;
 	}
     }
+
+  // Fix invariants on the replacement node and re-balance 
+  if (fix_start == node)
+    {
+      fix_start = victim;
+    }
+
+  // IMPORTANT: Update the victim's depth and count now that it has its new children/pointers.
+  avl_update (victim);
+
+  // Freeing 'node' is left to the caller.
+  return avl_fix (fix_start);
 }
 
 // offset into the succeeding or preceding node.

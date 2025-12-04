@@ -9,8 +9,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
 #include "out.h"
 #include "buffer.h"
+#include "common.h"
 
 
 void
@@ -35,9 +37,9 @@ out_str (Buffer *out, const char *val)
 }
 
 void
-out_str_size (Buffer *out, const char *s, size_t size)
+out_str_size (Buffer *out, const char *string, size_t size)
 {
-  if (!s || size == 0)
+  if (!string || size == 0)
     {
       out_nil (out);
       return;
@@ -53,7 +55,7 @@ out_str_size (Buffer *out, const char *s, size_t size)
   buf_append_byte (out, SER_STR);
   uint32_t len = (uint32_t) size;
   buf_append_u32 (out, len);
-  buf_append_bytes (out, s, len);
+  buf_append_bytes (out, string, len);
 }
 
 void
@@ -86,10 +88,10 @@ out_err (Buffer *out, int32_t code, const char *msg)
 }
 
 void
-out_arr (Buffer *out, uint32_t n)
+out_arr (Buffer *out, uint32_t num)
 {
   buf_append_byte (out, SER_ARR);
-  buf_append_u32 (out, n);
+  buf_append_u32 (out, num);
 }
 
 size_t
@@ -102,7 +104,7 @@ out_arr_begin (Buffer *out)
 }
 
 bool
-out_arr_end (Buffer *out, size_t pos, uint32_t n)
+out_arr_end (Buffer *out, size_t pos, uint32_t num)
 {
   // Validate that pos points to an array type tag
   if (!out || pos == 0 || pos > buf_len (out))
@@ -118,9 +120,8 @@ out_arr_end (Buffer *out, size_t pos, uint32_t n)
 
   // Patch in the actual count
   // We aren't using buf_append_u32 here, so we must explicitly convert to Network Byte Order (Big-Endian).
-  uint32_t n_net = hton_u32 (n);
+  uint32_t n_net = hton_u32 (num);
 
-  uint8_t *writable = (uint8_t *) data;
-  memcpy (&writable[pos], &n_net, sizeof (uint32_t));
+  memcpy (&data[pos], &n_net, sizeof (uint32_t));
   return true;
 }

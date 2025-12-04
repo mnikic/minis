@@ -122,28 +122,28 @@ heap_get (Heap *heap, size_t pos)
 }
 
 static size_t
-heap_parent (size_t i)
+heap_parent (size_t index)
 {
-  return (i + 1) / 2 - 1;
+  return ((index + 1) / 2) - 1;
 }
 
 static size_t
-heap_left (size_t i)
+heap_left (size_t index)
 {
-  return i * 2 + 1;
+  return (index * 2) + 1;
 }
 
 static size_t
-heap_right (size_t i)
+heap_right (size_t index)
 {
-  return i * 2 + 2;
+  return (index * 2) + 2;
 }
 
 static void
 heap_up (Heap *heap, size_t pos)
 {
-  HeapItem t = heap->items[pos];
-  while (pos > 0 && heap->items[heap_parent (pos)].val > t.val)
+  HeapItem item = heap->items[pos];
+  while (pos > 0 && heap->items[heap_parent (pos)].val > item.val)
     {
       // swap with the parent
       heap->items[pos] = heap->items[heap_parent (pos)];
@@ -153,7 +153,7 @@ heap_up (Heap *heap, size_t pos)
 	}
       pos = heap_parent (pos);
     }
-  heap->items[pos] = t;
+  heap->items[pos] = item;
   if (heap->items[pos].ref)
     {
       *heap->items[pos].ref = pos;
@@ -163,23 +163,23 @@ heap_up (Heap *heap, size_t pos)
 static void
 heap_down (Heap *heap, size_t pos)
 {
-  HeapItem t = heap->items[pos];
+  HeapItem item = heap->items[pos];
   while (1)
     {
       // find the smallest one among the parent and their kids
-      size_t l = heap_left (pos);
-      size_t r = heap_right (pos);
+      size_t left = heap_left (pos);
+      size_t right = heap_right (pos);
       size_t min_pos = (size_t) -1;
-      uint64_t min_val = t.val;
+      uint64_t min_val = item.val;
 
-      if (l < heap->size && heap->items[l].val < min_val)
+      if (left < heap->size && heap->items[left].val < min_val)
 	{
-	  min_pos = l;
-	  min_val = heap->items[l].val;
+	  min_pos = left;
+	  min_val = heap->items[left].val;
 	}
-      if (r < heap->size && heap->items[r].val < min_val)
+      if (right < heap->size && heap->items[right].val < min_val)
 	{
-	  min_pos = r;
+	  min_pos = right;
 	}
       if (min_pos == (size_t) -1)
 	{
@@ -194,7 +194,7 @@ heap_down (Heap *heap, size_t pos)
 	}
       pos = min_pos;
     }
-  heap->items[pos] = t;
+  heap->items[pos] = item;
   if (heap->items[pos].ref)
     {
       *heap->items[pos].ref = pos;
