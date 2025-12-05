@@ -267,10 +267,9 @@ h_scan (HTab *tab, void (*func) (HNode *, void *), void *arg)
       HNode *node = tab->tab[i];
       while (node)
 	{
-          HNode *next_node = node->next;
+	  HNode *next_node = node->next;
 	  func (node, arg);
 	  node = next_node;
 	}
     }
 }
-

@@ -63,7 +63,6 @@ hton_u32 (uint32_t host_val);
 uint64_t
 hton_u64 (uint64_t host_val);
 
-void
-msgf(const char *fmt, ...);
+     void msgf (const char *fmt, ...);
 
 #endif /* COMMON_H_ */

@@ -108,7 +108,7 @@ accept_new_conn (int file_des)
 	  // No more connections to accept
 	  return -1;
 	}
-      msg ("accept() error");
+      msgf ("accept() error: %s", strerror (errno));
       return -2;		// Distinguish between no connection (-1) and critical error (-2)
     }
 
@@ -137,7 +137,8 @@ accept_new_conn (int file_des)
 static void
 conn_done (Conn *conn)
 {
-  epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);	// Remove from epoll
+  // best-effort; ignore epoll errors
+  (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);	// Remove from epoll
   connpool_remove (g_data.fd2conn, conn->fd);
   close (conn->fd);
   dlist_detach (&conn->idle_list);
@@ -156,9 +157,10 @@ conn_set_epoll_events (Conn *conn, uint32_t events)
   // Always use EPOLLET (Edge Triggered)
   event.events = events | EPOLLET;
 
+  // Use epoll_ctl for MOD; this is the slow path we want to minimize
   if (epoll_ctl (g_data.epfd, EPOLL_CTL_MOD, conn->fd, &event) == -1)
     {
-      msg ("epoll ctl: MOD failed");
+      msgf ("epoll ctl: MOD failed: %s", strerror (errno));
     }
 }
 
@@ -256,9 +258,54 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
   bool success = do_request (cache, req_data, req_len, out);
 
   size_t wlen = buf_len (out);
-  uint32_t nwlen = htonl ((uint32_t) wlen);
+  size_t needed = 4 + wlen;	// 4 bytes for length + data length
+
+  size_t avail = sizeof conn->wbuf - conn->wbuf_size;
+
+  // Robust Buffer Overflow Check & Error Handling (Expensive Path)
+  if (needed > avail)
+    {
+      // The response is too large for the connection's write buffer.
+      // Generate a small "server busy" error and send that instead.
+      // This involves heap allocation and deallocation (buf_new/buf_free), 
+      // which is why this path is slower but necessary for robustness.
+
+      Buffer *errb = buf_new ();
+      out_err (errb, ERR_UNKNOWN, "server busy: response truncated");
+      size_t errlen = buf_len (errb);
+
+      // Check if even the small error response will fit
+      if (conn->wbuf_size + 4 + errlen <= sizeof conn->wbuf)
+	{
+	  uint32_t nerrlen = htonl ((uint32_t) errlen);
+	  // Append length header
+	  memcpy (&conn->wbuf[conn->wbuf_size], &nerrlen, 4);
+	  // Append error data
+	  memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (errb), errlen);
+	  conn->wbuf_size += 4 + errlen;
+
+	  // Transition to writing the error immediately
+	  conn->state = STATE_RES;
+	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+
+	  buf_free (errb);
+	  buf_free (out);
+	  *out_wlen = 0;
+	  // Return false because we failed to deliver the requested response
+	  return false;
+	}
+
+      // If even the small error doesn't fit, we have to drop the connection
+      buf_free (errb);
+      buf_free (out);
+      conn->state = STATE_END;
+      *out_wlen = 0;
+      return false;
+    }
+  // END: Robust Buffer Overflow Check & Error Handling
 
   // Append length header (4 bytes) and response data (wlen) to wbuf
+  uint32_t nwlen = htonl ((uint32_t) wlen);
   memcpy (&conn->wbuf[conn->wbuf_size], &nwlen, 4);
   memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (out), wlen);
 
@@ -303,13 +350,14 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
 
   if (!success)
     {
-      msg ("bad req, closing connection");
-      conn->state = STATE_END;
+      // If execute_and_buffer_response returns false, it already
+      // transitioned to STATE_END (bad request) or STATE_RES (server busy error).
+      msg
+	("request failed, or could not buffer response, closing connection");
     }
-  else if (*start_index >= conn->rbuf_size
-	   || (conn->wbuf_size + wlen + 4) > K_MAX_MSG)
+  else if (*start_index >= conn->rbuf_size)
     {
-      // we read it all, try to send!
+      // we read all data from the client, try to send!
       conn->state = STATE_RES;
       // Add EPOLLOUT when we transition to STATE_RES
       conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
@@ -319,40 +367,54 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   return (conn->state == STATE_REQ);
 }
 
-static bool
-try_fill_buffer (Cache *cache, Conn *conn)
+// Helper function to read data from the socket with error handling.
+// Returns: > 0 (bytes read), -1 (EAGAIN/drained), -2 (error/EOF)
+static ssize_t
+read_data_from_socket (Conn *conn, size_t cap)
 {
-  // try to fill the buffer
-  assert (conn->rbuf_size < sizeof (conn->rbuf));
-  ssize_t ret = 0;
+  ssize_t err;
+
+  // Note: cap checking (if cap == 0) is done by the caller (try_fill_buffer)
+  // because that's where the STATE_RES transition decision is made.
+  // This function focuses only on the read syscall itself.
+
   do
     {
-      size_t cap = sizeof (conn->rbuf) - conn->rbuf_size;
-      ret = read (conn->fd, &conn->rbuf[conn->rbuf_size], cap);
+      err = read (conn->fd, &conn->rbuf[conn->rbuf_size], cap);
     }
-  while (ret < 0 && errno == EINTR);
-  if (ret < 0 && errno == EAGAIN)
+  while (err < 0 && errno == EINTR);
+
+  if (err < 0)
     {
-      return false;
-    }
-  if (ret < 0)
-    {
-      msg ("read() error");
+      if (errno == EAGAIN)
+	{
+	  return -1;		// Socket drained
+	}
+      msgf ("read() error: %s", strerror (errno));
       conn->state = STATE_END;
-      return false;
+      return -2;
     }
-  if (ret == 0)
+  if (err == 0)
     {
       if (conn->rbuf_size > 0)
 	{
 	  msg ("unexpected EOF");
 	}
       conn->state = STATE_END;
-      return false;
+      return -2;
     }
 
+  // Success: err > 0
+  return err;
+}
+
+// Helper function to process newly received data (request parsing and buffer compaction).
+// Returns: true if the outer draining loop should stop (due to state change or MAX_CHUNKS), false otherwise.
+static bool
+process_received_data (Cache *cache, Conn *conn, uint32_t bytes_read)
+{
   uint32_t start_index = conn->rbuf_size;
-  conn->rbuf_size += (uint32_t) ret;
+  conn->rbuf_size += bytes_read;
   assert (conn->rbuf_size <= sizeof (conn->rbuf));
 
   int processed = 0;
@@ -362,6 +424,7 @@ try_fill_buffer (Cache *cache, Conn *conn)
 	break;
     }
 
+  // Buffer Compaction
   uint32_t remain = conn->rbuf_size - start_index;
   if (remain)
     {
@@ -369,63 +432,126 @@ try_fill_buffer (Cache *cache, Conn *conn)
     }
   conn->rbuf_size = remain;
 
-  // If we ended up in STATE_RES due to a finished read or bad request, transition to state_res
+  // State Transition/Flush Check
   if (conn->state == STATE_RES || conn->state == STATE_END)
+    {
+      // Process the response immediately before the next epoll_wait cycle
+      state_res (conn);
+      // Stop draining, let EPOLLOUT handle the rest.
+      return true;
+    }
+
+  // Stop draining if we hit the chunk limit
+  if (processed >= MAX_CHUNKS)
+    {
+      return true;
+    }
+
+  // Continue draining if more capacity is available
+  return false;
+}
+
+static bool
+try_fill_buffer (Cache *cache, Conn *conn)
+{
+  // Outer loop to drain the socket in ET mode
+  while (1)
+    {
+      size_t cap = sizeof (conn->rbuf) - conn->rbuf_size;
+
+      if (cap == 0)
+	{
+	  // Client read buffer is full, transition to response state
+	  conn->state = STATE_RES;
+	  break;
+	}
+
+      ssize_t bytes_read = read_data_from_socket (conn, cap);
+
+      if (bytes_read == -2)
+	{
+	  // Critical error or EOF, connection terminated (STATE_END already set)
+	  return true;
+	}
+
+      if (bytes_read == -1)
+	{
+	  // EAGAIN -> socket drained, no more data for now
+	  return false;
+	}
+
+      // bytes_read > 0, process data.
+      if (process_received_data (cache, conn, (uint32_t) bytes_read))
+	{
+	  // The inner processor requested a stop (MAX_CHUNKS hit or state changed)
+	  return true;
+	}
+    }
+
+  // If we broke out due to cap == 0 (read buffer full), process the response immediately.
+  if (conn->state == STATE_RES)
     {
       state_res (conn);
     }
-  return (conn->state == STATE_REQ);
+  return true;
 }
 
 static void
 state_req (Cache *cache, Conn *conn)
 {
+  // Keep draining/processing until try_fill_buffer indicates EAGAIN (false)
+  // or a state change happened (true, which breaks the loop inside try_fill_buffer)
   while (try_fill_buffer (cache, conn))
     {
+      if (conn->state != STATE_REQ)
+	break;
     }
 }
 
 static bool
 try_flush_buffer (Conn *conn)
 {
-  ssize_t ret = 0;
-  do
+  while (conn->wbuf_sent < conn->wbuf_size)
     {
       size_t remain = conn->wbuf_size - conn->wbuf_sent;
-      ret = write (conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
-    }
-  while (ret < 0 && errno == EINTR);
-  if (ret < 0 && errno == EAGAIN)
-    {
-      return false;
-    }
-  if (ret < 0)
-    {
-      msg ("write() error");
-      conn->state = STATE_END;
-      return false;
-    }
-  conn->wbuf_sent += (size_t) ret;
-  assert (conn->wbuf_sent <= conn->wbuf_size);
-  if (conn->wbuf_sent == conn->wbuf_size)
-    {
-      // response was fully sent, change state back or finalize
-      conn->wbuf_sent = 0;
-      conn->wbuf_size = 0;
+      ssize_t err =
+	send (conn->fd, &conn->wbuf[conn->wbuf_sent], remain, MSG_NOSIGNAL);
 
-      if (conn->state == STATE_END)
+      if (err < 0)
 	{
-	  return false;		// Done writing the error response, let the loop clean up
+	  if (errno == EINTR)
+	    continue;
+	  if (errno == EAGAIN)
+	    return false;
+	  msgf ("write() error: %s", strerror (errno));
+	  conn->state = STATE_END;
+	  return false;
+	}
+      if (err == 0)
+	{
+	  msg ("write returned 0 unexpectedly");
+	  conn->state = STATE_END;
+	  return false;
 	}
 
-      conn->state = STATE_REQ;
-      // Remove EPOLLOUT when we transition back to STATE_REQ
-      conn_set_epoll_events (conn, EPOLLIN);
-
-      return false;
+      conn->wbuf_sent += (size_t) err;
+      assert (conn->wbuf_sent <= conn->wbuf_size);
     }
-  // still got some data in wbuf, could try to write again
-  return true;
+
+  // response was fully sent
+  conn->wbuf_sent = 0;
+  conn->wbuf_size = 0;
+
+  if (conn->state == STATE_END)
+    {
+      return false;		// Done writing the error response, let the loop clean up
+    }
+
+  conn->state = STATE_REQ;
+  // Remove EPOLLOUT when we transition back to STATE_REQ
+  conn_set_epoll_events (conn, EPOLLIN);
+
+  return false;			// nothing left to write right now
 }
 
 static void
@@ -443,12 +569,10 @@ process_timers (Cache *cache)
 
   while (!dlist_empty (&g_data.idle_list))
     {
-      // --- Start Pragma for clang-diagnostic-cast-align suppression ---
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
 #pragma GCC diagnostic pop
-      // --- End Pragma for clang-diagnostic-cast-align suppression ---
 
       uint64_t next_us = next->idle_start + K_IDLE_TIMEOUT_US;
 
@@ -460,7 +584,7 @@ process_timers (Cache *cache)
 	  break;
 	}
 
-      fprintf (stderr, "removing idle connection: %d\n", next->fd);
+      msgf ("removing idle connection: %d", next->fd);
       // conn_done removes 'next' from all structures and frees the memory.
       conn_done (next);
     }
@@ -484,10 +608,6 @@ connection_io (Cache *cache, Conn *conn)
   else if (conn->state == STATE_RES)
     {
       state_res (conn);
-    }
-  else
-    {
-      assert (0);
     }
 }
 
@@ -520,7 +640,8 @@ handle_listener_event (int listen_fd)
       event.events = EPOLLIN | EPOLLET;
       if (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1)
 	{
-	  msg ("epoll ctl: new conn registration failed");
+	  msgf ("epoll ctl: new conn registration failed: %s",
+		strerror (errno));
 	  close (conn_fd);	// ensure we don't leak FD if epoll_ctl fails
 	}
     }				// end while(1) drain loop
@@ -538,19 +659,22 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
 
   if (event->events & (EPOLLHUP | EPOLLERR))
     {
-      // Mark for termination, but allow any pending I/O to run if available
+      // If error/hangup, mark for termination.
       conn->state = STATE_END;
-    }
-
-  if (conn->state == STATE_END)
-    {
       conn_done (conn);
       return;
     }
 
+  // If there is an event and the connection isn't marked for close, process it.
   if (event->events & (EPOLLIN | EPOLLOUT))
     {
       connection_io (cache, conn);
+    }
+
+  // Cleanup if any I/O operation (like read or write) transitioned it to STATE_END
+  if (conn->state == STATE_END)
+    {
+      conn_done (conn);
     }
 }
 
@@ -582,16 +706,16 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
   connpool_iter (g_data.fd2conn, &connections, &count);
 
   // Close all active client connections
-  for (size_t i = count - 1; i < count; i--)
+  for (size_t i = count; i-- > 0;)
     {
       Conn *conn = connections[i];
-      fprintf (stderr, "Forcing cleanup of active connection: %d\n",
+      msgf ("Forcing cleanup of active connection: %d",
 	       conn->fd);
       conn_done (conn);
     }
 
   connpool_free (g_data.fd2conn);
-  cache_free(cache);
+  cache_free (cache);
 
   // Close server file descriptors
   close (listen_fd);
@@ -605,7 +729,7 @@ static int
 initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 {
   struct sockaddr_in addr = { 0 };
-  int ret, val = 1;
+  int err, val = 1;
   struct epoll_event event;
 
   // 1. Create Listening Socket
@@ -618,33 +742,33 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 
   setsockopt (*listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
 
-  // 2. Bind
+  // Bind
   addr.sin_family = AF_INET;
   addr.sin_port = htons (port);
   addr.sin_addr.s_addr = htonl (0);
-  ret = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
-  if (ret)
+  err = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
+  if (err)
     {
       die ("bind()");
       close (*listen_fd);
       return -1;
     }
 
-  // 3. Listen
-  ret = listen (*listen_fd, SOMAXCONN);
-  if (ret)
+  // Listen
+  err = listen (*listen_fd, SOMAXCONN);
+  if (err)
     {
       die ("listen()");
       close (*listen_fd);
       return -1;
     }
-  fprintf (stderr, "The server is listening on port %i.\n", port);
+  msgf ("The server is listening on port %i.", port);
 
   // Initialize connection pool and set non-blocking
   g_data.fd2conn = connpool_new (10);
   fd_set_nb (*listen_fd);
 
-  // 4. Create Epoll Instance
+  // Create Epoll Instance
   *epfd = epoll_create1 (0);
   if (*epfd == -1)
     {
@@ -654,7 +778,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
     }
   g_data.epfd = *epfd;
 
-  // 5. Register Listener with Epoll
+  // Register Listener with Epoll
   // Listener only needs EPOLLIN
   event.events = EPOLLIN | EPOLLET;
   event.data.fd = *listen_fd;
@@ -679,12 +803,10 @@ next_timer_ms (Cache *cache)
   // idle timers
   if (!dlist_empty (&g_data.idle_list))
     {
-      // --- Start Pragma for clang-diagnostic-cast-align suppression ---
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
 #pragma GCC diagnostic pop
-      // --- End Pragma for clang-diagnostic-cast-align suppression ---
 
       next_us = next->idle_start + K_IDLE_TIMEOUT_US;
     }
@@ -695,7 +817,6 @@ next_timer_ms (Cache *cache)
     {
       next_us = from_cache;
     }
-
 
   if (next_us == (uint64_t) - 1)
     {
@@ -733,13 +854,13 @@ server_run (uint16_t port)
   dlist_init (&g_data.idle_list);
   Cache *cache = cache_init ();
 
-  // Phase 1: Server Initialization
+  // Server Initialization
   if (initialize_server_core (port, &listen_fd, &epfd) != 0)
     {
       return -1;
     }
 
-  // Phase 2: Main Event Loop
+  // Main Event Loop
   while (!g_data.terminate_flag)	// Use the flag to control the loop
     {
       int timeout_ms = (int) next_timer_ms (cache);
@@ -766,7 +887,7 @@ server_run (uint16_t port)
       process_timers (cache);
     }
 
-  // Phase 3: Graceful shutdown and resource cleanup
+  // Graceful shutdown and resource cleanup
   cleanup_server_resources (cache, listen_fd, epfd);
 
   return 0;
