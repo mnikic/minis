@@ -591,7 +591,7 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
     }
 
   connpool_free (g_data.fd2conn);
-  //cache_free(cache);
+  cache_free(cache);
 
   // Close server file descriptors
   close (listen_fd);
