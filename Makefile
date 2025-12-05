@@ -136,7 +136,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 	
 # --- Test Targets ---
-TEST_SCRIPT = src/test_cmds_extra.py
+TEST_SCRIPT = test/test_cmds_extra.py
 
 test: $(CLIENT_BIN)
 	@echo "--- Running standard tests with $(CLIENT_BIN) ---"

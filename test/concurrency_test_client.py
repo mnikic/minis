@@ -19,7 +19,7 @@ ERR_UNKNOWN_CMD = 1
 
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 1234
-NUM_THREADS = 10 # Number of concurrent clients to simulate
+NUM_THREADS = 100 # Number of concurrent clients to simulate
 NUM_ITERATIONS_PER_THREAD = 5 # How many commands each client sends
 
 # --- Protocol Utility Functions (Copied from previous file) ---
