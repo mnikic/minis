@@ -11,8 +11,6 @@
 #include "connections.h"
 #include "common.h"
 
-// 
-
 static void
 connpool_grow (ConnPool *pool, size_t new_capacity)
 {

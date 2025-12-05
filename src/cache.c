@@ -642,7 +642,7 @@ cache_free (Cache *cache)
 {
   if (!cache)
     return;
-  // 1. Destroy all individual Entry objects in the hash map.
+  // Destroy all individual Entry objects in the hash map.
   // We iterate over all nodes in the internal hash tables (ht1 and ht2) and destroy the Entry.
   h_scan (&cache->db.ht1, &cb_destroy_entry, NULL);
   h_scan (&cache->db.ht2, &cb_destroy_entry, NULL);

@@ -176,8 +176,8 @@ conn_set_epoll_events (Conn *conn, uint32_t events)
   // Use epoll_ctl for MOD; this is the slow path we want to minimize
   if (epoll_ctl (g_data.epfd, EPOLL_CTL_MOD, conn->fd, &event) == -1)
     {
-     if (errno == ENOENT)
-        return;
+      if (errno == ENOENT)
+	return;
       msgf ("epoll ctl: MOD failed: %s", strerror (errno));
     }
 }

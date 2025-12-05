@@ -6,7 +6,7 @@
  */
 #include <assert.h>
 #include <pthread.h>
-#include <stdlib.h>		// for free
+#include <stdlib.h>
 #include "thread_pool.h"
 #include "common.h"
 
