@@ -36,6 +36,8 @@ void hm_init (HMap * hmap);
 HNode *hm_lookup (HMap * hmap, HNode * key, hnode_cmp_fn cmp);
 void hm_insert (HMap * hmap, HNode * node);
 HNode *hm_pop (HMap * hmap, HNode * key, hnode_cmp_fn cmp);
+void
+h_scan (HTab *tab, void (*func) (HNode *, void *), void *arg);
 size_t hm_size (HMap * hmap);
 void hm_destroy (HMap * hmap);
 

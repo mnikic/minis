@@ -6,6 +6,7 @@
  */
 #include "deque.h"
 #include "common.h"
+#include <stdlib.h>
 
 t_deque *
 dq_init (void)
@@ -108,4 +109,24 @@ dq_peek_back (t_deque *deque)
   if (dq_empty (deque))
     return NULL;
   return deque->last->content;
+}
+
+void
+dq_dispose (t_deque *deque)
+{
+  t_deque_node *current = deque->first;
+  t_deque_node *next;
+
+  // Iterate through all nodes and free them
+  while (current != NULL)
+    {
+      next = current->next;
+      // NOTE: We do NOT free current->content (the actual work item),
+      // as that responsibility belongs to the caller (thread pool/worker).
+      free (current);
+      current = next;
+    }
+
+  // Finally, free the deque structure itself
+  free (deque);
 }

@@ -8,9 +8,6 @@
 #ifndef DEQUE_H_
 #define DEQUE_H_
 
-#include <stdio.h>
-#include <stdlib.h>
-
 typedef struct s_deque_node
 {
   void *content;
@@ -32,5 +29,6 @@ void *dq_pop_front (t_deque * deque);
 void *dq_pop_back (t_deque * deque);
 void *dq_peek_front (t_deque * deque);
 void *dq_peek_back (t_deque * deque);
+void dq_dispose (t_deque * deque);
 
 #endif /* DEQUE_H_ */

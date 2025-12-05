@@ -34,6 +34,8 @@ enum
 static void
 entry_destroy (Entry *ent)
 {
+  if (!ent)
+    return;
   switch (ent->type)
     {
     case T_ZSET:
@@ -71,21 +73,15 @@ entry_eq (HNode *lhs, HNode *rhs)
 }
 
 static void
-h_scan (HTab *tab, void (*func) (HNode *, void *), void *arg)
+cb_destroy_entry (HNode *node, void *arg)
 {
-  if (tab->size == 0)
-    {
-      return;
-    }
-  for (size_t i = 0; i < tab->mask + 1; ++i)
-    {
-      HNode *node = tab->tab[i];
-      while (node)
-	{
-	  func (node, arg);
-	  node = node->next;
-	}
-    }
+  (void) arg;			// unused
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  Entry *ent = container_of (node, Entry, node);
+#pragma GCC diagnostic pop
+  // This is a direct iteration over the nodes, so we call the direct destructor
+  entry_destroy (ent);
 }
 
 static void
@@ -639,4 +635,26 @@ cache_next_expiry (Cache *cache)
       return (uint64_t) - 1;
     }
   return heap_top (&cache->heap)->val;
+}
+
+void
+cache_free (Cache *cache)
+{
+  if (!cache)
+    return;
+  // 1. Destroy all individual Entry objects in the hash map.
+  // We iterate over all nodes in the internal hash tables (ht1 and ht2) and destroy the Entry.
+  h_scan (&cache->db.ht1, &cb_destroy_entry, NULL);
+  h_scan (&cache->db.ht2, &cb_destroy_entry, NULL);
+
+  // Clean up the internal structures of the components.
+  thread_pool_destroy (&cache->tp);
+
+  // Clean up the min-heap internal structure (frees the internal array buffer)
+  heap_free (&cache->heap);
+  // Clean up the hash map internal structure (frees the internal array buffers)
+  hm_destroy (&cache->db);
+
+  // Free the Cache structure itself.
+  free (cache);
 }

@@ -5,6 +5,7 @@
  *      Author: loshmi
  */
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
 #include "common.h"
@@ -31,6 +32,25 @@ get_monotonic_usec (void)
   struct timespec tvs = { 0, 0 };
   clock_gettime (CLOCK_MONOTONIC, &tvs);
   return (uint64_t) ((tvs.tv_sec * 1000000) + (tvs.tv_nsec / 1000));
+}
+
+
+__attribute__((format (printf, 1, 2)))
+     void msgf (const char *fmt, ...)
+{
+  va_list apl;
+  va_start (apl, fmt);
+
+  vfprintf (stderr, fmt, apl);
+
+  va_end (apl);
+
+  // Add newline only if the format does NOT end with one
+  size_t len = strlen (fmt);
+  if (len == 0 || fmt[len - 1] != '\n')
+    {
+      fputc ('\n', stderr);
+    }
 }
 
 void

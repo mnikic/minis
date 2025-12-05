@@ -26,10 +26,13 @@ typedef struct thead_pool
   t_deque *queue;
   pthread_mutex_t mu;
   pthread_cond_t not_empty;
+  size_t num_threads; // Store number of threads for join operation
+  int stop;           // Flag to signal workers to exit
 } ThreadPool;
 
 
 void thread_pool_init (ThreadPool * thp, size_t num_threads);
 void thread_pool_queue (ThreadPool * thp, void (*func) (void *), void *arg);
+void thread_pool_destroy (ThreadPool * thp); // New function declaration
 
 #endif /* THREAD_POOL_H_ */

@@ -31,8 +31,11 @@ heap_free (Heap *heap)
 {
   if (!heap)
     return;
-  free (heap->items);
-  heap->items = NULL;
+  if (heap->items)
+    {
+      free (heap->items);
+      heap->items = NULL;
+    }
   heap->size = 0;
   heap->capacity = 0;
 }

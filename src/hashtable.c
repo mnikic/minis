@@ -236,12 +236,17 @@ hm_destroy (HMap *hmap)
   if (!hmap)
     return;
 
-  // Note: This only frees the table arrays, not the nodes themselves.
   // Nodes must be freed by the caller since this is an intrusive design.
-  free (hmap->ht1.tab);
-  free (hmap->ht2.tab);
-
-  hm_init (hmap);
+  if (hmap->ht1.tab)
+    {
+      free (hmap->ht1.tab);
+      hmap->ht1.tab = NULL;
+    }
+  if (hmap->ht2.tab)
+    {
+      free (hmap->ht2.tab);
+      hmap->ht2.tab = NULL;
+    }
 }
 
 bool
@@ -249,3 +254,23 @@ hm_is_resizing (const HMap *hmap)
 {
   return hmap && hmap->ht2.tab != NULL;
 }
+
+void
+h_scan (HTab *tab, void (*func) (HNode *, void *), void *arg)
+{
+  if (!tab || tab->size == 0)
+    {
+      return;
+    }
+  for (size_t i = 0; i < tab->mask + 1; ++i)
+    {
+      HNode *node = tab->tab[i];
+      while (node)
+	{
+          HNode *next_node = node->next;
+	  func (node, arg);
+	  node = next_node;
+	}
+    }
+}
+
