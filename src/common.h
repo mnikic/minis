@@ -26,8 +26,14 @@
 
 #define DEFAULT_PORT 1234
 
-#define K_MAX_MSG 4096
-#define K_MAX_ARGS 100
+// Max size of a single request message (payload data after the 4-byte length prefix).
+// Currently at 8KB (8192 bytes) to accommodate larger commands.
+// This must be consistent between the client and the server's read buffer capacity.
+#define K_MAX_MSG (1024 * 8)
+#define K_MAX_ARGS 1024
+#define K_MAX_KEY 42
+#define K_MAX_VAL (1024 * 7)
+
 #define container_of(ptr, type, member) __extension__ ({                     \
     /* Type check: ensure 'ptr' is a pointer to the member's type */         \
     __typeof__(((type *)0)->member) *__mptr = (ptr);                  \
@@ -37,11 +43,11 @@
     (type *)((char *)__mptr - offsetof(type, member));                      \
 })
 
-uint64_t get_monotonic_usec (void);
+uint64_t 
+get_monotonic_usec (void);
 
-uint64_t str_hash (const uint8_t * data, size_t len);
-
-void msg (const char *msg);
+uint64_t 
+str_hash (const uint8_t * data, size_t len);
 
 __attribute__((noreturn))
      void
@@ -49,20 +55,19 @@ __attribute__((noreturn))
 
 uint16_t
 parse_port (int argc, char *argv[]);
-
-     uint64_t htoll (uint64_t number);
-
+uint64_t
+htoll (uint64_t number);
 uint64_t
 ntohll (uint64_t number);
 
 // Portable implementation of Host to Network 32-bit (htonl)
 uint32_t
 hton_u32 (uint32_t host_val);
-
 // Portable implementation of Host to Network 64-bit
 uint64_t
 hton_u64 (uint64_t host_val);
 
      void msgf (const char *fmt, ...);
+     void msg (const char *msg);
 
 #endif /* COMMON_H_ */

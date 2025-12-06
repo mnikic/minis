@@ -347,12 +347,41 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   memcpy (&len, &conn->rbuf[*start_index], 4);
   len = ntohl (len);
 
+  // Check against the server's maximum message size. K_MAX_MSG is the correct, permanent limit.
   if (len > K_MAX_MSG)
     {
-      msg ("too long");
-      conn->state = STATE_END;
-      return false;
+      msg ("request too long");
+
+      // Build an error response
+      Buffer *err = buf_new ();
+      out_err (err, ERR_2BIG, "request too large; connection closed.");
+      size_t errlen = buf_len (err);
+
+      // Can it fit into the write buffer?
+      if (4 + errlen <= sizeof (conn->wbuf))
+	{
+	  uint32_t num = htonl ((uint32_t) errlen);
+	  memcpy (&conn->wbuf[0], &num, 4);
+	  memcpy (&conn->wbuf[4], buf_data (err), errlen);
+	  conn->wbuf_size = 4 + errlen;
+	  conn->wbuf_sent = 0;
+
+	  conn->state = STATE_RES;
+	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+	}
+      else
+	{
+	  // If even the error won't fit → hard close
+	  conn->state = STATE_END;
+	}
+
+      buf_free (err);
+
+      *start_index = conn->rbuf_size;
+
+      return false;		// Stop processing further requests from this buffer segment.
     }
+
   if (4 + len + *start_index > conn->rbuf_size)
     {
       // not enough data in the buffer. Will retry in the next iteration
@@ -407,13 +436,12 @@ read_data_from_socket (Conn *conn, size_t cap)
       conn->state = STATE_END;
       return -2;
     }
+
   if (err == 0)
     {
-      if (conn->rbuf_size > 0)
-	{
-	  msg ("unexpected EOF");
-	}
       conn->state = STATE_END;
+      // We return -2 to signal the outer loop (try_fill_buffer) that
+      // processing must stop immediately and the connection is done.
       return -2;
     }
 
@@ -547,7 +575,6 @@ try_flush_buffer (Conn *conn)
       conn->wbuf_sent += (size_t) err;
       assert (conn->wbuf_sent <= conn->wbuf_size);
     }
-
   // response was fully sent
   conn->wbuf_sent = 0;
   conn->wbuf_size = 0;

@@ -10,6 +10,8 @@
 #include <netinet/ip.h>
 #include "common.h"
 
+// Note: k_max_msg has been moved to common.h as K_MAX_MSG
+
 static int32_t
 read_full (int fd, char *buf, size_t n)
 {
@@ -44,33 +46,38 @@ write_all (int fd, const char *buf, size_t n)
   return 0;
 }
 
-const size_t k_max_msg = 4096;
-
 static int32_t
 send_req (int fd, char **cmd, size_t cmd_size)
 {
-  // Calculate total length (4 bytes for array size + 4 bytes for each command length)
+  // Calculate total payload length (4 bytes for array size + 4 bytes for each command length + command strings)
   uint32_t total_len = 4;
   for (size_t i = 0; i < cmd_size; i++)
     {
       total_len += (uint32_t) strlen (cmd[i]) + 4;
     }
 
-  if (total_len > k_max_msg)
+  // Check against the shared maximum message size
+  if (total_len > K_MAX_MSG)
     {
+      fprintf (stderr,
+	       "Request size (%u bytes) exceeds client/server limit (%u bytes)\n",
+	       total_len, K_MAX_MSG);
       return -1;
     }
 
   // Allocate buffer for header (4 bytes total length) + payload
-  char wbuf[4 + k_max_msg];
+  char wbuf[4 + K_MAX_MSG];
 
+  // 1. Write total payload length (total_len)
   uint32_t net_total_len = htonl (total_len);
   memcpy (&wbuf[0], &net_total_len, 4);
 
+  // 2. Write command count (cmd_size)
   uint32_t net_cmd_size = htonl ((uint32_t) cmd_size);
   memcpy (&wbuf[4], &net_cmd_size, 4);
 
   size_t cur = 8;
+  // 3. Write command arguments (length + string)
   for (size_t i = 0; i < cmd_size; i++)
     {
       char *s = cmd[i];
@@ -83,6 +90,7 @@ send_req (int fd, char **cmd, size_t cmd_size)
       memcpy (&wbuf[cur + 4], s, cmd_len);
       cur += 4 + cmd_len;
     }
+  // The total length written is 4 bytes (for the overall length prefix) + total_len (the calculated payload length)
   return write_all (fd, wbuf, 4 + total_len);
 }
 
@@ -218,8 +226,8 @@ on_response (const uint8_t *data, size_t size)
 static int32_t
 read_res (int fd)
 {
-  // 4 bytes header
-  char rbuf[4 + k_max_msg + 1];
+  // 4 bytes header + K_MAX_MSG (payload limit) + 1 (for NULL terminator safety)
+  char rbuf[4 + K_MAX_MSG + 1];
   errno = 0;
   int32_t err = read_full (fd, rbuf, 4);
   if (err)
@@ -242,7 +250,7 @@ read_res (int fd)
   memcpy (&len_net, rbuf, 4);
   len_host = ntohl (len_net);
 
-  if (len_host > k_max_msg)
+  if (len_host > K_MAX_MSG)
     {
       msg ("too long");
       return -1;

@@ -1,6 +1,5 @@
 # =============================================================================
-# TLV Protocol Persistent Client
-# This version sends multiple commands over a single socket connection.
+# TLV Protocol Persistent Client with Large Request Test
 # =============================================================================
 
 import socket
@@ -12,13 +11,17 @@ from time import sleep
 SER_NIL = 0    # No data (e.g., SET success)
 SER_ERR = 1    # Error response
 SER_STR = 2    # String data (e.g., GET success)
+SER_INT = 3    # Integer data
+SER_DBL = 4    # Double data
+SER_ARR = 5    # Array data
 ERR_UNKNOWN_CMD = 1
+ERR_MALFORMED = 2
 
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 1234 
 
 # =============================================================================
-# Core Protocol Functions (Unchanged)
+# Core Protocol Functions
 # =============================================================================
 
 def create_request(command, *args):
@@ -27,14 +30,11 @@ def create_request(command, *args):
     
     # 1. Build the payload (N + arguments)
     n_args = len(parts)
-    # The first 4 bytes are N (number of arguments)
     payload_parts = [struct.pack('!I', n_args)]
     
     for part in parts:
         data = part.encode('utf-8')
-        # 4-byte length prefix (Network Byte Order: !I)
         payload_parts.append(struct.pack('!I', len(data)))
-        # String data
         payload_parts.append(data)
         
     payload = b''.join(payload_parts)
@@ -43,29 +43,33 @@ def create_request(command, *args):
     length_prefix = struct.pack('!I', len(payload))
     return length_prefix + payload
 
-def format_hex_dump(data):
+def format_hex_dump(data, max_lines=20):
     """Formats binary data into readable hex lines."""
     output = []
     for i in range(0, len(data)):
         output.append(data[i:i+1].hex())
     
     lines = []
-    # Display 16 bytes per line for easy reading
     for i in range(0, len(output), 16):
         lines.append(' '.join(output[i:i+16]))
+    
+    # Truncate if too long
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"... (truncated, {len(lines) - max_lines} more lines)"]
+    
     return '\n'.join(lines)
 
 def get_error_name(code):
     """Maps the error code to a readable name."""
-    if code == ERR_UNKNOWN_CMD:
-        return "ERR_UNKNOWN_CMD"
-    return "Unknown Error Code"
+    error_names = {
+        1: "ERR_UNKNOWN_CMD",
+        2: "ERR_MALFORMED",
+        3: "ERR_TYPE"
+    }
+    return error_names.get(code, f"Unknown Error Code ({code})")
 
 def parse_response(response_data):
-    """
-    Parses the response using the C client's TLV logic:
-    [4-byte Total Length L] [1-byte Type T] [Type-Specific Data]
-    """
+    """Parses the response using the TLV protocol."""
     
     if len(response_data) < 4:
         print("ERROR: Response too short for 4-byte length prefix.")
@@ -88,7 +92,6 @@ def parse_response(response_data):
     response_type = payload[0]
     print(f"2. Payload Type (Byte 4): {hex(response_type)}")
     
-    # Payload starts at index 1 after the Type byte
     payload_index = 1 
 
     if response_type == SER_NIL:
@@ -154,33 +157,53 @@ def parse_response(response_data):
             print(f"ERROR: Received data is truncated. Expected {str_len_host} bytes, got {len(payload) - data_start}.")
             return
 
+        # Truncate display for very long strings
         data = payload[data_start : data_start + str_len_host].decode('utf-8', errors='ignore')
+        display_data = data if len(data) <= 100 else data[:100] + f"... (truncated, total {len(data)} chars)"
         
-        print(f"4. Data (Bytes 9+): '{data}'")
-        print(f"SUCCESS: Successfully parsed string response.")
+        print(f"4. Data (Bytes 9+): '{display_data}'")
+        print(f"SUCCESS: Successfully parsed string response (length: {str_len_host}).")
         
     else:
         print(f"WARNING: Unknown Type Code: {response_type}")
 
 # =============================================================================
-# Persistent Connection Handler (New Logic)
+# Persistent Connection Handler
 # =============================================================================
 
-def send_and_receive(s, command, *args):
+def send_and_receive(s, command, *args, expect_close=False):
     """Sends a request on an existing socket and reads the full response."""
     
-    cmd_str = f"{command} {' '.join(args)}"
+    cmd_str = f"{command} {' '.join(str(arg)[:50] for arg in args)}"
+    if any(len(str(arg)) > 50 for arg in args):
+        cmd_str += " (truncated)"
     print(f"\n--- COMMAND: {cmd_str} ---")
     
     request_data = create_request(command, *args)
+    print(f"Request size: {len(request_data)} bytes")
     
     try:
         # 1. Send the request
         s.sendall(request_data)
         
+        # If we expect the server to close the connection, handle that
+        if expect_close:
+            try:
+                # Try to read - should get empty response or error
+                header = s.recv(4)
+                if len(header) == 0:
+                    print("Server closed connection as expected (after large/invalid request)")
+                    return False
+            except:
+                print("Server closed connection as expected")
+                return False
+        
         # 2. Read the 4-byte length header for the response
         header = s.recv(4)
         if len(header) != 4:
+            if len(header) == 0:
+                print(f"Server closed connection (EOF while reading header)")
+                return False
             raise EOFError(f"Server closed connection while reading header for command: {cmd_str}")
         
         # Determine the total length L
@@ -190,7 +213,7 @@ def send_and_receive(s, command, *args):
         payload = b''
         bytes_left = total_len
         while bytes_left > 0:
-            chunk = s.recv(bytes_left)
+            chunk = s.recv(min(bytes_left, 8192))
             if not chunk: 
                 raise EOFError(f"Server closed connection while reading payload for command: {cmd_str}")
             payload += chunk
@@ -200,7 +223,7 @@ def send_and_receive(s, command, *args):
         
         print("\n--- Received Raw Response Data (Hex Dump) ---")
         print(f"Total Bytes Received: {len(full_response_data)}")
-        print(format_hex_dump(full_response_data))
+        print(format_hex_dump(full_response_data, max_lines=10))
         
         print("\n--- Interpretation Attempt (TLV Protocol) ---")
         parse_response(full_response_data)
@@ -210,7 +233,80 @@ def send_and_receive(s, command, *args):
         return False
     except Exception as e:
         print(f"An error occurred during transaction: {e}")
+        import traceback
+        traceback.print_exc()
         return False
+    
+    return True
+
+# =============================================================================
+# Test Functions
+# =============================================================================
+
+def test_large_request(s, size_bytes):
+    """
+    Tests the server's handling of a large request.
+    Creates a SET command with a very large value.
+    """
+    print(f"\n{'='*70}")
+    print(f"TESTING LARGE REQUEST: {size_bytes:,} bytes value")
+    print(f"{'='*70}")
+    
+    # Create a large string value
+    large_value = 'X' * size_bytes
+    
+    # Server should either:
+    # 1. Accept it if within limits and return (nil)
+    # 2. Reject it with an error message
+    # 3. Close the connection
+    result = send_and_receive(s, 'set', 'large_key', large_value, expect_close=(size_bytes > 4096))
+    
+    if not result:
+        print(f"\nLarge request ({size_bytes:,} bytes) caused connection to close or failed")
+        return False
+    
+    return True
+
+def test_message_size_limit(s):
+    """Tests requests around the K_MAX_MSG limit (typically 4096 bytes)."""
+    print(f"\n{'='*70}")
+    print("TESTING MESSAGE SIZE LIMITS")
+    print(f"{'='*70}")
+    
+    # Test 1: Just under the limit (should work)
+    # Account for protocol overhead: 4 (length) + 4 (num_args) + 4 (cmd_len) + 3 ("set") + 4 (key_len) + 8 ("test_key") + 4 (val_len) + value
+    # Total overhead ≈ 31 bytes, so 4096 - 31 = 4065 bytes for value should be close to limit
+    test_sizes = [
+        (3000, "well under limit", False),
+        (4000, "near limit", False),
+        (4090, "at limit boundary", False),
+        (5000, "over limit", True),
+        (10000, "way over limit", True),
+        (100000, "extremely large", True),
+    ]
+    
+    for size, description, expect_close in test_sizes:
+        print(f"\n--- Testing {description}: {size:,} bytes ---")
+        if not test_large_request(s, size):
+            if expect_close:
+                print(f"✓ Server correctly rejected/closed for {description}")
+                # Reconnect for next test
+                try:
+                    s.close()
+                except:
+                    pass
+                s = socket.create_connection((SERVER_HOST, SERVER_PORT))
+                print("Reconnected to server")
+            else:
+                print(f"✗ Unexpected failure for {description}")
+                return False
+        else:
+            if expect_close:
+                print(f"✗ Server should have rejected {description}")
+            else:
+                print(f"✓ Server correctly handled {description}")
+        
+        sleep(0.1)  # Small delay between tests
     
     return True
 
@@ -222,7 +318,10 @@ if __name__ == '__main__':
         s = socket.create_connection((SERVER_HOST, SERVER_PORT))
         print("Connection established. Running command sequence...")
 
-        # --- Command Sequence (Multiple requests on one socket) ---
+        # --- Basic Commands ---
+        print(f"\n{'='*70}")
+        print("BASIC FUNCTIONALITY TESTS")
+        print(f"{'='*70}")
         
         # 1. SET a = "hello_world" (NIL response)
         if not send_and_receive(s, 'set', 'a', 'hello_world'):
@@ -242,20 +341,26 @@ if __name__ == '__main__':
 
         # 5. Unknown command (ERR response)
         if not send_and_receive(s, 'foobar', 'baz'):
-            # The test continues even if an error is encountered, 
-            # unless the server closes the connection.
             pass
 
         # 6. GET a again to ensure the server state is maintained
         send_and_receive(s, 'get', 'a')
         
-        print("\n--- Sequence Complete ---")
+        # --- Large Request Tests ---
+        test_message_size_limit(s)
+        
+        print("\n--- All Tests Complete ---")
 
     except ConnectionRefusedError:
         print(f"\nFATAL ERROR: Connection refused. Is the server running on {SERVER_HOST}:{SERVER_PORT}?")
     except Exception as e:
         print(f"\nFATAL ERROR: A critical error occurred: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         if s:
-            s.close()
-            print("Connection closed.")
+            try:
+                s.close()
+                print("Connection closed.")
+            except:
+                pass
