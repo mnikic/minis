@@ -17,7 +17,7 @@ typedef struct
   int fd;
   uint32_t state;
   uint32_t rbuf_size;
-  uint8_t rbuf[4 + 4096];// K_MAX_MSG];
+  uint8_t rbuf[4 + K_MAX_MSG];
   size_t wbuf_size;
   size_t wbuf_sent;
   uint8_t wbuf[4 + K_MAX_MSG];
