@@ -49,9 +49,10 @@ COMMON_SRCS := $(wildcard $(SRC_DIR)/common/*.c)
 IO_SRCS := $(wildcard $(SRC_DIR)/io/*.c)
 CACHE_SRCS := $(wildcard $(SRC_DIR)/cache/*.c)
 CLIENT_SRC_FILE := $(SRC_DIR)/client.c
+SERVER_MAIN_SRC := $(SRC_DIR)/server_main.c
 
 # Combine all server-related sources
-SERVER_SOURCES := $(COMMON_SRCS) $(IO_SRCS) $(CACHE_SRCS)
+SERVER_SOURCES := $(COMMON_SRCS) $(IO_SRCS) $(CACHE_SRCS) $(SERVER_MAIN_SRC)
 CLIENT_SOURCES := $(CLIENT_SRC_FILE) $(SRC_DIR)/common/common.c
 
 # --- Test Source Definitions ---

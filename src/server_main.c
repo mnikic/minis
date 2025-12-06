@@ -6,7 +6,7 @@
  *============================================================================
  */
 #include <stdint.h>
-#include "server_loop.h"
+#include "io/server_loop.h"
 #include "common/common.h"
 
 int
