@@ -6,12 +6,12 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
-#include "buffer.h"
+#include "io/buffer.h"
 #include "heap.h"
 #include "cache.h"
 #include "zset.h"
-#include "out.h"
-#include "common.h"
+#include "io/out.h"
+#include "common/common.h"
 
 // the structure for the key
 typedef struct entry

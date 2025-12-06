@@ -8,7 +8,7 @@
 #ifndef CACHE_H
 #define  CACHE_H
 
-#include "buffer.h"
+#include "io/buffer.h"
 #include "hashtable.h"
 #include "heap.h"
 #include "thread_pool.h"

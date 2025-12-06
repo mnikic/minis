@@ -23,10 +23,10 @@
 #include <sys/epoll.h>
 #include <signal.h>
 
-#include "cache.h"
+#include "cache/cache.h"
 #include "connections.h"
 #include "buffer.h"
-#include "common.h"
+#include "common/common.h"
 #include "out.h"
 #include "server_loop.h"
 #include "list.h"

@@ -12,7 +12,7 @@
 
 #include "out.h"
 #include "buffer.h"
-#include "common.h"
+#include "common/common.h"
 
 
 void

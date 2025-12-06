@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include "buffer.h"
-#include "common.h"
+#include "common/common.h"
 
 static bool
 buf_ensure_space (Buffer *buf, size_t additional)

@@ -8,7 +8,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
-#include "common.h"
+#include "common/common.h"
 
 // Note: k_max_msg has been moved to common.h as K_MAX_MSG
 

@@ -7,7 +7,7 @@
  */
 #include <stdint.h>
 #include "server_loop.h"
-#include "common.h"
+#include "common/common.h"
 
 int
 main (int argc, char *argv[])

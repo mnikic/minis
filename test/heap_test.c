@@ -7,10 +7,11 @@
 
 #include "heap.h"
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 
 int
-main ()
+main (void)
 {
   Heap heap;
   heap_init (&heap);
@@ -37,7 +38,7 @@ main ()
   assert (heap.size == 2);
   assert (heap.capacity == 10);
   HeapItem items[20];
-  for (int i = 0; i < 20; i++)
+  for (uint32_t i = 0; i < 20; i++)
     {
       items[i].val = i + 3;
       items[i].ref = &a;

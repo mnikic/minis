@@ -5,7 +5,7 @@
  *      Author: loshmi
  */
 #include "deque.h"
-#include "common.h"
+#include "common/common.h"
 #include <stdlib.h>
 
 t_deque *

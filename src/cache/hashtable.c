@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "hashtable.h"
-#include "common.h"
+#include "common/common.h"
 
 // Progressive resizing constants
 static const size_t k_resizing_work = 128;

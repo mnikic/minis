@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "heap.h"
-#include "common.h"
+#include "common/common.h"
 
 void
 heap_init (Heap *heap)

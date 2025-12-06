@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "connections.h"
-#include "common.h"
+#include "common/common.h"
 
 static void
 connpool_grow (ConnPool *pool, size_t new_capacity)

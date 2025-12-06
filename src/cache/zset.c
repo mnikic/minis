@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include "zset.h"
-#include "common.h"
+#include "common/common.h"
 
 #define EPSILON 1e-9
 
