@@ -5,7 +5,7 @@
  *      Author: loshmi
  */
 
-#include "heap.h"
+#include "cache/heap.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
