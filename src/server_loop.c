@@ -140,6 +140,7 @@ accept_new_conn (int file_des)
   conn->wbuf_size = 0;
   conn->wbuf_sent = 0;
   conn->idle_start = get_monotonic_usec ();
+  conn->close_after_sending = false;
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   connpool_add (g_data.fd2conn, conn);
@@ -367,6 +368,7 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
 	  conn->wbuf_sent = 0;
 
 	  conn->state = STATE_RES;
+	  conn->close_after_sending = true;
 	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
 	}
       else
@@ -571,6 +573,11 @@ try_flush_buffer (Conn *conn)
 	  conn->state = STATE_END;
 	  return false;
 	}
+      if (conn->close_after_sending)
+        {
+	  conn->state = STATE_END;
+	  return false;
+        }
 
       conn->wbuf_sent += (size_t) err;
       assert (conn->wbuf_sent <= conn->wbuf_size);
