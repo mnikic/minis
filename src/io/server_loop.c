@@ -184,6 +184,22 @@ conn_set_epoll_events (Conn *conn, uint32_t events)
     }
 }
 
+// Helper to append a length-prefixed data chunk (TLV response format) to the connection's write buffer.
+static void
+buffer_response_chunk (Conn *conn, const uint8_t *data, size_t data_len)
+{
+  assert (conn->wbuf_size + 4 + data_len <= sizeof conn->wbuf);
+
+  uint32_t nwlen = htonl ((uint32_t) data_len);
+  // Append length header
+  memcpy (&conn->wbuf[conn->wbuf_size], &nwlen, 4);
+  // Append data
+  memcpy (&conn->wbuf[conn->wbuf_size + 4], data, data_len);
+
+  conn->wbuf_size += 4 + data_len;
+}
+
+
 static void
 dump_error_and_close (Conn *conn, int code, const char *str)
 {
@@ -194,11 +210,13 @@ dump_error_and_close (Conn *conn, int code, const char *str)
   // Can it fit into the write buffer?
   if (4 + errlen <= sizeof (conn->wbuf))
     {
-      uint32_t num = htonl ((uint32_t) errlen);
-      memcpy (&conn->wbuf[0], &num, 4);
-      memcpy (&conn->wbuf[4], buf_data (err), errlen);
-      conn->wbuf_size = 4 + errlen;
+      // Reset the buffer state so the error response overwrites any existing
+      // partial data and starts at index 0.
+      conn->wbuf_size = 0;
       conn->wbuf_sent = 0;
+
+      // Use the common helper to buffer the error response.
+      buffer_response_chunk (conn, buf_data (err), errlen);
 
       // Set the state to respond and then close
       conn->state = STATE_RES_CLOSE;
@@ -271,6 +289,7 @@ do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen,
       if (!cmd[cmd_size])
 	die ("Out of memory");
       memcpy (cmd[cmd_size], &req[pos + 4], siz);
+      cmd[cmd_size][siz] = '\0';	// Ensure it is null-terminated
       cmd_size++;
       pos += 4 + siz;
     }
@@ -340,39 +359,29 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
       // Check if even the small error response will fit
       if (conn->wbuf_size + 4 + errlen <= sizeof conn->wbuf)
 	{
-	  uint32_t nerrlen = htonl ((uint32_t) errlen);
-	  // Append length header
-	  memcpy (&conn->wbuf[conn->wbuf_size], &nerrlen, 4);
-	  // Append error data
-	  memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (errb), errlen);
-	  conn->wbuf_size += 4 + errlen;
+	  // Append length header and error data using the new helper
+	  buffer_response_chunk (conn, buf_data (errb), errlen);
 
 	  // Transition to writing the error immediately (keeping connection open)
 	  conn->state = STATE_RES;
 	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
 
-	  buf_free (errb);
-	  buf_free (out);
-	  *out_wlen = 0;
-	  // Return false because we failed to deliver the requested response
-	  return false;
+	  goto CLEANUP;
 	}
 
+      conn->state = STATE_END;
+    CLEANUP:
       // If even the small error doesn't fit, we have to drop the connection
       buf_free (errb);
       buf_free (out);
-      conn->state = STATE_END;
+
       *out_wlen = 0;
       return false;
     }
   // Robust Buffer Overflow Check & Error Handling
 
   // Append length header (4 bytes) and response data (wlen) to wbuf
-  uint32_t nwlen = htonl ((uint32_t) wlen);
-  memcpy (&conn->wbuf[conn->wbuf_size], &nwlen, 4);
-  memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (out), wlen);
-
-  conn->wbuf_size += 4 + wlen;
+  buffer_response_chunk (conn, buf_data (out), wlen);
 
   buf_free (out);
   *out_wlen = wlen;		// Pass the response length back out
