@@ -2,6 +2,10 @@ CC=gcc
 INCLUDE_PATHS = $(SRC_DIR) test
 INCLUDE_DIRS = $(addprefix -I,$(INCLUDE_PATHS))
 
+# Define the debug flag (enables logs and adds debugging symbols for gdb)
+DEBUG_FLAG = -DDEBUG_LOGGING -g -O1
+
+# Base CFLAGS for high optimization/security (used by standard and as a base for others)
 CFLAGS_BASE=-std=gnu11 -O3 -pthread \
  -Wall -Wextra -Werror -Wno-unused-parameter \
  -Wformat=2 -Werror=format-security \
@@ -25,7 +29,19 @@ CFLAGS = $(CFLAGS_BASE) $(INCLUDE_DIRS)
 LDFLAGS = $(LDFLAGS_BASE)
 
 ifeq ($(CC),gcc)
-	CFLAGS += -Wjump-misses-init -Wlogical-op
+ CFLAGS += -Wjump-misses-init -Wlogical-op
+endif
+
+# --- Conditional Debug Build CFLAGS ---
+# Check if the target is 'debug' or 'test-debug' and modify the base CFLAGS/LDFLAGS
+# This will force the object files to be rebuilt with debug symbols and logging enabled.
+ifeq ($(MAKECMDGOALS),debug)
+    CFLAGS = $(CFLAGS_BASE) $(INCLUDE_DIRS) $(DEBUG_FLAG)
+    LDFLAGS = $(LDFLAGS_BASE) -g
+endif
+ifeq ($(MAKECMDGOALS),test-debug)
+    CFLAGS = $(CFLAGS_BASE) $(INCLUDE_DIRS) $(DEBUG_FLAG)
+    LDFLAGS = $(LDFLAGS_BASE) -g
 endif
 
 # --- Sanitizer Configurations (Includes remain necessary) ---
@@ -81,6 +97,10 @@ SERVER_BIN = $(BIN_DIR)/server
 CLIENT_BIN = $(BIN_DIR)/client
 HEAP_TEST_BIN = $(BIN_DIR)/heap_test
 
+# Debug binaries
+SERVER_DEBUG_BIN = $(BIN_DIR)/server_debug
+CLIENT_DEBUG_BIN = $(BIN_DIR)/client_debug
+
 # Sanitizer binaries
 SERVER_ASAN_BIN = $(BIN_DIR)/server_asan
 CLIENT_ASAN_BIN = $(BIN_DIR)/client_asan
@@ -103,6 +123,10 @@ analyze:
 	# This rule needs manual adjustment to reference files correctly
 	$(CC) $(CFLAGS) -fanalyzer $(SERVER_SOURCES) $(CLIENT_SRC_FILE) -c
 
+# --- Build targets (Phony) ---
+debug: $(SERVER_DEBUG_BIN) $(CLIENT_DEBUG_BIN)
+
+
 # --- Build binaries (Standard) ---
 $(SERVER_BIN): $(SERVER_OBJ)
 	@mkdir -p $(BIN_DIR)
@@ -112,9 +136,20 @@ $(CLIENT_BIN): $(CLIENT_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
+# --- Build binaries (Debug) ---
+# When 'make debug' is run, the global CFLAGS is set with the debug flags,
+# forcing the dependencies (objects) to be compiled with debugging.
+$(SERVER_DEBUG_BIN): $(SERVER_OBJ)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	@echo "Debug server built successfully."
+
+$(CLIENT_DEBUG_BIN): $(CLIENT_OBJ)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	@echo "Debug client built successfully."
+
 # --- Build Heap Test Binary (Standard) ---
-# DEPENDENCY FIX: The HEAP_TEST_BIN now explicitly depends on the HEAP_TEST_DEPS
-# objects, ensuring they are compiled before linking, fixing the "undefined reference" error.
 $(HEAP_TEST_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -141,7 +176,6 @@ $(CLIENT_ASAN_BIN): $(CLIENT_OBJ)
 # ASAN for Heap Test
 $(HEAP_TEST_ASAN_BIN): CFLAGS := $(CFLAGS_ASAN)
 $(HEAP_TEST_ASAN_BIN): LDFLAGS := $(LDFLAGS_ASAN)
-# DEPENDENCY FIX (ASAN): Ensure required library objects are built before linking.
 $(HEAP_TEST_ASAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -167,7 +201,6 @@ $(CLIENT_UBSAN_BIN): $(CLIENT_OBJ)
 # UBSAN for Heap Test
 $(HEAP_TEST_UBSAN_BIN): CFLAGS := $(CFLAGS_UBSAN)
 $(HEAP_TEST_UBSAN_BIN): LDFLAGS := $(LDFLAGS_UBSAN)
-# DEPENDENCY FIX (UBSAN): Ensure required library objects are built before linking.
 $(HEAP_TEST_UBSAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -194,7 +227,6 @@ $(CLIENT_TSAN_BIN): $(CLIENT_OBJ)
 # TSAN for Heap Test
 $(HEAP_TEST_TSAN_BIN): CFLAGS := $(CFLAGS_TSAN)
 $(HEAP_TEST_TSAN_BIN): LDFLAGS := $(LDFLAGS_TSAN)
-# DEPENDENCY FIX (TSAN): Ensure required library objects are built before linking.
 $(HEAP_TEST_TSAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -203,13 +235,12 @@ $(HEAP_TEST_TSAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
 
 # --- Compile C to object files (General Rule) ---
 # Handles all files in the src/ directory (e.g., src/cache/heap.c -> build/obj/cache/heap.o)
-# The output object file path is derived from the source file path, preserving subdirectories.
-# Example: src/cache/heap.c -> build/obj/cache/heap.o
+# This rule will use the global CFLAGS, which are conditionally set to include -DDEBUG_LOGGING
+# when 'make debug' is run.
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
-	# IMPORTANT: We use the *default* CFLAGS here which now include $(INCLUDE_DIRS)
 	$(CC) $(CFLAGS) -c $< -o $@
-	 
+    
 # --- Compile C to object files (Specific Test Runner Rule) ---
 # Rule for the heap_test.c file which is outside of SRC_DIR
 $(HEAP_TEST_OBJ_RUNNER): $(TEST_HEAP_SRC)
@@ -220,7 +251,6 @@ $(HEAP_TEST_OBJ_RUNNER): $(TEST_HEAP_SRC)
 # --- Test Targets ---
 TEST_SCRIPT = test/test_cmds_extra.py
 
-# FIX: Define the PHONY target 'heap-test' to build and run the unit test binary.
 heap-test: $(HEAP_TEST_BIN)
 	@echo "--- Running C Unit Test (HeapTest) ---"
 	@./$(HEAP_TEST_BIN)
@@ -230,6 +260,12 @@ test: $(CLIENT_BIN) $(HEAP_TEST_BIN)
 	@./$(HEAP_TEST_BIN)
 	@echo "--- Running standard E2E tests with $(CLIENT_BIN) ---"
 	@python3 $(TEST_SCRIPT)
+
+test-debug: $(SERVER_DEBUG_BIN) $(CLIENT_DEBUG_BIN) $(HEAP_TEST_BIN)
+	@echo "--- Running C Unit Test (HeapTest) ---"
+	@./$(HEAP_TEST_BIN)
+	@echo "--- Running debug E2E tests with $(CLIENT_DEBUG_BIN) ---"
+	@CLIENT_BIN_NAME=client_debug python3 $(TEST_SCRIPT)
 
 test-asan: $(SERVER_ASAN_BIN) $(CLIENT_ASAN_BIN) $(HEAP_TEST_ASAN_BIN)
 	@echo "--- Running C Unit Test (HeapTest) with ASan ---"
@@ -251,5 +287,6 @@ test-tsan: $(SERVER_TSAN_BIN) $(CLIENT_TSAN_BIN) $(HEAP_TEST_TSAN_BIN)
 
 clean:
 	rm -rf build
+	rm -f $(BIN_DIR)/server_debug $(BIN_DIR)/client_debug
 
-.PHONY: all clean analyze asan ubsan tsan test test-asan test-ubsan test-tsan heap-test
+.PHONY: all clean analyze asan ubsan tsan test test-asan test-ubsan test-tsan heap-test debug test-debug

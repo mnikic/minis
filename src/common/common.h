@@ -43,11 +43,20 @@
     (type *)((char *)__mptr - offsetof(type, member));                      \
 })
 
-uint64_t 
-get_monotonic_usec (void);
+#ifdef DEBUG_LOGGING
+    // If DEBUG_LOGGING is defined, the macros call the implementation functions.
+#define DBG_LOG(msg_str) msg (msg_str)
+#define DBG_LOGF(...) msgf (__VA_ARGS__)
+#else
+    // If DEBUG_LOGGING is NOT defined, the macros resolve to a no-op statement.
+    // The use of (void)0 ensures zero overhead (no function call, no parameter evaluation).
+#define DBG_LOG(msg_str) (void)0
+#define DBG_LOGF(...) (void)0
+#endif
 
-uint64_t 
-str_hash (const uint8_t * data, size_t len);
+uint64_t get_monotonic_usec (void);
+
+uint64_t str_hash (const uint8_t * data, size_t len);
 
 __attribute__((noreturn))
      void

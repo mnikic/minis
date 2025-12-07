@@ -70,6 +70,7 @@ setup_signal_handlers (void)
 {
   struct sigaction sig_action = { 0 };
   sig_action.sa_handler = sigint_handler;
+  sig_action.sa_flags = 0;
   sigaction (SIGINT, &sig_action, NULL);
   sigaction (SIGTERM, &sig_action, NULL);
   sigaction (SIGQUIT, &sig_action, NULL);
@@ -119,7 +120,7 @@ accept_new_conn (int file_des)
     {
       if (errno == EAGAIN)
 	{
-	  // No more connections to accept
+	  DBG_LOG ("No more connections to accept (EAGAIN).");
 	  return -1;
 	}
       msgf ("accept() error: %s", strerror (errno));
@@ -144,6 +145,7 @@ accept_new_conn (int file_des)
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   connpool_add (g_data.fd2conn, conn);
+  DBG_LOGF ("Accepted new connection: FD %d", connfd);
 
   return connfd;
 }
@@ -151,6 +153,7 @@ accept_new_conn (int file_des)
 static void
 conn_done (Conn *conn)
 {
+  DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
   // This is the single, authoritative place to free the connection structure.
   // best-effort; ignore epoll errors
   (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);	// Remove from epoll
@@ -203,6 +206,7 @@ buffer_response_chunk (Conn *conn, const uint8_t *data, size_t data_len)
 static void
 dump_error_and_close (Conn *conn, int code, const char *str)
 {
+  DBG_LOGF ("FD %d: Sending error %d and closing: %s", conn->fd, code, str);
   Buffer *err = buf_new ();
   out_err (err, code, str);
   size_t errlen = buf_len (err);
@@ -249,7 +253,7 @@ do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen,
 
   if (num > K_MAX_ARGS)
     {
-      msg ("too many arguments");
+      DBG_LOG ("too many arguments");
       dump_error_and_close (conn, ERR_MALFORMED, "Too many arguments.");
       return false;
     }
@@ -301,6 +305,8 @@ do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen,
       goto CLEANUP;
     }
 
+  DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd,
+	    cmd_size);
   // If we reach here, the packet structure is valid, execute the command
   cache_execute (cache, cmd, cmd_size, out);
   success = true;
@@ -348,6 +354,8 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
   // Robust Buffer Overflow Check & Error Handling (Expensive Path)
   if (needed > avail)
     {
+      DBG_LOGF ("FD %d: Response (len %zu) too large for buffer (avail %zu).",
+		conn->fd, needed, avail);
       // The response is too large for the connection's write buffer.
       // Generate a small "server busy" error and send that instead.
       // Note: This path keeps the connection alive (STATE_RES).
@@ -366,11 +374,11 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
 	  conn->state = STATE_RES;
 	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
 
-          goto CLEANUP;
+	  goto CLEANUP;
 	}
 
       conn->state = STATE_END;
-  CLEANUP:
+    CLEANUP:
       // If even the small error doesn't fit, we have to drop the connection
       buf_free (errb);
       buf_free (out);
@@ -381,6 +389,8 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
 
   // Append length header (4 bytes) and response data (wlen) to wbuf
   buffer_response_chunk (conn, buf_data (out), wlen);
+  DBG_LOGF ("FD %d: Buffered response of length %zu. wbuf_size now %zu.",
+	    conn->fd, wlen, conn->wbuf_size);
 
   buf_free (out);
   *out_wlen = wlen;		// Pass the response length back out
@@ -400,6 +410,9 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   uint32_t len = 0;
   memcpy (&len, &conn->rbuf[*start_index], 4);
   len = ntohl (len);
+
+  DBG_LOGF ("FD %d: Parsing request starting at index %u with length %u.",
+	    conn->fd, *start_index, len);
 
   // Check against the server's maximum message size. K_MAX_MSG is the correct, permanent limit.
   if (len > K_MAX_MSG)
@@ -443,11 +456,15 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
 
   // Request succeeded
   *start_index += 4 + len;
+  DBG_LOGF ("FD %d: Request processed, consumed %u bytes.", conn->fd,
+	    4 + len);
 
   if (*start_index >= conn->rbuf_size)
     {
       // we read all data from the client, try to send!
       conn->state = STATE_RES;
+      DBG_LOGF ("FD %d: RBuf fully consumed, transitioning to STATE_RES.",
+		conn->fd);
       // Add EPOLLOUT when we transition to STATE_RES
       conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
       // We set conn->state to STATE_RES, so we must stop the processing loop
@@ -484,12 +501,14 @@ read_data_from_socket (Conn *conn, size_t cap)
 
   if (err == 0)
     {
+      DBG_LOGF ("FD %d: EOF received, setting state to STATE_END.", conn->fd);
       conn->state = STATE_END;
       // We return -2 to signal the outer loop (try_fill_buffer) that
       // processing must stop immediately and the connection is done.
       return -2;
     }
 
+  DBG_LOGF ("FD %d: Read %zd bytes from socket.", conn->fd, err);
   // Success: err > 0
   return err;
 }
@@ -518,6 +537,10 @@ process_received_data (Cache *cache, Conn *conn, uint32_t bytes_read)
       memmove (conn->rbuf, &conn->rbuf[start_index], remain);
     }
   conn->rbuf_size = remain;
+
+  DBG_LOGF
+    ("FD %d: Processed %d requests. RBuf remaining: %u. New state: %d.",
+     conn->fd, processed, remain, conn->state);
 
   // State Transition/Flush Check
   if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE
@@ -549,6 +572,8 @@ try_fill_buffer (Cache *cache, Conn *conn)
       if (cap == 0)
 	{
 	  // Client read buffer is full, transition to response state
+	  DBG_LOGF ("FD %d: RBuf full, transitioning to STATE_RES.",
+		    conn->fd);
 	  conn->state = STATE_RES;
 	  break;
 	}
@@ -583,6 +608,7 @@ try_fill_buffer (Cache *cache, Conn *conn)
 static void
 state_req (Cache *cache, Conn *conn)
 {
+  DBG_LOGF ("FD %d: Entering STATE_REQ handler.", conn->fd);
   // Keep draining/processing until try_fill_buffer indicates EAGAIN (false)
   // or a state change happened (true, which breaks the loop inside try_fill_buffer)
   while (try_fill_buffer (cache, conn))
@@ -590,11 +616,15 @@ state_req (Cache *cache, Conn *conn)
       if (conn->state != STATE_REQ)
 	break;
     }
+  DBG_LOGF ("FD %d: Exiting STATE_REQ handler. New state: %d.", conn->fd,
+	    conn->state);
 }
 
 static bool
 try_flush_buffer (Conn *conn)
 {
+  DBG_LOGF ("FD %d: Flushing WBuf (size %zu, sent %zu).", conn->fd,
+	    conn->wbuf_size, conn->wbuf_sent);
   while (conn->wbuf_sent < conn->wbuf_size)
     {
       size_t remain = conn->wbuf_size - conn->wbuf_sent;
@@ -606,7 +636,10 @@ try_flush_buffer (Conn *conn)
 	  if (errno == EINTR)
 	    continue;
 	  if (errno == EAGAIN)
-	    return false;
+	    {
+	      DBG_LOGF ("FD %d: Send blocked (EAGAIN).", conn->fd);
+	      return false;
+	    }
 	  msgf ("write() error: %s", strerror (errno));
 	  conn->state = STATE_END;
 	  return false;
@@ -619,7 +652,8 @@ try_flush_buffer (Conn *conn)
 	}
 
       conn->wbuf_sent += (size_t) err;
-      assert (conn->wbuf_sent <= conn->wbuf_size);
+      DBG_LOGF ("FD %d: Sent %zd bytes. Total sent %zu.", conn->fd, err,
+		conn->wbuf_sent);
     }
 
   // response was fully sent
@@ -629,6 +663,8 @@ try_flush_buffer (Conn *conn)
   // Check if we were in the "Respond and Close" state
   if (conn->state == STATE_RES_CLOSE)
     {
+      DBG_LOGF ("FD %d: Response sent, transitioning to STATE_END for close.",
+		conn->fd);
       conn->state = STATE_END;	// Transition to END for cleanup
       return false;		// Stop flushing loop, connection marked for cleanup
     }
@@ -636,6 +672,8 @@ try_flush_buffer (Conn *conn)
   // If the state was STATE_RES, transition back to STATE_REQ for next request
   if (conn->state == STATE_RES)
     {
+      DBG_LOGF ("FD %d: Response sent, transitioning back to STATE_REQ.",
+		conn->fd);
       conn->state = STATE_REQ;
       // Remove EPOLLOUT when we transition back to STATE_REQ
       conn_set_epoll_events (conn, EPOLLIN);
@@ -677,7 +715,7 @@ process_timers (Cache *cache)
 	  break;
 	}
 
-      msgf ("removing idle connection: %d", next->fd);
+      msgf ("Removing idle connection: %d", next->fd);
       conn_done (next);
     }
 
@@ -753,9 +791,14 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
       return;			// Already cleaned up or invalid fd
     }
 
+  DBG_LOGF ("FD %d: Handling epoll event (events: 0x%x). State: %d",
+	    event->data.fd, event->events, conn->state);
+
   // Check for half-close (RDHUP), full hangup (HUP), or error (ERR) (Issue 12)
   if (event->events & (EPOLLHUP | EPOLLERR | EPOLLRDHUP))
     {
+      DBG_LOGF ("FD %d: Hangup/Error detected (0x%x). Closing.",
+		event->data.fd, event->events);
       // Mark for termination immediately, perform cleanup, and return.
       conn->state = STATE_END;
       conn_done (conn);
@@ -800,8 +843,9 @@ static void
 cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
 {
   msg ("\nServer shutting down gracefully. Cleaning up resources...");
-  Conn **connections;
-  size_t count;
+  Conn **connections = NULL;
+  size_t count = 0;
+  // connpool_iter returns a pointer to the internal array (no new allocation)
   connpool_iter (g_data.fd2conn, &connections, &count);
 
   // Close all active client connections
@@ -959,6 +1003,7 @@ server_run (uint16_t port)
   while (!g_data.terminate_flag)	// Use the flag to control the loop
     {
       int timeout_ms = (int) next_timer_ms (cache);
+      DBG_LOGF ("Epoll wait for %dms...", timeout_ms);
       // epoll for active fds
       int enfd_count = epoll_wait (epfd, events, MAX_EVENTS, timeout_ms);
       if (g_data.terminate_flag)
@@ -973,6 +1018,7 @@ server_run (uint16_t port)
 	    }
 	  die ("epoll_wait");
 	}
+      DBG_LOGF ("Processing %d events.", enfd_count);
       // process active connections (listener and client events)
       if (enfd_count > 0)
 	{
