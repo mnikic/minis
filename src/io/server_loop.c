@@ -366,15 +366,14 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
 	  conn->state = STATE_RES;
 	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
 
-	  goto CLEANUP;
+          goto CLEANUP;
 	}
 
       conn->state = STATE_END;
-    CLEANUP:
+  CLEANUP:
       // If even the small error doesn't fit, we have to drop the connection
       buf_free (errb);
       buf_free (out);
-
       *out_wlen = 0;
       return false;
     }
@@ -410,7 +409,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
 			    "request too large; connection closed.");
       *start_index = conn->rbuf_size;
 
-      return false;		// Stop processing further requests from this buffer segment.
+      // Stop processing further requests from this buffer segment.
+      return false;
     }
 
   if (4 + len + *start_index > conn->rbuf_size)
@@ -423,22 +423,35 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   bool success =
     execute_and_buffer_response (cache, conn, &conn->rbuf[*start_index + 4],
 				 len, &wlen);
-  *start_index += 4 + len;
 
   if (!success)
     {
-      // If execute_and_buffer_response returns false, it already
-      // transitioned to STATE_END (bad request) or STATE_RES_CLOSE (server busy error).
-      // The connection is now in a terminal or error state, so we stop request processing.
+      // If execute_and_buffer_response returned false, it means:
+      // 1. Malformed request -> dump_error_and_close set STATE_RES_CLOSE/STATE_END.
+      // 2. Response too large -> set STATE_RES with error, or STATE_END if error didn't fit.
+      // In all failure cases, we must stop processing the *rest* of the requests
+      // in the buffer, as the connection is now focused on sending the error response.
+
+      // Update the start_index to consume the failed request
+      *start_index += 4 + len;
+
       msg
-	("request failed, or could not buffer response, closing connection");
+	("request failed, or could not buffer response, stopping processing for now");
+      // Stop the processing loop immediately
+      return false;
     }
-  else if (*start_index >= conn->rbuf_size)
+
+  // Request succeeded
+  *start_index += 4 + len;
+
+  if (*start_index >= conn->rbuf_size)
     {
       // we read all data from the client, try to send!
       conn->state = STATE_RES;
       // Add EPOLLOUT when we transition to STATE_RES
       conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+      // We set conn->state to STATE_RES, so we must stop the processing loop
+      return false;
     }
 
   // Continue processing requests if the connection is still in the request state
