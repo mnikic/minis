@@ -2,7 +2,7 @@ CC=gcc
 INCLUDE_PATHS = $(SRC_DIR) test
 INCLUDE_DIRS = $(addprefix -I,$(INCLUDE_PATHS))
 
-CFLAGS_BASE=-std=gnu11 -O3 -g -pthread \
+CFLAGS_BASE=-std=gnu11 -O3 -pthread \
  -Wall -Wextra -Werror -Wno-unused-parameter \
  -Wformat=2 -Werror=format-security \
  -Wconversion -Wimplicit-fallthrough \

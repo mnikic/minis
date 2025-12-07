@@ -183,13 +183,42 @@ conn_set_epoll_events (Conn *conn, uint32_t events)
     }
 }
 
+static void dump_error_and_close (Conn* conn, int code, const char* str)
+{
+      Buffer *err = buf_new ();
+      out_err (err, code, str);
+      size_t errlen = buf_len (err);
+
+      // Can it fit into the write buffer?
+      if (4 + errlen <= sizeof (conn->wbuf))
+	{
+	  uint32_t num = htonl ((uint32_t) errlen);
+	  memcpy (&conn->wbuf[0], &num, 4);
+	  memcpy (&conn->wbuf[4], buf_data (err), errlen);
+	  conn->wbuf_size = 4 + errlen;
+	  conn->wbuf_sent = 0;
+
+	  conn->state = STATE_RES;
+	  conn->close_after_sending = true;
+	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+	}
+      else
+	{
+	  // If even the error won't fit → hard close
+	  conn->state = STATE_END;
+	}
+
+      buf_free (err);
+}
+
+
 // returns true on success, false otherwise (must write error to 'out' on failure)
 static bool
-do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
+do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen, Buffer *out)
 {
   if (reqlen < 4)
     {
-      out_err (out, ERR_MALFORMED, "Request too short for argument count");
+      dump_error_and_close (conn,  ERR_MALFORMED, "Request too short for argument count");
       return false;
     }
   uint32_t num = 0;
@@ -198,12 +227,13 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 
   if (num > K_MAX_ARGS)
     {
-      out_err (out, ERR_UNKNOWN, "Too many arguments");
+      msg ("too many arguments");
+      dump_error_and_close (conn,  ERR_MALFORMED, "Too many arguments.");
       return false;
     }
   if (num < 1)
     {
-      out_err (out, ERR_MALFORMED,
+      dump_error_and_close (conn,  ERR_MALFORMED,
 	       "Must have at least one argument (the command)");
       return false;
     }
@@ -219,7 +249,7 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
     {
       if (pos + 4 > reqlen)
 	{
-	  out_err (out, ERR_MALFORMED,
+	  dump_error_and_close(conn, ERR_MALFORMED,
 		   "Argument count mismatch: missing length header");
 	  goto CLEANUP;
 	}
@@ -229,7 +259,7 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 
       if (pos + 4 + siz > reqlen)
 	{
-	  out_err (out, ERR_MALFORMED,
+	  dump_error_and_close(conn, ERR_MALFORMED,
 		   "Argument count mismatch: data length exceeds packet size");
 	  goto CLEANUP;
 	}
@@ -243,7 +273,7 @@ do_request (Cache *cache, const uint8_t *req, uint32_t reqlen, Buffer *out)
 
   if (pos != reqlen)
     {
-      out_err (out, ERR_MALFORMED, "Trailing garbage in request");
+      dump_error_and_close(conn, ERR_MALFORMED, "Trailing garbage in request");
       goto CLEANUP;
     }
 
@@ -274,8 +304,7 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
 			     size_t *out_wlen)
 {
   Buffer *out = buf_new ();
-  bool success = do_request (cache, req_data, req_len, out);
-
+  bool success = do_request (cache, conn, req_data, req_len, out);
   size_t wlen = buf_len (out);
   size_t needed = 4 + wlen;	// 4 bytes for length + data length
 
@@ -351,34 +380,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   // Check against the server's maximum message size. K_MAX_MSG is the correct, permanent limit.
   if (len > K_MAX_MSG)
     {
-      msg ("request too long");
-
-      // Build an error response
-      Buffer *err = buf_new ();
-      out_err (err, ERR_2BIG, "request too large; connection closed.");
-      size_t errlen = buf_len (err);
-
-      // Can it fit into the write buffer?
-      if (4 + errlen <= sizeof (conn->wbuf))
-	{
-	  uint32_t num = htonl ((uint32_t) errlen);
-	  memcpy (&conn->wbuf[0], &num, 4);
-	  memcpy (&conn->wbuf[4], buf_data (err), errlen);
-	  conn->wbuf_size = 4 + errlen;
-	  conn->wbuf_sent = 0;
-
-	  conn->state = STATE_RES;
-	  conn->close_after_sending = true;
-	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
-	}
-      else
-	{
-	  // If even the error won't fit → hard close
-	  conn->state = STATE_END;
-	}
-
-      buf_free (err);
-
+      msgf ("request too long %i", len);
+      dump_error_and_close (conn, ERR_2BIG, "request too large; connection closed.");
       *start_index = conn->rbuf_size;
 
       return false;		// Stop processing further requests from this buffer segment.
@@ -573,11 +576,6 @@ try_flush_buffer (Conn *conn)
 	  conn->state = STATE_END;
 	  return false;
 	}
-      if (conn->close_after_sending)
-        {
-	  conn->state = STATE_END;
-	  return false;
-        }
 
       conn->wbuf_sent += (size_t) err;
       assert (conn->wbuf_sent <= conn->wbuf_size);
@@ -585,6 +583,11 @@ try_flush_buffer (Conn *conn)
   // response was fully sent
   conn->wbuf_sent = 0;
   conn->wbuf_size = 0;
+  if (conn->close_after_sending)
+    {
+      conn->state = STATE_END;
+      return false;
+    }
 
   if (conn->state == STATE_END)
     {

@@ -57,3 +57,5 @@ dkms.conf
 compile_commands.json
 .cproject
 .project
+.clangd
+.clang-format
