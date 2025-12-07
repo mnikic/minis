@@ -183,42 +183,45 @@ conn_set_epoll_events (Conn *conn, uint32_t events)
     }
 }
 
-static void dump_error_and_close (Conn* conn, int code, const char* str)
+static void
+dump_error_and_close (Conn *conn, int code, const char *str)
 {
-      Buffer *err = buf_new ();
-      out_err (err, code, str);
-      size_t errlen = buf_len (err);
+  Buffer *err = buf_new ();
+  out_err (err, code, str);
+  size_t errlen = buf_len (err);
 
-      // Can it fit into the write buffer?
-      if (4 + errlen <= sizeof (conn->wbuf))
-	{
-	  uint32_t num = htonl ((uint32_t) errlen);
-	  memcpy (&conn->wbuf[0], &num, 4);
-	  memcpy (&conn->wbuf[4], buf_data (err), errlen);
-	  conn->wbuf_size = 4 + errlen;
-	  conn->wbuf_sent = 0;
+  // Can it fit into the write buffer?
+  if (4 + errlen <= sizeof (conn->wbuf))
+    {
+      uint32_t num = htonl ((uint32_t) errlen);
+      memcpy (&conn->wbuf[0], &num, 4);
+      memcpy (&conn->wbuf[4], buf_data (err), errlen);
+      conn->wbuf_size = 4 + errlen;
+      conn->wbuf_sent = 0;
 
-	  conn->state = STATE_RES;
-	  conn->close_after_sending = true;
-	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
-	}
-      else
-	{
-	  // If even the error won't fit → hard close
-	  conn->state = STATE_END;
-	}
+      conn->state = STATE_RES;
+      conn->close_after_sending = true;
+      conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+    }
+  else
+    {
+      // If even the error won't fit → hard close
+      conn->state = STATE_END;
+    }
 
-      buf_free (err);
+  buf_free (err);
 }
 
 
 // returns true on success, false otherwise (must write error to 'out' on failure)
 static bool
-do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen, Buffer *out)
+do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen,
+	    Buffer *out)
 {
   if (reqlen < 4)
     {
-      dump_error_and_close (conn,  ERR_MALFORMED, "Request too short for argument count");
+      dump_error_and_close (conn, ERR_MALFORMED,
+			    "Request too short for argument count");
       return false;
     }
   uint32_t num = 0;
@@ -228,13 +231,13 @@ do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen, Buffe
   if (num > K_MAX_ARGS)
     {
       msg ("too many arguments");
-      dump_error_and_close (conn,  ERR_MALFORMED, "Too many arguments.");
+      dump_error_and_close (conn, ERR_MALFORMED, "Too many arguments.");
       return false;
     }
   if (num < 1)
     {
-      dump_error_and_close (conn,  ERR_MALFORMED,
-	       "Must have at least one argument (the command)");
+      dump_error_and_close (conn, ERR_MALFORMED,
+			    "Must have at least one argument (the command)");
       return false;
     }
 
@@ -249,8 +252,8 @@ do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen, Buffe
     {
       if (pos + 4 > reqlen)
 	{
-	  dump_error_and_close(conn, ERR_MALFORMED,
-		   "Argument count mismatch: missing length header");
+	  dump_error_and_close (conn, ERR_MALFORMED,
+				"Argument count mismatch: missing length header");
 	  goto CLEANUP;
 	}
       uint32_t siz = 0;
@@ -259,8 +262,8 @@ do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen, Buffe
 
       if (pos + 4 + siz > reqlen)
 	{
-	  dump_error_and_close(conn, ERR_MALFORMED,
-		   "Argument count mismatch: data length exceeds packet size");
+	  dump_error_and_close (conn, ERR_MALFORMED,
+				"Argument count mismatch: data length exceeds packet size");
 	  goto CLEANUP;
 	}
       cmd[cmd_size] = (char *) (calloc (siz + 1, sizeof (char)));
@@ -273,7 +276,8 @@ do_request (Cache *cache, Conn *conn, const uint8_t *req, uint32_t reqlen, Buffe
 
   if (pos != reqlen)
     {
-      dump_error_and_close(conn, ERR_MALFORMED, "Trailing garbage in request");
+      dump_error_and_close (conn, ERR_MALFORMED,
+			    "Trailing garbage in request");
       goto CLEANUP;
     }
 
@@ -305,6 +309,14 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
 {
   Buffer *out = buf_new ();
   bool success = do_request (cache, conn, req_data, req_len, out);
+
+  if (!success)
+    {
+      buf_free (out);
+      *out_wlen = 0;
+      return false;
+    }
+
   size_t wlen = buf_len (out);
   size_t needed = 4 + wlen;	// 4 bytes for length + data length
 
@@ -381,7 +393,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   if (len > K_MAX_MSG)
     {
       msgf ("request too long %i", len);
-      dump_error_and_close (conn, ERR_2BIG, "request too large; connection closed.");
+      dump_error_and_close (conn, ERR_2BIG,
+			    "request too large; connection closed.");
       *start_index = conn->rbuf_size;
 
       return false;		// Stop processing further requests from this buffer segment.
@@ -824,6 +837,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   if (*epfd == -1)
     {
       close (*listen_fd);
+      connpool_free (g_data.fd2conn);
       die ("epoll_create1");
     }
   g_data.epfd = *epfd;
@@ -836,6 +850,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
     {
       close (*listen_fd);
       close (*epfd);
+      connpool_free (g_data.fd2conn);
       die ("epoll ctl: listen_sock!");
     }
 

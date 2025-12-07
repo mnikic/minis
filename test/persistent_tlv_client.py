@@ -19,7 +19,7 @@ C_ERR_UNKNOWN = 1   # For "Too many arguments"
 C_ERR_2BIG = 2      # For requests exceeding K_MAX_MSG (e.g., 4096 bytes)
 
 # Server-side constant for argument limit (used to test C_ERR_UNKNOWN)
-K_MAX_ARGS_TEST_LIMIT = 32 
+K_MAX_ARGS_TEST_LIMIT = 1024
 
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 1234 
@@ -348,7 +348,7 @@ def test_malformed_requests_suite():
     if not _run_malformed_test_closure(
         f"Too Many Arguments (N={num_args})", 
         payload_too_many_args, 
-        C_ERR_UNKNOWN, 
+        C_ERR_MALFORMED, 
         "Too many arguments"
     ): return False
 
