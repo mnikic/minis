@@ -150,22 +150,6 @@ accept_new_conn (int file_des)
   return connfd;
 }
 
-static void
-conn_done (Conn *conn)
-{
-  DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
-  // This is the single, authoritative place to free the connection structure.
-  // best-effort; ignore epoll errors
-  (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);	// Remove from epoll
-  connpool_remove (g_data.fd2conn, conn->fd);
-  close (conn->fd);
-  dlist_detach (&conn->idle_list);
-  free (conn);
-}
-
-static void state_req (Cache * cache, Conn * conn);
-static void state_res (Conn * conn);
-
 // Dynamically sets the epoll events for a connection.
 static void
 conn_set_epoll_events (Conn *conn, uint32_t events)
@@ -234,7 +218,6 @@ dump_error_and_close (Conn *conn, int code, const char *str)
 
   buf_free (err);
 }
-
 
 // returns true on success, false otherwise (must write error to 'out' on failure)
 static bool
@@ -605,21 +588,6 @@ try_fill_buffer (Cache *cache, Conn *conn)
   return true;
 }
 
-static void
-state_req (Cache *cache, Conn *conn)
-{
-  DBG_LOGF ("FD %d: Entering STATE_REQ handler.", conn->fd);
-  // Keep draining/processing until try_fill_buffer indicates EAGAIN (false)
-  // or a state change happened (true, which breaks the loop inside try_fill_buffer)
-  while (try_fill_buffer (cache, conn))
-    {
-      if (conn->state != STATE_REQ)
-	break;
-    }
-  DBG_LOGF ("FD %d: Exiting STATE_REQ handler. New state: %d.", conn->fd,
-	    conn->state);
-}
-
 static bool
 try_flush_buffer (Conn *conn)
 {
@@ -683,6 +651,21 @@ try_flush_buffer (Conn *conn)
 }
 
 static void
+state_req (Cache *cache, Conn *conn)
+{
+  DBG_LOGF ("FD %d: Entering STATE_REQ handler.", conn->fd);
+  // Keep draining/processing until try_fill_buffer indicates EAGAIN (false)
+  // or a state change happened (true, which breaks the loop inside try_fill_buffer)
+  while (try_fill_buffer (cache, conn))
+    {
+      if (conn->state != STATE_REQ)
+	break;
+    }
+  DBG_LOGF ("FD %d: Exiting STATE_REQ handler. New state: %d.", conn->fd,
+	    conn->state);
+}
+
+static void
 state_res (Conn *conn)
 {
   // Draining loop for edge-triggered EPOLLOUT event
@@ -691,6 +674,19 @@ state_res (Conn *conn)
       if (conn->state != STATE_RES && conn->state != STATE_RES_CLOSE)
 	break;
     }
+}
+
+static void
+conn_done (Conn *conn)
+{
+  DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
+  // This is the single, authoritative place to free the connection structure.
+  // best-effort; ignore epoll errors
+  (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);	// Remove from epoll
+  connpool_remove (g_data.fd2conn, conn->fd);
+  close (conn->fd);
+  dlist_detach (&conn->idle_list);
+  free (conn);
 }
 
 static void
