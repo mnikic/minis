@@ -42,7 +42,7 @@ enum
 
 enum
 {
-  STATE_REQ = 0, STATE_RES = 1, STATE_END = 2,	// mark the connection for deletion
+  STATE_REQ = 0, STATE_RES = 1, STATE_RES_CLOSE = 2, STATE_END = 3,	// mark the connection for deletion
 };
 
 static struct
@@ -140,7 +140,7 @@ accept_new_conn (int file_des)
   conn->wbuf_size = 0;
   conn->wbuf_sent = 0;
   conn->idle_start = get_monotonic_usec ();
-  conn->close_after_sending = false;
+  // The 'close_after_sending' flag is now handled by the STATE_RES_CLOSE enum value.
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   connpool_add (g_data.fd2conn, conn);
@@ -151,6 +151,7 @@ accept_new_conn (int file_des)
 static void
 conn_done (Conn *conn)
 {
+  // This is the single, authoritative place to free the connection structure.
   // best-effort; ignore epoll errors
   (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);	// Remove from epoll
   connpool_remove (g_data.fd2conn, conn->fd);
@@ -199,8 +200,8 @@ dump_error_and_close (Conn *conn, int code, const char *str)
       conn->wbuf_size = 4 + errlen;
       conn->wbuf_sent = 0;
 
-      conn->state = STATE_RES;
-      conn->close_after_sending = true;
+      // Set the state to respond and then close
+      conn->state = STATE_RES_CLOSE;
       conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
     }
   else
@@ -310,6 +311,9 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
   Buffer *out = buf_new ();
   bool success = do_request (cache, conn, req_data, req_len, out);
 
+  // If do_request failed, dump_error_and_close has already filled
+  // conn->wbuf and set state to STATE_RES_CLOSE/STATE_END. We must exit now
+  // to avoid corrupting the error buffer.
   if (!success)
     {
       buf_free (out);
@@ -327,7 +331,7 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
     {
       // The response is too large for the connection's write buffer.
       // Generate a small "server busy" error and send that instead.
-      // This path is expensive but necessary for robustness against large responses.
+      // Note: This path keeps the connection alive (STATE_RES).
 
       Buffer *errb = buf_new ();
       out_err (errb, ERR_UNKNOWN, "server busy: response truncated");
@@ -343,7 +347,7 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
 	  memcpy (&conn->wbuf[conn->wbuf_size + 4], buf_data (errb), errlen);
 	  conn->wbuf_size += 4 + errlen;
 
-	  // Transition to writing the error immediately
+	  // Transition to writing the error immediately (keeping connection open)
 	  conn->state = STATE_RES;
 	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
 
@@ -415,7 +419,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   if (!success)
     {
       // If execute_and_buffer_response returns false, it already
-      // transitioned to STATE_END (bad request) or STATE_RES (server busy error).
+      // transitioned to STATE_END (bad request) or STATE_RES_CLOSE (server busy error).
+      // The connection is now in a terminal or error state, so we stop request processing.
       msg
 	("request failed, or could not buffer response, closing connection");
     }
@@ -493,9 +498,10 @@ process_received_data (Cache *cache, Conn *conn, uint32_t bytes_read)
   conn->rbuf_size = remain;
 
   // State Transition/Flush Check
-  if (conn->state == STATE_RES || conn->state == STATE_END)
+  if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE
+      || conn->state == STATE_END)
     {
-      // Do NOT call state_res() from here. The transition to STATE_RES
+      // Do NOT call state_res() from here. The transition to STATE_RES/STATE_RES_CLOSE
       // armed EPOLLOUT, which the main event loop will handle it cleanly.
       return true;
     }
@@ -593,25 +599,27 @@ try_flush_buffer (Conn *conn)
       conn->wbuf_sent += (size_t) err;
       assert (conn->wbuf_sent <= conn->wbuf_size);
     }
+
   // response was fully sent
   conn->wbuf_sent = 0;
   conn->wbuf_size = 0;
-  if (conn->close_after_sending)
+
+  // Check if we were in the "Respond and Close" state
+  if (conn->state == STATE_RES_CLOSE)
     {
-      conn->state = STATE_END;
-      return false;
+      conn->state = STATE_END;	// Transition to END for cleanup
+      return false;		// Stop flushing loop, connection marked for cleanup
     }
 
-  if (conn->state == STATE_END)
+  // If the state was STATE_RES, transition back to STATE_REQ for next request
+  if (conn->state == STATE_RES)
     {
-      return false;		// Done writing the error response, let the loop clean up
+      conn->state = STATE_REQ;
+      // Remove EPOLLOUT when we transition back to STATE_REQ
+      conn_set_epoll_events (conn, EPOLLIN);
     }
 
-  conn->state = STATE_REQ;
-  // Remove EPOLLOUT when we transition back to STATE_REQ
-  conn_set_epoll_events (conn, EPOLLIN);
-
-  return false;			// nothing left to write right now
+  return false;			// nothing left to write right now (or STATE_END)
 }
 
 static void
@@ -620,7 +628,7 @@ state_res (Conn *conn)
   // Draining loop for edge-triggered EPOLLOUT event
   while (!try_flush_buffer (conn))
     {
-      if (conn->state != STATE_RES)
+      if (conn->state != STATE_RES && conn->state != STATE_RES_CLOSE)
 	break;
     }
 }
@@ -665,17 +673,16 @@ connection_io (Cache *cache, Conn *conn)
 
   if (conn->state == STATE_REQ)
     {
-      // If EPOLLIN fired (or EPOLLOUT fired immediately after STATE_RES was set 
-      // by state_req), we prioritize state_req until EAGAIN.
+      // If EPOLLIN fired, we prioritize state_req until EAGAIN.
       state_req (cache, conn);
     }
-  // If connection is in STATE_RES, it means it has data to write.
-  // We only proceed to state_res if the state hasn't changed *out* of STATE_RES
-  // (e.g., if state_req above transitioned it to STATE_END).
-  if (conn->state == STATE_RES)
+  // If connection is in STATE_RES or STATE_RES_CLOSE, it means it has data to write.
+  // We only proceed to state_res if the state hasn't changed *out* of those states
+  if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE)
     {
       state_res (conn);
     }
+  // We rely on the caller to check conn->state == STATE_END after this function returns.
 }
 
 // Drains the listening socket and registers all newly accepted connections
@@ -727,19 +734,21 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
   // Check for half-close (RDHUP), full hangup (HUP), or error (ERR) (Issue 12)
   if (event->events & (EPOLLHUP | EPOLLERR | EPOLLRDHUP))
     {
-      // Mark for termination immediately.
+      // Mark for termination immediately, perform cleanup, and return.
       conn->state = STATE_END;
       conn_done (conn);
       return;
     }
 
   // If there is an event and the connection isn't marked for close, process it.
+  // EPOLLOUT events are only armed when conn->state is STATE_RES or STATE_RES_CLOSE.
   if (event->events & (EPOLLIN | EPOLLOUT))
     {
       connection_io (cache, conn);
     }
 
-  // Cleanup if any I/O operation (like read or write) transitioned it to STATE_END
+  // Cleanup if any I/O operation (like read or write) transitioned it to STATE_END.
+  // This is the single, authoritative check for I/O triggered connection termination.
   if (conn->state == STATE_END)
     {
       conn_done (conn);

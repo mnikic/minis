@@ -24,7 +24,6 @@ typedef struct
   uint8_t wbuf[4 + K_MAX_MSG];
   uint64_t idle_start;
   DList idle_list;
-  bool close_after_sending;
 } Conn;
 
 typedef struct
