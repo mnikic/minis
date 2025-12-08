@@ -166,7 +166,7 @@ dump_error_and_close (Conn *conn, int code, const char *str)
 
   // Use small stack buffer for error messages (errors are always small)
   Buffer err_buf =
-    buf_init (conn->wbuf_storage + 4, sizeof conn->wbuf_storage - 4);
+    buf_init (conn->wbuf + 4, sizeof conn->wbuf - 4);
 
   if (!out_err (&err_buf, code, str))
     {
@@ -179,7 +179,7 @@ dump_error_and_close (Conn *conn, int code, const char *str)
 
   conn->wbuf_size = 0;
   conn->wbuf_sent = 0;
-  memcpy (&conn->wbuf_storage[conn->wbuf_size], &nwlen, 4);
+  memcpy (&conn->wbuf, &nwlen, 4);
   conn->wbuf_size += 4 + errlen;
   conn->state = STATE_RES_CLOSE;
   conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
@@ -293,7 +293,8 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
   if (!cache_execute (cache, cmd, cmd_size, out_buf))
     {
       msg ("cache couldn't write message, no space.");
-      conn->state = STATE_END;
+      dump_error_and_close(conn, ERR_UNKNOWN, "response too large");
+      conn->state = STATE_RES_CLOSE;
       goto CLEANUP;
     }
 
@@ -309,19 +310,24 @@ CLEANUP:
   return success;
 }
 
-// Executes the request and buffers the response directly into conn->wbuf_storage.
+// Executes the request and buffers the response directly into conn->wbuf.
 // Returns true on success, false on failure.
 static bool
 execute_and_buffer_response (Cache *cache, Conn *conn,
 			     uint8_t *req_data, uint32_t req_len)
 {
-  uint8_t *out_mem = conn->wbuf_storage + conn->wbuf_size;
+  if (conn->wbuf_size + 4 >= sizeof(conn->wbuf))
+    {
+      dump_error_and_close(conn, ERR_UNKNOWN, "write buffer full");
+      return false;
+    }
+  uint8_t *out_mem = conn->wbuf + conn->wbuf_size;
   // OPTIMIZATION: Initialize the output buffer to start 4 bytes (sizeof uint32_t )
   // into the raw output memory (out_mem). This reserves the first 4 bytes for the
   // message length header, allowing 'cache_execute' to write the payload directly
   // into its final destination so we can skip copying temporary buffer.
   Buffer out_buf =
-    buf_init (out_mem + 4, sizeof conn->wbuf_storage - conn->wbuf_size - 4);
+    buf_init (out_mem + 4, sizeof conn->wbuf - conn->wbuf_size - 4);
 
   if (!do_request (cache, conn, req_data, req_len, &out_buf))
     return false;
@@ -507,7 +513,7 @@ try_flush_buffer (Conn *conn)
   while (conn->wbuf_sent < conn->wbuf_size)
     {
       size_t remain = conn->wbuf_size - conn->wbuf_sent;
-      ssize_t err = send (conn->fd, &conn->wbuf_storage[conn->wbuf_sent],
+      ssize_t err = send (conn->fd, &conn->wbuf[conn->wbuf_sent],
 			  remain, MSG_NOSIGNAL);
 
       if (err < 0)

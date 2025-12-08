@@ -19,11 +19,10 @@ typedef struct
   int fd;
   uint32_t state;
   uint32_t rbuf_size;
-  uint8_t rbuf[4 + K_MAX_MSG];
+  uint8_t rbuf[4 + K_MAX_MSG + 1]; // Added 1 extra for ease of string in place 0 termination.
   size_t wbuf_size;
   size_t wbuf_sent;
-  uint8_t wbuf_storage[4 + K_MAX_MSG];
-  Buffer wbuf;
+  uint8_t wbuf[4 + K_MAX_MSG];
   uint64_t idle_start;
   DList idle_list;
 } Conn;
