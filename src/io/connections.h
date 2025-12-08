@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include "list.h"
 #include "common/common.h"
+#include "io/buffer.h"
 
 typedef struct
 {
@@ -21,7 +22,8 @@ typedef struct
   uint8_t rbuf[4 + K_MAX_MSG];
   size_t wbuf_size;
   size_t wbuf_sent;
-  uint8_t wbuf[4 + K_MAX_MSG];
+  uint8_t wbuf_storage[4 + K_MAX_MSG];
+  Buffer wbuf;
   uint64_t idle_start;
   DList idle_list;
 } Conn;

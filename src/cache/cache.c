@@ -30,7 +30,7 @@ enum
   T_STR = 0, T_ZSET = 1,
 };
 
-// deallocate the key immediately
+// Deallocates the Entry and its contents.
 static void
 entry_destroy (Entry *ent)
 {
@@ -52,7 +52,33 @@ entry_destroy (Entry *ent)
   free (ent);
 }
 
-static int
+// Converts an HNode pointer (from the hash map) back to its parent Entry structure.
+static Entry *
+fetch_entry (HNode *node_to_fetch)
+{
+// This pragma block is necessary for container_of, which performs type punning.
+// By centralizing it here, we remove it from all other usage sites.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  Entry *entry = container_of (node_to_fetch, Entry, node);
+#pragma GCC diagnostic pop
+  return entry;
+}
+
+// Converts a heap index reference (size_t *ref) back to its parent Entry structure.
+static Entry *
+fetch_entry_from_heap_ref (size_t *ref)
+{
+// This pragma block is necessary for container_of, which performs type punning.
+// By centralizing it here, we remove it from the cache_evict function.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  Entry *ent = container_of (ref, Entry, heap_idx);
+#pragma GCC diagnostic pop
+  return ent;
+}
+
+static bool
 cmd_is (const char *word, const char *cmd)
 {
   return 0 == strcasecmp (word, cmd);
@@ -61,11 +87,8 @@ cmd_is (const char *word, const char *cmd)
 static int
 entry_eq (HNode *lhs, HNode *rhs)
 {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  Entry *lentry = container_of (lhs, Entry, node);
-  Entry *rentry = container_of (rhs, Entry, node);
-#pragma GCC diagnostic pop
+  Entry *lentry = fetch_entry (lhs);
+  Entry *rentry = fetch_entry (rhs);
 
   return lhs->hcode == rhs->hcode
     && (lentry != NULL && rentry != NULL && lentry->key != NULL
@@ -76,10 +99,7 @@ static void
 cb_destroy_entry (HNode *node, void *arg)
 {
   (void) arg;			// unused
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  Entry *ent = container_of (node, Entry, node);
-#pragma GCC diagnostic pop
+  Entry *ent = fetch_entry (node);
   // This is a direct iteration over the nodes, so we call the direct destructor
   entry_destroy (ent);
 }
@@ -88,10 +108,9 @@ static void
 cb_scan (HNode *node, void *arg)
 {
   Buffer *out = (Buffer *) arg;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  out_str (out, container_of (node, Entry, node)->key);
-#pragma GCC diagnostic pop
+  // NOTE: This callback is designed for hm_scan (which is always void)
+  // We cannot stop hm_scan if out_str fails, but we continue attempting to write.
+  out_str (out, fetch_entry (node)->key);
 }
 
 static int
@@ -110,14 +129,46 @@ str2int (const char *string, int64_t *out)
   return endp == string + strlen (string);
 }
 
-static void
+// Helper to check for existing ZSet and output Nil/Error on failure.
+// Return: bool status of the buffer operation (true means write succeeded or no write needed).
+// Output param *is_valid_zset: true if the key was found and is of type T_ZSET.
+static bool
+expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
+	     bool *is_valid_zset)
+{
+  *is_valid_zset = false;
+
+  Entry key;
+  key.key = string;
+  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
+  HNode *hnode = hm_lookup (&cache->db, &key.node, &entry_eq);
+
+  if (!hnode)
+    {
+      // Not found. Domain logic failed. Buffer write: NIL.
+      return out_nil (out);
+    }
+
+  *ent = fetch_entry (hnode);
+  if ((*ent)->type != T_ZSET)
+    {
+      // Wrong type. Domain logic failed. Buffer write: ERR.
+      return out_err (out, ERR_TYPE, "expect zset");
+    }
+
+  // Found and correct type. Domain logic successful. No buffer write needed.
+  *is_valid_zset = true;
+  return true;
+}
+
+static bool			// Signature changed to bool
 do_zadd (Cache *cache, char **cmd, Buffer *out)
 {
   double score = 0;
   if (!str2dbl (cmd[2], &score))
     {
-      out_err (out, ERR_ARG, "expect fp number");
-      return;
+      // If str2dbl fails, write error to buffer and return its success status
+      return out_err (out, ERR_ARG, "expect fp number");
     }
 
   Entry key;
@@ -157,57 +208,39 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
     }
   else
     {
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      ent = container_of (hnode, Entry, node);
-#pragma GCC diagnostic pop
+      ent = fetch_entry (hnode);
       if (ent->type != T_ZSET)
 	{
-	  out_err (out, ERR_TYPE, "expect zset");
-	  return;
+	  // Write error and return its status
+	  return out_err (out, ERR_TYPE, "expect zset");
 	}
     }
 
   const char *name = cmd[3];
   int added = zset_add (ent->zset, name, strlen (name), score);
-  out_int (out, (int64_t) added);
-}
-
-static int
-expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent)
-{
-  Entry key;
-  key.key = string;
-  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
-  HNode *hnode = hm_lookup (&cache->db, &key.node, &entry_eq);
-  if (!hnode)
-    {
-      out_nil (out);
-      return false;
-    }
-
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  *ent = container_of (hnode, Entry, node);
-#pragma GCC diagnostic pop
-  if ((*ent)->type != T_ZSET)
-    {
-      out_err (out, ERR_TYPE, "expect zset");
-      return false;
-    }
-  return true;
+  // Write result and return its success status
+  return out_int (out, (int64_t) added);
 }
 
 // zrem zset name
-static void
+static bool			// Signature changed to bool
 do_zrem (Cache *cache, char **cmd, Buffer *out)
 {
   Entry *ent = NULL;
-  if (!expect_zset (cache, out, cmd[1], &ent))
+  bool is_valid_zset;
+
+  // 1. Check if the buffer write was successful (for NIL or ERR cases).
+  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
     {
-      return;
+      return false;		// Buffer write failure (backpressure)
+    }
+
+  // 2. If the buffer write was successful, but the domain validation failed (!is_valid_zset),
+  // the response (NIL or ERR) has already been successfully written by expect_zset.
+  // We return true to signal the command was handled and the response is ready.
+  if (!is_valid_zset)
+    {
+      return true;
     }
 
   ZNode *znode = zset_pop (ent->zset, cmd[2], strlen (cmd[2]));
@@ -215,86 +248,114 @@ do_zrem (Cache *cache, char **cmd, Buffer *out)
     {
       znode_del (znode);
     }
-  out_int (out, znode ? 1 : 0);
+  // 3. Write final result and return its success status
+  return out_int (out, znode ? 1 : 0);
 }
 
 // zscore zset name
-static void
+static bool			// Signature changed to bool
 do_zscore (Cache *cache, char **cmd, Buffer *out)
 {
   Entry *ent = NULL;
-  if (!expect_zset (cache, out, cmd[1], &ent))
+  bool is_valid_zset;
+
+  // 1. Check if the buffer write was successful (for NIL or ERR cases).
+  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
     {
-      return;
+      return false;		// Buffer write failure (backpressure)
+    }
+
+  // 2. If the buffer write was successful, but the domain validation failed (!is_valid_zset),
+  // the response (NIL or ERR) has already been successfully written by expect_zset.
+  // We return true to signal the command was handled and the response is ready.
+  if (!is_valid_zset)
+    {
+      return true;
     }
 
   ZNode *znode = zset_lookup (ent->zset, cmd[2], strlen (cmd[2]));
   if (znode)
     {
-      out_dbl (out, znode->score);
+      // 3. Write result and return its success status
+      return out_dbl (out, znode->score);
     }
   else
     {
-      out_nil (out);
+      // 3. Write NIL and return its success status
+      return out_nil (out);
     }
 }
 
 // zquery zset score name offset limit
-static void
+static bool			// Signature changed to bool
 do_zquery (Cache *cache, char **cmd, Buffer *out)
 {
 // parse args
   double score = 0;
   if (!str2dbl (cmd[2], &score))
     {
-      out_err (out, ERR_ARG, "expect fp number");
-      return;
+      return out_err (out, ERR_ARG, "expect fp number");
     }
   int64_t offset = 0;
   int64_t limit = 0;
   if (!str2int (cmd[4], &offset))
     {
-      out_err (out, ERR_ARG, "expect int");
-      return;
+      return out_err (out, ERR_ARG, "expect int");
     }
   if (!str2int (cmd[5], &limit))
     {
-      out_err (out, ERR_ARG, "expect int");
-      return;
+      return out_err (out, ERR_ARG, "expect int");
     }
 
 // get the zset
   Entry *ent = NULL;
-  if (!expect_zset (cache, out, cmd[1], &ent))
+  bool is_valid_zset;
+
+  // 1. Check if the buffer write was successful (for NIL or ERR cases).
+  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
     {
+      return false;		// Buffer write failure (backpressure)
+    }
+
+  // 2. If the buffer write was successful, but the domain validation failed (!is_valid_zset)
+  if (!is_valid_zset)
+    {
+      // If the output buffer contains SER_NIL (key not found), clear it and send empty array instead.
       if (buf_len (out) > 0 && buf_data (out)[0] == SER_NIL)
 	{
 	  buf_clear (out);
-	  out_arr (out, (uint32_t) 0);
+	  // If this write fails, we return false. Otherwise, we return true.
+	  return out_arr (out, (uint32_t) 0);
 	}
-      return;
+      // If it was an ERR (wrong type), the ERR was already written. Command handled successfully.
+      return true;
     }
 
 // look up the tuple
   if (limit <= 0)
     {
-      out_arr (out, (uint32_t) 0);
-      return;
+      return out_arr (out, (uint32_t) 0);
     }
   ZNode *znode = zset_query (ent->zset, score, cmd[3], strlen (cmd[3]));
   znode = znode_offset (znode, offset);
 
   // output
   size_t idx = out_arr_begin (out);
+  if (idx == 0)
+    return false;
+
   uint32_t num = 0;
   while (znode && (int64_t) num < limit)
     {
-      out_str_size (out, znode->name, znode->len);
-      out_dbl (out, znode->score);
+      if (!out_str_size (out, znode->name, znode->len))
+	return false;
+      if (!out_dbl (out, znode->score))
+	return false;
+
       znode = znode_offset (znode, +1);
       num += 2;
     }
-  out_arr_end (out, idx, num);
+  return out_arr_end (out, idx, num);
 }
 
 // set or remove the TTL
@@ -326,16 +387,26 @@ entry_set_ttl (Cache *cache, Entry *ent, int64_t ttl_ms)
     }
 }
 
-static void
+static bool			// Signature changed to bool
 do_keys (Cache *cache, char **cmd, Buffer *out)
 {
   (void) cmd;
-  out_arr (out, (uint32_t) hm_size (&cache->db));
+  // Check return of out_arr. If it fails, we cannot write the header.
+  if (!out_arr (out, (uint32_t) hm_size (&cache->db)))
+    return false;
+  // We cannot stop h_scan if cb_scan fails to write to the buffer, 
+  // but we rely on the persistent failure state of the buffer to prevent 
+  // further successful writes.
   h_scan (&cache->db.ht1, &cb_scan, out);
   h_scan (&cache->db.ht2, &cb_scan, out);
+
+  // If the array header was written successfully, we assume success 
+  // as we cannot check for individual failures in h_scan callback.
+  // The caller will check the buffer's final state anyway.
+  return true;
 }
 
-static void
+static bool			// Signature changed to bool
 do_del (Cache *cache, char **cmd, Buffer *out)
 {
   Entry key;
@@ -345,20 +416,19 @@ do_del (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_pop (&cache->db, &key.node, &entry_eq);
   if (node)
     {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      Entry *entry = container_of (node, Entry, node);
-#pragma GCC diagnostic pop
+      // Refactored to use fetch_entry
+      Entry *entry = fetch_entry (node);
       if (entry->heap_idx != (size_t) -1)
 	{
 	  heap_remove_idx (&cache->heap, entry->heap_idx);
 	}
       entry_destroy (entry);
     }
-  out_int (out, node ? 1 : 0);
+  // Check return of out_int
+  return out_int (out, node ? 1 : 0);
 }
 
-static void
+static bool			// Signature changed to bool
 do_set (Cache *cache, char **cmd, Buffer *out)
 {
   Entry key;
@@ -368,14 +438,12 @@ do_set (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (node)
     {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      Entry *ent = container_of (node, Entry, node);
-#pragma GCC diagnostic pop
+      // Refactored to use fetch_entry
+      Entry *ent = fetch_entry (node);
       if (ent->type != T_STR)
 	{
-	  out_err (out, ERR_TYPE, "key exists with different type");
-	  return;
+	  // Write error and check return
+	  return out_err (out, ERR_TYPE, "key exists with different type");
 	}
       if (ent->val)
 	{
@@ -414,7 +482,8 @@ do_set (Cache *cache, char **cmd, Buffer *out)
       ent->type = T_STR;
       hm_insert (&cache->db, &ent->node);
     }
-  out_nil (out);
+  // Write NIL and check return
+  return out_nil (out);
 }
 
 static void
@@ -449,7 +518,7 @@ entry_del (Cache *cache, Entry *ent)
     }
 }
 
-static void
+static bool			// Signature changed to bool
 do_get (Cache *cache, char **cmd, Buffer *out)
 {
   Entry key;
@@ -459,32 +528,30 @@ do_get (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (!node)
     {
-      out_nil (out);
-      return;
+      // Write NIL and check return
+      return out_nil (out);
     }
 
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  Entry *ent = container_of (node, Entry, node);
-#pragma GCC diagnostic pop
+  // Refactored to use fetch_entry
+  Entry *ent = fetch_entry (node);
   if (ent->type != T_STR || !ent->val)
     {
-      out_nil (out);
-      return;
+      // Write NIL and check return
+      return out_nil (out);
     }
 
-  out_str (out, ent->val);
+  // Write string and check return
+  return out_str (out, ent->val);
 }
 
-static void
+static bool			// Signature changed to bool
 do_expire (Cache *cache, char **cmd, Buffer *out)
 {
   int64_t ttl_ms = 0;
   if (!str2int (cmd[2], &ttl_ms))
     {
-      out_err (out, ERR_ARG, "expect int64");
-      return;
+      // Write error and check return
+      return out_err (out, ERR_ARG, "expect int64");
     }
 
   Entry key;
@@ -494,17 +561,15 @@ do_expire (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (node)
     {
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      Entry *ent = container_of (node, Entry, node);
-#pragma GCC diagnostic pop
+      // Refactored to use fetch_entry
+      Entry *ent = fetch_entry (node);
       entry_set_ttl (cache, ent, ttl_ms);
     }
-  out_int (out, node ? 1 : 0);
+  // Write result and check return
+  return out_int (out, node ? 1 : 0);
 }
 
-static void
+static bool			// Signature changed to bool
 do_ttl (Cache *cache, char **cmd, Buffer *out)
 {
   Entry key;
@@ -514,76 +579,77 @@ do_ttl (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (!node)
     {
-      out_int (out, -2);
-      return;
+      // Write -2 and check return
+      return out_int (out, -2);
     }
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  Entry *ent = container_of (node, Entry, node);
-#pragma GCC diagnostic pop
+  // Refactored to use fetch_entry
+  Entry *ent = fetch_entry (node);
   if (ent->heap_idx == (size_t) -1)
     {
-      out_int (out, -1);
-      return;
+      // Write -1 and check return
+      return out_int (out, -1);
     }
 
   uint64_t expire_at = heap_get (&cache->heap, ent->heap_idx)->val;
   uint64_t now_us = get_monotonic_usec ();
-  out_int (out,
-	   (int64_t) (expire_at > now_us ? (expire_at - now_us) / 1000 : 0));
+  // Write calculated TTL and check return
+  return out_int (out,
+		  (int64_t) (expire_at >
+			     now_us ? (expire_at - now_us) / 1000 : 0));
 }
 
-void
+bool				// Updated signature to return bool
 cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out)
 {
   if (size == 1 && cmd_is (cmd[0], "keys"))
     {
-      do_keys (cache, cmd, out);
+      return do_keys (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 2 && cmd_is (cmd[0], "get"))
     {
-      do_get (cache, cmd, out);
+      return do_get (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 3 && cmd_is (cmd[0], "set"))
     {
-      do_set (cache, cmd, out);
+      return do_set (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 2 && cmd_is (cmd[0], "del"))
     {
-      do_del (cache, cmd, out);
+      return do_del (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 3 && cmd_is (cmd[0], "pexpire"))
     {
-      do_expire (cache, cmd, out);
+      return do_expire (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 2 && cmd_is (cmd[0], "pttl"))
     {
-      do_ttl (cache, cmd, out);
+      return do_ttl (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 4 && cmd_is (cmd[0], "zadd"))
     {
-      do_zadd (cache, cmd, out);
+      return do_zadd (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 3 && cmd_is (cmd[0], "zrem"))
     {
-      do_zrem (cache, cmd, out);
+      return do_zrem (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 3 && cmd_is (cmd[0], "zscore"))
     {
-      do_zscore (cache, cmd, out);
+      return do_zscore (cache, cmd, out);	// Check and propagate status
     }
   else if (size == 6 && cmd_is (cmd[0], "zquery"))
     {
-      do_zquery (cache, cmd, out);
+      return do_zquery (cache, cmd, out);	// Check and propagate status
     }
   else
     {
-      out_err (out, ERR_UNKNOWN, "Unknown cmd");
+      // For unknown command, write error and return its status
+      return out_err (out, ERR_UNKNOWN, "Unknown cmd");
     }
 }
 
-int
+static int
 hnode_same (HNode *lhs, HNode *rhs)
 {
   return lhs == rhs;
@@ -610,11 +676,8 @@ cache_evict (Cache *cache, uint64_t now_us)
   size_t nworks = 0;
   while (!heap_empty (&cache->heap) && heap_top (&cache->heap)->val < now_us)
     {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      Entry *ent =
-	container_of (heap_top (&cache->heap)->ref, Entry, heap_idx);
-#pragma GCC diagnostic pop
+      // Refactored to use fetch_entry_from_heap_ref
+      Entry *ent = fetch_entry_from_heap_ref (heap_top (&cache->heap)->ref);
       HNode *node = hm_pop (&cache->db, &ent->node, &hnode_same);
       assert (node == &ent->node);
       entry_del (cache, ent);
