@@ -30,7 +30,7 @@
 // Currently at 8KB (8192 bytes) to accommodate larger commands.
 // This must be consistent between the client and the server's read buffer capacity.
 #define K_MAX_MSG (1024 * 8)
-#define K_MAX_ARGS 1024
+#define K_MAX_ARGS 32
 #define K_MAX_KEY 42
 #define K_MAX_VAL (1024 * 7)
 

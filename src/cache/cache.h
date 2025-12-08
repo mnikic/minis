@@ -28,7 +28,7 @@ typedef struct
 Cache *cache_init (void);
 void cache_evict (Cache * cache, uint64_t now_us);
 uint64_t cache_next_expiry (Cache * cache);
-void cache_execute (Cache * cache, char **cmd, size_t size, Buffer * out);
+bool cache_execute (Cache * cache, char **cmd, size_t size, Buffer * out);
 void cache_free (Cache * cache);
 
 #endif /* CACHE_H */

@@ -11,13 +11,13 @@
 #include <stdbool.h>
 #include "buffer.h"
 
-void out_nil (Buffer * out);
-void out_str (Buffer * out, const char *val);
-void out_str_size (Buffer * out, const char *string, size_t size);
-void out_int (Buffer * out, int64_t val);
-void out_dbl (Buffer * out, double val);
-void out_err (Buffer * out, int32_t code, const char *msg);
-void out_arr (Buffer * out, uint32_t num);
+bool out_nil (Buffer * out);
+bool out_str (Buffer * out, const char *val);
+bool out_str_size (Buffer * out, const char *string, size_t size);
+bool out_int (Buffer * out, int64_t val);
+bool out_dbl (Buffer * out, double val);
+bool out_err (Buffer * out, int32_t code, const char *msg);
+bool out_arr (Buffer * out, uint32_t num);
 
 // For building arrays dynamically
 size_t out_arr_begin (Buffer * out);
