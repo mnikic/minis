@@ -119,7 +119,7 @@ accept_new_conn (int file_des)
       msgf ("accept() error: %s", strerror (errno));
       return -2;
     }
-  int sndbuf = 8 * 1024 * 1024;
+  int sndbuf = 2 * 1024 * 1024;
   setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
 
   Conn *conn = calloc (1, sizeof (Conn));
@@ -518,6 +518,8 @@ try_flush_buffer (Conn *conn)
 {
   DBG_LOGF ("FD %d: Flushing WBuf (size %zu, sent %zu).",
 	    conn->fd, conn->wbuf_size, conn->wbuf_sent);
+  int cork = 1;
+  setsockopt (conn->fd, IPPROTO_TCP, TCP_CORK, &cork, sizeof (cork));
 
   while (conn->wbuf_sent < conn->wbuf_size)
     {
@@ -532,19 +534,19 @@ try_flush_buffer (Conn *conn)
 	  if (errno == EAGAIN)
 	    {
 	      DBG_LOGF ("FD %d: Send blocked (EAGAIN).", conn->fd);
-	      return false;
+	      goto CLEANUP;
 	    }
 
 	  msgf ("write() error: %s", strerror (errno));
 	  conn->state = STATE_END;
-	  return false;
+	  goto CLEANUP;
 	}
 
       if (err == 0)
 	{
 	  msg ("write returned 0 unexpectedly");
 	  conn->state = STATE_END;
-	  return false;
+	  goto CLEANUP;
 	}
 
       conn->wbuf_sent += (size_t) err;
@@ -561,7 +563,7 @@ try_flush_buffer (Conn *conn)
       DBG_LOGF ("FD %d: Response sent, transitioning to STATE_END for close.",
 		conn->fd);
       conn->state = STATE_END;
-      return false;
+      goto CLEANUP;
     }
 
   if (conn->state == STATE_RES)
@@ -572,6 +574,9 @@ try_flush_buffer (Conn *conn)
       conn_set_epoll_events (conn, EPOLLIN);
     }
 
+CLEANUP:
+  cork = 0;			// Uncork before error exit
+  setsockopt (conn->fd, IPPROTO_TCP, TCP_CORK, &cork, sizeof (cork));
   return false;
 }
 
@@ -593,19 +598,11 @@ state_req (Cache *cache, Conn *conn)
 static void
 state_res (Conn *conn)
 {
-  int cork = 1;
-  setsockopt (conn->fd, IPPROTO_TCP, TCP_CORK, &cork, sizeof (cork));
-
   while (!TIME_EXPR ("try_flush_buffer", try_flush_buffer (conn)))
     {
       if (conn->state != STATE_RES && conn->state != STATE_RES_CLOSE)
 	break;
     }
-
-  cork = 0;		// Uncork before error exit
-  setsockopt (conn->fd, IPPROTO_TCP, TCP_CORK, &cork,
-		sizeof (cork));
-
 }
 
 static void
