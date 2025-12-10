@@ -552,10 +552,10 @@ do_set (Cache *cache, char **cmd, Buffer *out)
 }
 
 static bool
-do_get (Cache *cache, char **cmd, Buffer *out)
+do_get (Cache *cache, char *key_param, Buffer *out)
 {
   Entry key;
-  key.key = cmd[1];
+  key.key = key_param;
   key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
 
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
@@ -588,6 +588,50 @@ do_get (Cache *cache, char **cmd, Buffer *out)
 
   // Key is valid and not expired. Return the value.
   return out_str (out, ent->val);
+}
+
+/**
+ * @brief Handles the MGET command for multiple keys.
+ * * This function handles the RESP array framing and iterates over the keys,
+ * calling do_get for each one. Crucially, it implements the "fail-fast" 
+ * buffer check: if any single do_get call fails to write its result 
+ * (value or NIL) because the output buffer is full, the entire operation 
+ * stops and returns false.
+ *
+ * @param cache The database instance.
+ * @param cmd The command array (e.g., {"MGET", "key1", "key2", "key3", ...})
+ * @param nkeys The number of keys to retrieve (must be cmd_size - 1).
+ * @param out The output buffer to serialize the results to.
+ * @return bool True if the entire result (array header + all values/NILs) 
+ * was successfully written; false otherwise (buffer exhausted).
+ */
+static bool
+do_mget (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
+{
+  if (!out_arr (out, (uint32_t) nkeys))
+    {
+      // If the header itself cannot be written, fail immediately.
+      return false;
+    }
+
+  for (size_t i = 0; i < nkeys; ++i)
+    {
+      // cmd[0] is "mget" we can skip it.
+      // Call do_get for the current key.
+      // do_get will write either the value (Bulk String) or (NIL) 
+      // to the output buffer 'out'.
+      // It returns false only if the output buffer fills up during the write.
+      if (!do_get (cache, cmd[i + 1], out))
+	{
+	  // FAIL-FAST: If writing the result of the current key failed, 
+	  // the buffer is exhausted and the response is incomplete. 
+	  // Stop processing immediately.
+	  return false;
+	}
+    }
+
+  // All elements (values or NILs) have been successfully written.
+  return true;
 }
 
 static bool
@@ -654,7 +698,11 @@ cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out)
     }
   else if (size == 2 && cmd_is (cmd[0], "get"))
     {
-      return do_get (cache, cmd, out);
+      return do_get (cache, cmd[1], out);
+    }
+  else if (cmd_is (cmd[0], "mget") && size > 1)
+    {
+      return do_mget (cache, cmd, size - 1, out);
     }
   else if (size == 3 && cmd_is (cmd[0], "set"))
     {
