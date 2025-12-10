@@ -12,7 +12,6 @@
 #include <stdint.h>
 #include "list.h"
 #include "common/common.h"
-#include "io/buffer.h"
 
 typedef struct
 {

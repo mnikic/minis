@@ -16,6 +16,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <stdbool.h>
 #include <time.h>
@@ -117,6 +119,8 @@ accept_new_conn (int file_des)
       msgf ("accept() error: %s", strerror (errno));
       return -2;
     }
+  int sndbuf = 8 * 1024 * 1024;
+  setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
 
   Conn *conn = calloc (1, sizeof (Conn));
   if (!conn)
@@ -288,7 +292,7 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
   DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd,
 	    cmd_size);
   success =
-    TIME_CALL ("cache_execute",
+    TIME_EXPR ("cache_execute",
 	       cache_execute (cache, cmd, cmd_size, out_buf));
   // Execute the command. The command array pointers point directly into the read buffer.
   if (!success)
@@ -332,7 +336,7 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
 
   bool success;
   success =
-    TIME_CALL ("do_request",
+    TIME_EXPR ("do_request",
 	       do_request (cache, conn, req_data, req_len, &out_buf));
   if (!success)
     return false;
@@ -520,7 +524,6 @@ try_flush_buffer (Conn *conn)
       size_t remain = conn->wbuf_size - conn->wbuf_sent;
       ssize_t err = send (conn->fd, &conn->wbuf[conn->wbuf_sent],
 			  remain, MSG_NOSIGNAL);
-
       if (err < 0)
 	{
 	  if (errno == EINTR)
@@ -590,11 +593,19 @@ state_req (Cache *cache, Conn *conn)
 static void
 state_res (Conn *conn)
 {
-  while (!try_flush_buffer (conn))
+  int cork = 1;
+  setsockopt (conn->fd, IPPROTO_TCP, TCP_CORK, &cork, sizeof (cork));
+
+  while (!TIME_EXPR ("try_flush_buffer", try_flush_buffer (conn)))
     {
       if (conn->state != STATE_RES && conn->state != STATE_RES_CLOSE)
 	break;
     }
+
+  cork = 0;		// Uncork before error exit
+  setsockopt (conn->fd, IPPROTO_TCP, TCP_CORK, &cork,
+		sizeof (cork));
+
 }
 
 static void
@@ -695,7 +706,7 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
     }
 
   if (event->events & (EPOLLIN | EPOLLOUT))
-    connection_io (cache, conn);
+    TIME_STMT ("connection_io", connection_io (cache, conn));
 
   if (conn->state == STATE_END)
     conn_done (conn);

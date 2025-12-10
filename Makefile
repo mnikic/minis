@@ -16,7 +16,8 @@ CFLAGS_BASE=-std=gnu11 -O3 -pthread \
 	-fstack-protector-strong -fstack-clash-protection \
 	-fstrict-flex-arrays=3 \
 	-Wpedantic -Wundef -Wcast-align -Wswitch-enum \
-	-Wno-unused-parameter -Wfloat-equal -Wcast-qual -Wstrict-overflow=2
+	-Wno-unused-parameter -Wfloat-equal -Wcast-qual -Wstrict-overflow=2 \
+# -DK_ENABLE_BENCHMARK
 
 
 LDFLAGS_BASE=-pthread \

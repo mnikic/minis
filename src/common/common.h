@@ -65,6 +65,8 @@ void msg (const char *msg);
 static uint64_t req_count;
 static uint64_t do_request_us;
 static uint64_t cache_execute_us;
+static uint64_t try_flush_buffer_us;
+static uint64_t connection_io_us;
 
 static inline void
 record_time (const char *label, uint64_t micros)
@@ -77,6 +79,14 @@ record_time (const char *label, uint64_t micros)
     {
       cache_execute_us += micros;
     }
+  else if (strcmp (label, "try_flush_buffer") == 0)
+    {
+       try_flush_buffer_us += micros;
+    }
+  else if (strcmp (label, "connection_io") == 0)
+    {
+        connection_io_us += micros;
+    }
   else
     msgf ("unknown label is %s, %u", label, micros);
   req_count += 1;
@@ -87,14 +97,21 @@ dump_stats (void)
 {
   msgf ("time spend in do_request %u us", do_request_us);
   msgf ("time spend in cache_execute %u us", cache_execute_us);
+  msgf ("time spend in try_flush_buffer %u us", try_flush_buffer_us);
+  msgf ("time spend in connection_io %u us", connection_io_us);
   msgf ("total requests %u", req_count);
 }
 
-#define TIME_CALL(label, expr) __extension__ ({\
+#define TIME_EXPR(label, expr) __extension__ ({\
   uint64_t __start = get_monotonic_usec ();  \
   __auto_type __ret = (expr);\
   record_time(label,get_monotonic_usec () - __start);\
   __ret; \
+})
+#define TIME_STMT(label, stmt) __extension__ ({\
+  uint64_t __start = get_monotonic_usec ();  \
+  (stmt);\
+  record_time(label,get_monotonic_usec () - __start);\
 })
 #else // K_ENABLE_BENCHMARK is NOT defined
 
@@ -110,8 +127,8 @@ dump_stats (void)
 {
 }
 
-// The macro expands only to the expression itself, completely removing the timing logic.
-#define TIME_CALL(label, expr) (expr)
+#define TIME_EXPR(label, expr) (expr)
+#define TIME_STMT(label, stmt) (stmt)
 
 #endif // K_ENABLE_BENCHMARK
 uint64_t str_hash (const uint8_t * data, size_t len);
