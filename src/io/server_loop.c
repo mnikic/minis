@@ -518,8 +518,6 @@ try_flush_buffer (Conn *conn)
 {
   DBG_LOGF ("FD %d: Flushing WBuf (size %zu, sent %zu).",
 	    conn->fd, conn->wbuf_size, conn->wbuf_sent);
-  int cork = 1;
-  setsockopt (conn->fd, IPPROTO_TCP, TCP_CORK, &cork, sizeof (cork));
 
   while (conn->wbuf_sent < conn->wbuf_size)
     {
@@ -575,8 +573,6 @@ try_flush_buffer (Conn *conn)
     }
 
 CLEANUP:
-  cork = 0;			// Uncork before error exit
-  setsockopt (conn->fd, IPPROTO_TCP, TCP_CORK, &cork, sizeof (cork));
   return false;
 }
 
