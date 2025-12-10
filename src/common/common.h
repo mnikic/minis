@@ -29,8 +29,8 @@
 // Max size of a single request message (payload data after the 4-byte length prefix).
 // Currently at 8KB (8192 bytes) to accommodate larger commands.
 // This must be consistent between the client and the server's read buffer capacity.
-#define K_MAX_MSG (1024 * 8)
-#define K_MAX_ARGS 32
+#define K_MAX_MSG (1024 * 64)
+#define K_MAX_ARGS 2048
 #define K_MAX_KEY 42
 #define K_MAX_VAL (1024 * 7)
 
