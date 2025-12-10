@@ -20,15 +20,22 @@ typedef struct entry
   char *key;
   char *val;
   uint32_t type;
+  uint64_t expire_at_us;
   ZSet *zset;
   // for TTLs
-  size_t heap_idx;
+  size_t heap_idx;		// Index in the TTL heap. (size_t)-1 means not in heap.
 } Entry;
 
 enum
 {
   T_STR = 0, T_ZSET = 1,
 };
+
+static int
+hnode_same (HNode *lhs, HNode *rhs)
+{
+  return lhs == rhs;
+}
 
 // Deallocates the Entry and its contents.
 static void
@@ -52,12 +59,82 @@ entry_destroy (Entry *ent)
   free (ent);
 }
 
+// Helper for asynchronous cleanup
+static void
+entry_del_async (void *arg)
+{
+  entry_destroy ((Entry *) arg);
+}
+
+// set or remove the TTL
+static void
+entry_set_ttl (Cache *cache, Entry *ent, int64_t ttl_ms)
+{
+  if (ttl_ms < 0 && ent->heap_idx != (size_t) -1)
+    {
+      // TTL is being removed or key is being deleted.
+      (void) heap_remove_idx (&cache->heap, ent->heap_idx);
+      ent->heap_idx = (size_t) -1;
+      ent->expire_at_us = 0;
+    }
+  else if (ttl_ms >= 0)
+    {
+      uint64_t new_expire_at_us =
+	get_monotonic_usec () + (uint64_t) (ttl_ms * 1000);
+      ent->expire_at_us = new_expire_at_us;
+
+      size_t pos = ent->heap_idx;
+      if (pos == (size_t) -1)
+	{
+	  // add an new item to the heap
+	  HeapItem item;
+	  item.ref = &ent->heap_idx;
+	  item.val = new_expire_at_us;
+	  heap_add (&cache->heap, &item);
+	}
+      else
+	{
+	  // Update existing item in the heap
+	  heap_get (&cache->heap, pos)->val = new_expire_at_us;
+	  heap_update (&cache->heap, pos);
+	}
+    }
+}
+
+static void
+entry_del (Cache *cache, Entry *ent)
+{
+  // Ensure TTL is removed from the heap and expire_at_us is set to 0.
+  entry_set_ttl (cache, ent, -1);
+
+  const size_t k_large_container_size = 10000;
+  bool too_big = false;
+  switch (ent->type)
+    {
+    case T_ZSET:
+      too_big = hm_size (&ent->zset->hmap) > k_large_container_size;
+      break;
+    default:
+      break;
+    }
+
+  if (too_big)
+    {
+      // Defer destruction to the thread pool to avoid stalling the main thread.
+      thread_pool_queue (&cache->tp, &entry_del_async, ent);
+    }
+  else
+    {
+      // Small object, destroy immediately.
+      entry_destroy (ent);
+    }
+}
+
 // Converts an HNode pointer (from the hash map) back to its parent Entry structure.
 static Entry *
 fetch_entry (HNode *node_to_fetch)
 {
 // This pragma block is necessary for container_of, which performs type punning.
-// By centralizing it here, we remove it from all other usage sites.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
   Entry *entry = container_of (node_to_fetch, Entry, node);
@@ -70,7 +147,6 @@ static Entry *
 fetch_entry_from_heap_ref (size_t *ref)
 {
 // This pragma block is necessary for container_of, which performs type punning.
-// By centralizing it here, we remove it from the cache_evict function.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-align"
   Entry *ent = container_of (ref, Entry, heap_idx);
@@ -104,13 +180,31 @@ cb_destroy_entry (HNode *node, void *arg)
   entry_destroy (ent);
 }
 
+// Structure to pass to h_scan to track the buffer and the count of successfully written elements.
+typedef struct
+{
+  Buffer *out;
+  uint32_t count;
+  uint64_t now_us;
+} ScanContext;
+
 static void
 cb_scan (HNode *node, void *arg)
 {
-  Buffer *out = (Buffer *) arg;
-  // NOTE: This callback is designed for hm_scan (which is always void)
-  // We cannot stop hm_scan if out_str fails, but we continue attempting to write.
-  out_str (out, fetch_entry (node)->key);
+  ScanContext *ctx = (ScanContext *) arg;
+  Entry *ent = fetch_entry (node);
+  if (ent->expire_at_us != 0)
+    {
+      if (ent->expire_at_us < ctx->now_us)
+	{
+	  return;
+	}
+    }
+  // NOTE: out_str returns true on success. If it fails, we should abort, but we cannot. out_arr_end will fail and report
+  if (out_str (ctx->out, fetch_entry (node)->key))
+    {
+      ctx->count++;
+    }
 }
 
 static int
@@ -129,9 +223,11 @@ str2int (const char *string, int64_t *out)
   return endp == string + strlen (string);
 }
 
-// Helper to check for existing ZSet and output Nil/Error on failure.
-// Return: bool status of the buffer operation (true means write succeeded or no write needed).
-// Output param *is_valid_zset: true if the key was found and is of type T_ZSET.
+/**
+ * @brief Helper to check for existing ZSet, perform passive eviction, and output Nil/Error on failure.
+ * @return bool status of the buffer operation (true means write succeeded or no write needed).
+ * @param is_valid_zset: true if the key was found, not expired, and is of type T_ZSET.
+ */
 static bool
 expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
 	     bool *is_valid_zset)
@@ -145,11 +241,29 @@ expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
 
   if (!hnode)
     {
-      // Not found. Domain logic failed. Buffer write: NIL.
-      return out_nil (out);
+      return out_nil (out);	// Not found. Buffer write: NIL.
     }
 
   *ent = fetch_entry (hnode);
+
+  if ((*ent)->expire_at_us != 0)
+    {
+      const uint64_t now_us = get_monotonic_usec ();
+
+      if ((*ent)->expire_at_us < now_us)
+	{
+	  // Key is expired. Perform passive eviction.
+	  HNode *removed_node =
+	    hm_pop (&cache->db, &(*ent)->node, &hnode_same);
+	  assert (removed_node == &(*ent)->node);
+
+	  entry_del (cache, *ent);
+	  *ent = NULL;
+
+	  return out_nil (out);
+	}
+    }
+
   if ((*ent)->type != T_ZSET)
     {
       // Wrong type. Domain logic failed. Buffer write: ERR.
@@ -161,13 +275,12 @@ expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
   return true;
 }
 
-static bool			// Signature changed to bool
+static bool
 do_zadd (Cache *cache, char **cmd, Buffer *out)
 {
   double score = 0;
   if (!str2dbl (cmd[2], &score))
     {
-      // If str2dbl fails, write error to buffer and return its success status
       return out_err (out, ERR_ARG, "expect fp number");
     }
 
@@ -204,6 +317,7 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
       ent->node.hcode = key.node.hcode;
       ent->type = T_ZSET;
       ent->heap_idx = (size_t) -1;
+      ent->expire_at_us = 0;
       hm_insert (&cache->db, &ent->node);
     }
   else
@@ -211,36 +325,31 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
       ent = fetch_entry (hnode);
       if (ent->type != T_ZSET)
 	{
-	  // Write error and return its status
 	  return out_err (out, ERR_TYPE, "expect zset");
 	}
     }
 
   const char *name = cmd[3];
   int added = zset_add (ent->zset, name, strlen (name), score);
-  // Write result and return its success status
   return out_int (out, (int64_t) added);
 }
 
 // zrem zset name
-static bool			// Signature changed to bool
+static bool
 do_zrem (Cache *cache, char **cmd, Buffer *out)
 {
   Entry *ent = NULL;
   bool is_valid_zset;
 
-  // 1. Check if the buffer write was successful (for NIL or ERR cases).
+  // expect_zset handles lookup, passive expiration check, and type check
   if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
     {
       return false;		// Buffer write failure (backpressure)
     }
 
-  // 2. If the buffer write was successful, but the domain validation failed (!is_valid_zset),
-  // the response (NIL or ERR) has already been successfully written by expect_zset.
-  // We return true to signal the command was handled and the response is ready.
   if (!is_valid_zset)
     {
-      return true;
+      return true;		// Response (NIL/ERR) already written successfully
     }
 
   ZNode *znode = zset_pop (ent->zset, cmd[2], strlen (cmd[2]));
@@ -248,46 +357,40 @@ do_zrem (Cache *cache, char **cmd, Buffer *out)
     {
       znode_del (znode);
     }
-  // 3. Write final result and return its success status
   return out_int (out, znode ? 1 : 0);
 }
 
 // zscore zset name
-static bool			// Signature changed to bool
+static bool
 do_zscore (Cache *cache, char **cmd, Buffer *out)
 {
   Entry *ent = NULL;
   bool is_valid_zset;
 
-  // 1. Check if the buffer write was successful (for NIL or ERR cases).
+  // expect_zset handles lookup, passive expiration check, and type check
   if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
     {
       return false;		// Buffer write failure (backpressure)
     }
 
-  // 2. If the buffer write was successful, but the domain validation failed (!is_valid_zset),
-  // the response (NIL or ERR) has already been successfully written by expect_zset.
-  // We return true to signal the command was handled and the response is ready.
   if (!is_valid_zset)
     {
-      return true;
+      return true;		// Response (NIL/ERR) already written successfully
     }
 
   ZNode *znode = zset_lookup (ent->zset, cmd[2], strlen (cmd[2]));
   if (znode)
     {
-      // 3. Write result and return its success status
       return out_dbl (out, znode->score);
     }
   else
     {
-      // 3. Write NIL and return its success status
       return out_nil (out);
     }
 }
 
 // zquery zset score name offset limit
-static bool			// Signature changed to bool
+static bool
 do_zquery (Cache *cache, char **cmd, Buffer *out)
 {
 // parse args
@@ -307,31 +410,27 @@ do_zquery (Cache *cache, char **cmd, Buffer *out)
       return out_err (out, ERR_ARG, "expect int");
     }
 
-// get the zset
   Entry *ent = NULL;
   bool is_valid_zset;
 
-  // 1. Check if the buffer write was successful (for NIL or ERR cases).
+  // expect_zset handles lookup, passive expiration check, and type check
   if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
     {
       return false;		// Buffer write failure (backpressure)
     }
 
-  // 2. If the buffer write was successful, but the domain validation failed (!is_valid_zset)
   if (!is_valid_zset)
     {
-      // If the output buffer contains SER_NIL (key not found), clear it and send empty array instead.
+      // If the output buffer contains SER_NIL (key not found or expired), clear it and send empty array instead.
+      // If it was an ERR (wrong type), the ERR was already written and we return true below.
       if (buf_len (out) > 0 && buf_data (out)[0] == SER_NIL)
 	{
 	  buf_clear (out);
-	  // If this write fails, we return false. Otherwise, we return true.
 	  return out_arr (out, (uint32_t) 0);
 	}
-      // If it was an ERR (wrong type), the ERR was already written. Command handled successfully.
       return true;
     }
 
-// look up the tuple
   if (limit <= 0)
     {
       return out_arr (out, (uint32_t) 0);
@@ -358,55 +457,28 @@ do_zquery (Cache *cache, char **cmd, Buffer *out)
   return out_arr_end (out, idx, num);
 }
 
-// set or remove the TTL
-static void
-entry_set_ttl (Cache *cache, Entry *ent, int64_t ttl_ms)
-{
-  if (ttl_ms < 0 && ent->heap_idx != (size_t) -1)
-    {
-      (void) heap_remove_idx (&cache->heap, ent->heap_idx);
-      ent->heap_idx = (size_t) -1;
-    }
-  else if (ttl_ms >= 0)
-    {
-      size_t pos = ent->heap_idx;
-      if (pos == (size_t) -1)
-	{
-	  // add an new item to the heap
-	  HeapItem item;
-	  item.ref = &ent->heap_idx;
-	  item.val = get_monotonic_usec () + (uint64_t) (ttl_ms * 1000);
-	  heap_add (&cache->heap, &item);
-	}
-      else
-	{
-	  heap_get (&cache->heap, pos)->val =
-	    get_monotonic_usec () + (uint64_t) (ttl_ms * 1000);
-	  heap_update (&cache->heap, pos);
-	}
-    }
-}
-
-static bool			// Signature changed to bool
+static bool
 do_keys (Cache *cache, char **cmd, Buffer *out)
 {
   (void) cmd;
-  // Check return of out_arr. If it fails, we cannot write the header.
-  if (!out_arr (out, (uint32_t) hm_size (&cache->db)))
-    return false;
-  // We cannot stop h_scan if cb_scan fails to write to the buffer, 
-  // but we rely on the persistent failure state of the buffer to prevent 
-  // further successful writes.
-  h_scan (&cache->db.ht1, &cb_scan, out);
-  h_scan (&cache->db.ht2, &cb_scan, out);
 
-  // If the array header was written successfully, we assume success 
-  // as we cannot check for individual failures in h_scan callback.
-  // The caller will check the buffer's final state anyway.
-  return true;
+  // Start the array response (writes a placeholder for the count)
+  size_t idx = out_arr_begin (out);
+  if (idx == 0)
+    return false;
+
+  ScanContext ctx = {.out = out,.count = 0,.now_us = get_monotonic_usec () };
+
+  // We cannot stop the scan if a write fails, but the subsequent calls will
+  // also fail, and the final count will be accurate.
+  h_scan (&cache->db.ht1, &cb_scan, &ctx);
+  h_scan (&cache->db.ht2, &cb_scan, &ctx);
+
+  // Finalize the array output with the actual number of elements written. If the buffer is full return false.
+  return out_arr_end (out, idx, ctx.count);
 }
 
-static bool			// Signature changed to bool
+static bool
 do_del (Cache *cache, char **cmd, Buffer *out)
 {
   Entry key;
@@ -416,19 +488,14 @@ do_del (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_pop (&cache->db, &key.node, &entry_eq);
   if (node)
     {
-      // Refactored to use fetch_entry
       Entry *entry = fetch_entry (node);
-      if (entry->heap_idx != (size_t) -1)
-	{
-	  heap_remove_idx (&cache->heap, entry->heap_idx);
-	}
-      entry_destroy (entry);
+      // entry_del handles heap removal and asynchronous destruction
+      entry_del (cache, entry);
     }
-  // Check return of out_int
   return out_int (out, node ? 1 : 0);
 }
 
-static bool			// Signature changed to bool
+static bool
 do_set (Cache *cache, char **cmd, Buffer *out)
 {
   Entry key;
@@ -438,11 +505,9 @@ do_set (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (node)
     {
-      // Refactored to use fetch_entry
       Entry *ent = fetch_entry (node);
       if (ent->type != T_STR)
 	{
-	  // Write error and check return
 	  return out_err (out, ERR_TYPE, "key exists with different type");
 	}
       if (ent->val)
@@ -479,46 +544,14 @@ do_set (Cache *cache, char **cmd, Buffer *out)
 
       ent->node.hcode = key.node.hcode;
       ent->heap_idx = (size_t) -1;
+      ent->expire_at_us = 0;
       ent->type = T_STR;
       hm_insert (&cache->db, &ent->node);
     }
-  // Write NIL and check return
   return out_nil (out);
 }
 
-static void
-entry_del_async (void *arg)
-{
-  entry_destroy ((Entry *) arg);
-}
-
-static void
-entry_del (Cache *cache, Entry *ent)
-{
-  entry_set_ttl (cache, ent, -1);
-
-  const size_t k_large_container_size = 10000;
-  bool too_big = false;
-  switch (ent->type)
-    {
-    case T_ZSET:
-      too_big = hm_size (&ent->zset->hmap) > k_large_container_size;
-      break;
-    default:
-      break;
-    }
-
-  if (too_big)
-    {
-      thread_pool_queue (&cache->tp, &entry_del_async, ent);
-    }
-  else
-    {
-      entry_destroy (ent);
-    }
-}
-
-static bool			// Signature changed to bool
+static bool
 do_get (Cache *cache, char **cmd, Buffer *out)
 {
   Entry key;
@@ -528,29 +561,41 @@ do_get (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (!node)
     {
-      // Write NIL and check return
       return out_nil (out);
     }
 
-  // Refactored to use fetch_entry
   Entry *ent = fetch_entry (node);
   if (ent->type != T_STR || !ent->val)
     {
-      // Write NIL and check return
       return out_nil (out);
     }
 
-  // Write string and check return
+  // Check against the timestamp stored directly in the entry.
+  if (ent->expire_at_us != 0)
+    {
+      const uint64_t now_us = get_monotonic_usec ();
+
+      if (ent->expire_at_us < now_us)
+	{
+	  // Key is expired. Initiate passive eviction (the garbage collector role).
+	  HNode *removed_node = hm_pop (&cache->db, &ent->node, &hnode_same);
+	  assert (removed_node == &ent->node);
+
+	  entry_del (cache, ent);	// Handles heap removal and async cleanup
+	  return out_nil (out);	// Key is deleted, return NIL.
+	}
+    }
+
+  // Key is valid and not expired. Return the value.
   return out_str (out, ent->val);
 }
 
-static bool			// Signature changed to bool
+static bool
 do_expire (Cache *cache, char **cmd, Buffer *out)
 {
   int64_t ttl_ms = 0;
   if (!str2int (cmd[2], &ttl_ms))
     {
-      // Write error and check return
       return out_err (out, ERR_ARG, "expect int64");
     }
 
@@ -561,15 +606,13 @@ do_expire (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (node)
     {
-      // Refactored to use fetch_entry
       Entry *ent = fetch_entry (node);
       entry_set_ttl (cache, ent, ttl_ms);
     }
-  // Write result and check return
   return out_int (out, node ? 1 : 0);
 }
 
-static bool			// Signature changed to bool
+static bool
 do_ttl (Cache *cache, char **cmd, Buffer *out)
 {
   Entry key;
@@ -579,80 +622,76 @@ do_ttl (Cache *cache, char **cmd, Buffer *out)
   HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
   if (!node)
     {
-      // Write -2 and check return
-      return out_int (out, -2);
+      return out_int (out, -2);	// Key not found
     }
 
-  // Refactored to use fetch_entry
   Entry *ent = fetch_entry (node);
-  if (ent->heap_idx == (size_t) -1)
+
+  // Check if TTL is set (0 means no TTL, or already expired/persisted)
+  if (ent->expire_at_us == 0)
     {
-      // Write -1 and check return
-      return out_int (out, -1);
+      return out_int (out, -1);	// TTL not set
     }
 
-  uint64_t expire_at = heap_get (&cache->heap, ent->heap_idx)->val;
   uint64_t now_us = get_monotonic_usec ();
-  // Write calculated TTL and check return
-  return out_int (out,
-		  (int64_t) (expire_at >
-			     now_us ? (expire_at - now_us) / 1000 : 0));
+
+  // Check if the key is already expired in-memory (though it should be passively deleted on read)
+  if (ent->expire_at_us < now_us)
+    {
+      return out_int (out, 0);	// Expired, return 0
+    }
+
+  // Calculate remaining TTL in milliseconds
+  return out_int (out, (int64_t) ((ent->expire_at_us - now_us) / 1000));
 }
 
-bool				// Updated signature to return bool
+bool
 cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out)
 {
   if (size == 1 && cmd_is (cmd[0], "keys"))
     {
-      return do_keys (cache, cmd, out);	// Check and propagate status
+      return do_keys (cache, cmd, out);
     }
   else if (size == 2 && cmd_is (cmd[0], "get"))
     {
-      return do_get (cache, cmd, out);	// Check and propagate status
+      return do_get (cache, cmd, out);
     }
   else if (size == 3 && cmd_is (cmd[0], "set"))
     {
-      return do_set (cache, cmd, out);	// Check and propagate status
+      return do_set (cache, cmd, out);
     }
   else if (size == 2 && cmd_is (cmd[0], "del"))
     {
-      return do_del (cache, cmd, out);	// Check and propagate status
+      return do_del (cache, cmd, out);
     }
   else if (size == 3 && cmd_is (cmd[0], "pexpire"))
     {
-      return do_expire (cache, cmd, out);	// Check and propagate status
+      return do_expire (cache, cmd, out);
     }
   else if (size == 2 && cmd_is (cmd[0], "pttl"))
     {
-      return do_ttl (cache, cmd, out);	// Check and propagate status
+      return do_ttl (cache, cmd, out);
     }
   else if (size == 4 && cmd_is (cmd[0], "zadd"))
     {
-      return do_zadd (cache, cmd, out);	// Check and propagate status
+      return do_zadd (cache, cmd, out);
     }
   else if (size == 3 && cmd_is (cmd[0], "zrem"))
     {
-      return do_zrem (cache, cmd, out);	// Check and propagate status
+      return do_zrem (cache, cmd, out);
     }
   else if (size == 3 && cmd_is (cmd[0], "zscore"))
     {
-      return do_zscore (cache, cmd, out);	// Check and propagate status
+      return do_zscore (cache, cmd, out);
     }
   else if (size == 6 && cmd_is (cmd[0], "zquery"))
     {
-      return do_zquery (cache, cmd, out);	// Check and propagate status
+      return do_zquery (cache, cmd, out);
     }
   else
     {
-      // For unknown command, write error and return its status
       return out_err (out, ERR_UNKNOWN, "Unknown cmd");
     }
-}
-
-static int
-hnode_same (HNode *lhs, HNode *rhs)
-{
-  return lhs == rhs;
 }
 
 Cache *
@@ -671,15 +710,16 @@ cache_init (void)
 void
 cache_evict (Cache *cache, uint64_t now_us)
 {
-  // TTL timers
+  // TTL timers (Active Eviction)
   const size_t k_max_works = 2000;
   size_t nworks = 0;
   while (!heap_empty (&cache->heap) && heap_top (&cache->heap)->val < now_us)
     {
-      // Refactored to use fetch_entry_from_heap_ref
+      // Get the entry from the heap top's ref (which points to the Entry's heap_idx field)
       Entry *ent = fetch_entry_from_heap_ref (heap_top (&cache->heap)->ref);
       HNode *node = hm_pop (&cache->db, &ent->node, &hnode_same);
       assert (node == &ent->node);
+      // entry_del handles heap removal (via entry_set_ttl) and cleanup
       entry_del (cache, ent);
       if (nworks++ >= k_max_works)
 	{
@@ -706,7 +746,6 @@ cache_free (Cache *cache)
   if (!cache)
     return;
   // Destroy all individual Entry objects in the hash map.
-  // We iterate over all nodes in the internal hash tables (ht1 and ht2) and destroy the Entry.
   h_scan (&cache->db.ht1, &cb_destroy_entry, NULL);
   h_scan (&cache->db.ht2, &cb_destroy_entry, NULL);
 
