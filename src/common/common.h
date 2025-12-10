@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <arpa/inet.h>
+#include <string.h>
+#include <sys/types.h>
 
 #define ERR_UNKNOWN 1
 #define ERR_2BIG 2
@@ -43,6 +45,8 @@
     (type *)((char *)__mptr - offsetof(type, member));                      \
 })
 
+uint64_t get_monotonic_usec (void);
+
 #ifdef DEBUG_LOGGING
     // If DEBUG_LOGGING is defined, the macros call the implementation functions.
 #define DBG_LOG(msg_str) msg (msg_str)
@@ -54,8 +58,62 @@
 #define DBG_LOGF(...) (void)0
 #endif
 
-uint64_t get_monotonic_usec (void);
+void msgf (const char *fmt, ...);
+void msg (const char *msg);
 
+#ifdef K_ENABLE_BENCHMARK
+static uint64_t req_count;
+static uint64_t do_request_us;
+static uint64_t cache_execute_us;
+
+static inline void
+record_time (const char *label, uint64_t micros)
+{
+  if (strcmp (label, "do_request") == 0)
+    {
+      do_request_us += micros;
+    }
+  else if (strcmp (label, "cache_execute") == 0)
+    {
+      cache_execute_us += micros;
+    }
+  else
+    msgf ("unknown label is %s, %u", label, micros);
+  req_count += 1;
+}
+
+static inline void
+dump_stats (void)
+{
+  msgf ("time spend in do_request %u us", do_request_us);
+  msgf ("time spend in cache_execute %u us", cache_execute_us);
+  msgf ("total requests %u", req_count);
+}
+
+#define TIME_CALL(label, expr) __extension__ ({\
+  uint64_t __start = get_monotonic_usec ();  \
+  __auto_type __ret = (expr);\
+  record_time(label,get_monotonic_usec () - __start);\
+  __ret; \
+})
+#else // K_ENABLE_BENCHMARK is NOT defined
+
+static inline void
+record_time (const char *label, uint64_t nanos)
+{
+  (void) label;
+  (void) nanos;
+}
+
+static inline void
+dump_stats (void)
+{
+}
+
+// The macro expands only to the expression itself, completely removing the timing logic.
+#define TIME_CALL(label, expr) (expr)
+
+#endif // K_ENABLE_BENCHMARK
 uint64_t str_hash (const uint8_t * data, size_t len);
 
 __attribute__((noreturn))
@@ -75,8 +133,5 @@ hton_u32 (uint32_t host_val);
 // Portable implementation of Host to Network 64-bit
 uint64_t
 hton_u64 (uint64_t host_val);
-
-     void msgf (const char *fmt, ...);
-     void msg (const char *msg);
 
 #endif /* COMMON_H_ */

@@ -165,8 +165,7 @@ dump_error_and_close (Conn *conn, int code, const char *str)
   DBG_LOGF ("FD %d: Sending error %d and closing: %s", conn->fd, code, str);
 
   // Use small stack buffer for error messages (errors are always small)
-  Buffer err_buf =
-    buf_init (conn->wbuf + 4, sizeof conn->wbuf - 4);
+  Buffer err_buf = buf_init (conn->wbuf + 4, sizeof conn->wbuf - 4);
 
   if (!out_err (&err_buf, code, str))
     {
@@ -288,12 +287,14 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
 
   DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd,
 	    cmd_size);
-
+  success =
+    TIME_CALL ("cache_execute",
+	       cache_execute (cache, cmd, cmd_size, out_buf));
   // Execute the command. The command array pointers point directly into the read buffer.
-  if (!cache_execute (cache, cmd, cmd_size, out_buf))
+  if (!success)
     {
       msg ("cache couldn't write message, no space.");
-      dump_error_and_close(conn, ERR_UNKNOWN, "response too large");
+      dump_error_and_close (conn, ERR_UNKNOWN, "response too large");
       conn->state = STATE_RES_CLOSE;
       goto CLEANUP;
     }
@@ -316,9 +317,9 @@ static bool
 execute_and_buffer_response (Cache *cache, Conn *conn,
 			     uint8_t *req_data, uint32_t req_len)
 {
-  if (conn->wbuf_size + 4 >= sizeof(conn->wbuf))
+  if (conn->wbuf_size + 4 >= sizeof (conn->wbuf))
     {
-      dump_error_and_close(conn, ERR_UNKNOWN, "write buffer full");
+      dump_error_and_close (conn, ERR_UNKNOWN, "write buffer full");
       return false;
     }
   uint8_t *out_mem = conn->wbuf + conn->wbuf_size;
@@ -329,7 +330,11 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
   Buffer out_buf =
     buf_init (out_mem + 4, sizeof conn->wbuf - conn->wbuf_size - 4);
 
-  if (!do_request (cache, conn, req_data, req_len, &out_buf))
+  bool success;
+  success =
+    TIME_CALL ("do_request",
+	       do_request (cache, conn, req_data, req_len, &out_buf));
+  if (!success)
     return false;
 
   // Header Backfilling
@@ -866,5 +871,6 @@ server_run (uint16_t port)
     }
 
   cleanup_server_resources (cache, listen_fd, epfd);
+  dump_stats ();
   return 0;
 }
