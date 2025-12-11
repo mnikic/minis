@@ -13,6 +13,15 @@
 #include "list.h"
 #include "common/common.h"
 
+// New structure for a buffer block that is IN-FLIGHT
+typedef struct InFlightBuffer {
+    uint8_t *data; // Pointer to the dynamically allocated response data
+    size_t size;   // Total size of the response
+    size_t sent;   // Bytes sent (to support chunking)
+    uint32_t pending_ops; // zerocopy_pending for this specific block
+    DList list_entry; // For linking to the Conn's in_flight_list
+} InFlightBuffer;
+
 typedef struct
 {
   int fd;
@@ -23,14 +32,16 @@ typedef struct
   // Write buffer - where responses are BUILT
   size_t wbuf_size;
   uint8_t wbuf[4 + K_MAX_MSG];
-  
+  // Linked list of buffers that have been sent with MSG_ZEROCOPY 
+    // and are awaiting EPOLLERR completion.
+  DList in_flight_list;  
   // Send buffer - where responses are SENT FROM
   size_t send_buf_size;
   size_t send_buf_sent;
   uint8_t send_buf[4 + K_MAX_MSG];
   
+  InFlightBuffer *current_build;
   // Track pending zerocopy operations
-  uint32_t zerocopy_pending;  // How many send operations are pending completion
   
   uint64_t idle_start;
   DList idle_list;
