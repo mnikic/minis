@@ -10,23 +10,29 @@
 typedef struct hnode
 {
   uint64_t hcode;
-  struct hnode *next;
+  // next field removed - not needed for open addressing
 } HNode;
+
+// Define the actual element stored in the hash table array
+typedef struct {
+    uint64_t hcode_cached; // The cached hash code (8 bytes)
+    HNode *node;           // Pointer to the actual HNode payload (8 bytes on 64-bit)
+} HTabEntry;
 
 // A simple fixed-sized hashtable
 typedef struct
 {
-  HNode **tab;
-  size_t mask;			// Always capacity - 1 (capacity is power of 2)
-  size_t size;			// Number of entries
+  HTabEntry *tab;       // Array of pointers to nodes (NULL = empty, TOMBSTONE = deleted)
+  size_t mask;           // Always capacity - 1 (capacity is power of 2)
+  size_t size;           // Number of entries (not including tombstones)
 } HTab;
 
 // The real hashtable interface using 2 tables for progressive resizing
 typedef struct
 {
-  HTab ht1;			// Primary table (new table during resize)
-  HTab ht2;			// Secondary table (old table being drained)
-  size_t resizing_pos;		// Position in ht2 for progressive migration
+  HTab ht1;              // Primary table (new table during resize)
+  HTab ht2;              // Secondary table (old table being drained)
+  size_t resizing_pos;   // Position in ht2 for progressive migration
 } HMap;
 
 // Callback for comparing nodes (return non-zero if equal)
@@ -34,9 +40,9 @@ typedef int (*hnode_cmp_fn) (HNode *, HNode *);
 
 void hm_init (HMap * hmap);
 HNode *hm_lookup (HMap * hmap, HNode * key, hnode_cmp_fn cmp);
-void hm_insert (HMap * hmap, HNode * node);
+void hm_insert (HMap * hmap, HNode * node, hnode_cmp_fn cmp);
 HNode *hm_pop (HMap * hmap, HNode * key, hnode_cmp_fn cmp);
-void h_scan (HTab * tab, void (*func) (HNode *, void *), void *arg);
+void hm_scan (HMap * hmap, void (*func) (HNode *, void *), void *arg);
 size_t hm_size (HMap * hmap);
 void hm_destroy (HMap * hmap);
 

@@ -16,6 +16,14 @@
 
 #define EPSILON 1e-9
 
+// a helper structure for the hashtable lookup
+typedef struct
+{
+  HNode node;
+  const char *name;
+  size_t len;
+} HKey;
+
 // Initialize a zset
 void
 zset_init (ZSet *zset)
@@ -24,6 +32,26 @@ zset_init (ZSet *zset)
     return;
   zset->tree = NULL;
   hm_init (&zset->hmap);
+}
+
+static int
+hcmp (HNode *node, HNode *key)
+{
+  if (node->hcode != key->hcode)
+    {
+      return false;
+    }
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  ZNode *znode = container_of (node, ZNode, hmap);
+  HKey *hkey = container_of (key, HKey, node);
+#pragma GCC diagnostic pop
+
+  if (znode->len != hkey->len)
+    {
+      return false;
+    }
+  return 0 == memcmp (znode->name, hkey->name, znode->len);
 }
 
 static ZNode *
@@ -36,7 +64,6 @@ znode_new (const char *name, size_t len, double score)
     }
   memset (node, 0, sizeof (ZNode) + len);
   avl_init (&node->tree);
-  node->hmap.next = NULL;
   node->hmap.hcode = str_hash ((const uint8_t *) name, len);
   node->score = score;
   node->len = len;
@@ -142,38 +169,11 @@ zset_add (ZSet *zset, const char *name, size_t len, double score)
     {
       return -1;		// allocation failed
     }
-  hm_insert (&zset->hmap, &node->hmap);
+//  hm_insert (&zset->hmap, &node->hmap, &hcmp);
+  hm_insert (&zset->hmap, &node->hmap, &hcmp);
   tree_add (zset, node);
   return 1;			// added new
 
-}
-
-// a helper structure for the hashtable lookup
-typedef struct
-{
-  HNode node;
-  const char *name;
-  size_t len;
-} HKey;
-
-static int
-hcmp (HNode *node, HNode *key)
-{
-  if (node->hcode != key->hcode)
-    {
-      return false;
-    }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  ZNode *znode = container_of (node, ZNode, hmap);
-  HKey *hkey = container_of (key, HKey, node);
-#pragma GCC diagnostic pop
-
-  if (znode->len != hkey->len)
-    {
-      return false;
-    }
-  return 0 == memcmp (znode->name, hkey->name, znode->len);
 }
 
 // lookup by name

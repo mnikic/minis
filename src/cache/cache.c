@@ -318,7 +318,7 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
       ent->type = T_ZSET;
       ent->heap_idx = (size_t) -1;
       ent->expire_at_us = 0;
-      hm_insert (&cache->db, &ent->node);
+      hm_insert (&cache->db, &ent->node, &entry_eq);
     }
   else
     {
@@ -471,8 +471,7 @@ do_keys (Cache *cache, char **cmd, Buffer *out)
 
   // We cannot stop the scan if a write fails, but the subsequent calls will
   // also fail, and the final count will be accurate.
-  h_scan (&cache->db.ht1, &cb_scan, &ctx);
-  h_scan (&cache->db.ht2, &cb_scan, &ctx);
+  hm_scan (&cache->db, &cb_scan, &ctx);
 
   // Finalize the array output with the actual number of elements written. If the buffer is full return false.
   return out_arr_end (out, idx, ctx.count);
@@ -546,7 +545,7 @@ do_set (Cache *cache, char **cmd, Buffer *out)
       ent->heap_idx = (size_t) -1;
       ent->expire_at_us = 0;
       ent->type = T_STR;
-      hm_insert (&cache->db, &ent->node);
+      hm_insert (&cache->db, &ent->node, &entry_eq);
     }
   return out_nil (out);
 }
@@ -794,8 +793,7 @@ cache_free (Cache *cache)
   if (!cache)
     return;
   // Destroy all individual Entry objects in the hash map.
-  h_scan (&cache->db.ht1, &cb_destroy_entry, NULL);
-  h_scan (&cache->db.ht2, &cb_destroy_entry, NULL);
+  hm_scan (&cache->db, &cb_destroy_entry, NULL);
 
   // Clean up the internal structures of the components.
   thread_pool_destroy (&cache->tp);

@@ -121,8 +121,8 @@ $ {CLIENT_EXECUTABLE_REL_PATH} set c 3
 $ {CLIENT_EXECUTABLE_REL_PATH} keys
 (arr) len=3
 (str) c
-(str) b
 (str) a
+(str) b
 (arr) end
 $ {CLIENT_EXECUTABLE_REL_PATH} del a
 (int) 1
