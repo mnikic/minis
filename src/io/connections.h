@@ -23,6 +23,7 @@ typedef struct
   size_t wbuf_sent;
   uint8_t wbuf[4 + K_MAX_MSG];
   uint64_t idle_start;
+  bool wbuf_in_flight;
   DList idle_list;
 } Conn;
 
