@@ -88,6 +88,8 @@ static struct
   volatile sig_atomic_t terminate_flag;
 } g_data;
 
+static void
+state_res (Conn *conn);
 // NEW HELPER FUNCTION: Read zerocopy completions from the error queue
 // Returns true if a zerocopy completion was processed, false otherwise.
 static bool
@@ -504,7 +506,8 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
       conn->state = STATE_RES;
       DBG_LOGF ("FD %d: RBuf fully consumed, transitioning to STATE_RES.",
 		conn->fd);
-      conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+      conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT | EPOLLERR);
+      state_res(conn);
       return false;
     }
 
@@ -645,6 +648,10 @@ try_flush_buffer (Conn *conn)
             DBG_LOGF ("FD %d: Response sent, transitioning back to STATE_REQ.", conn->fd);
             conn->state = STATE_REQ;
             conn_set_epoll_events (conn, EPOLLIN);
+            // NEW: Mark connection as idle and re-insert into list
+            conn->idle_start = get_monotonic_usec ();
+            dlist_detach (&conn->idle_list);
+            dlist_insert_before (&g_data.idle_list, &conn->idle_list);
         }
         
         return true;
@@ -698,11 +705,16 @@ try_flush_buffer (Conn *conn)
     conn->wbuf_sent += (size_t) err;
     conn->wbuf_in_flight = true; 
     DBG_LOGF("FD %d: Sent %zd bytes with ZEROCOPY. Buffer is now IN-FLIGHT.", conn->fd, err);
-    // We only set in_flight if a non-zero amount was sent
-    if (err > 0) {
-        conn->wbuf_in_flight = true;
-        DBG_LOGF("FD %d: Sent %zd bytes with ZEROCOPY. Buffer is now IN-FLIGHT.", conn->fd, err);
-    }
+    uint32_t events = EPOLLERR; // Always listen for completion
+
+if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE) {
+    // Keep EPOLLIN for pipelining requests, even while sending response.
+    events |= EPOLLIN;
+}
+
+// Explicitly remove EPOLLOUT to prevent the spurious wake-ups.
+conn_set_epoll_events (conn, events);
+        
     
     // After a successful ZEROCOPY send, we must stop and wait for completion.
     return false;
@@ -728,11 +740,7 @@ state_req (Cache *cache, Conn *conn)
 static void
 state_res (Conn *conn)
 {
-  while (!TIME_EXPR ("try_flush_buffer", try_flush_buffer (conn)))
-    {
-      if (conn->state != STATE_RES && conn->state != STATE_RES_CLOSE)
-	break;
-    }
+  (void) TIME_EXPR ("try_flush_buffer", try_flush_buffer (conn));
 }
 
 static void
@@ -770,18 +778,29 @@ process_timers (Cache *cache)
   cache_evict (cache, now_us);
 }
 
+// NEW connection_io (around line 1069)
 static void
 connection_io (Cache *cache, Conn *conn)
 {
-  conn->idle_start = get_monotonic_usec ();
-  dlist_detach (&conn->idle_list);
-  dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+    // NO-OP: Do not update idle timer or list at the start of every I/O event.
 
-  if (conn->state == STATE_REQ)
-    state_req (cache, conn);
+    if (conn->state == STATE_REQ)
+        state_req (cache, conn);
 
-  if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE)
-    state_res (conn);
+    if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE)
+        state_res (conn);
+
+    // CRITICAL: Only mark as idle *after* all processing is complete and the state is STATE_REQ.
+    // If STATE_REQ is reached, it means we are now waiting for the client.
+    if (conn->state == STATE_REQ) {
+        conn->idle_start = get_monotonic_usec ();
+        dlist_detach (&conn->idle_list); // Should already be detached, but safe
+        dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+    } else {
+        // If we are in STATE_RES (sending), ensure we are NOT in the idle list.
+        // This makes next_timer_ms ignore this connection.
+        dlist_detach (&conn->idle_list);
+    }
 }
 
 static void
@@ -816,41 +835,35 @@ handle_listener_event (int listen_fd)
 static void
 handle_connection_event (Cache *cache, struct epoll_event *event)
 {
-  Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
-  if (!conn)
-    return;
+ Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
+ if (!conn)
+ return;
 
-  DBG_LOGF ("FD %d: Handling epoll event (events: 0x%x). State: %d",
-	    event->data.fd, event->events, conn->state);
+ DBG_LOGF ("FD %d: Handling epoll event (events: 0x%x). State: %d",
+ event->data.fd, event->events, conn->state);
+
+ // If EPOLLHUP or EPOLLRDHUP, or if any event is detected while waiting for zero-copy
+    // completion, let connection_io run. It will check for completions (if EPOLLERR is set)
+    // and handle state transitions and normal I/O.
     
-    // NEW: Always check for completions on POLLERR
-    if (event->events & EPOLLERR) {
-        // Call the IO function to run try_flush_buffer, which calls try_check_zerocopy_completion
-        TIME_STMT ("connection_io", connection_io (cache, conn));
-
-        // If after checking completions, the connection is still marked for end, we close it
-        if (conn->state == STATE_END) {
-            conn_done (conn);
-            return;
-        }
-    }
-
-    // Hangup/RDHUP are usually fatal and close the connection
+    // Check for fatal errors (HUP/RDHUP) first
     if (event->events & (EPOLLHUP | EPOLLRDHUP))
     {
         DBG_LOGF ("FD %d: Hangup/Error detected (0x%x). Closing.",
-            event->data.fd, event->events);
+                 event->data.fd, event->events);
         conn->state = STATE_END;
         conn_done (conn);
         return;
     }
 
-    // Standard I/O (will also run when EPOLLERR is set if the EPOLLOUT bit is also set)
-    if (event->events & (EPOLLIN | EPOLLOUT))
-        TIME_STMT ("connection_io", connection_io (cache, conn));
+    // Call connection_io regardless of what events we got (IN, OUT, ERR),
+    // as ERR contains the zero-copy completion, and IN/OUT are standard I/O.
+    // connection_io contains the logic to run try_flush_buffer which in turn
+    // calls try_check_zerocopy_completion when needed.
+ TIME_STMT ("connection_io", connection_io (cache, conn));
 
-    if (conn->state == STATE_END)
-        conn_done (conn);
+ if (conn->state == STATE_END)
+ conn_done (conn);
 }
 
 static void
