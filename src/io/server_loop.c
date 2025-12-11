@@ -58,6 +58,14 @@ static struct
   volatile sig_atomic_t terminate_flag;
 } g_data;
 
+static inline uint64_t
+get_monotonic_usec (void)
+{
+  struct timespec tvs = { 0, 0 };
+  clock_gettime (CLOCK_MONOTONIC, &tvs);
+  return (uint64_t) ((tvs.tv_sec * 1000000) + (tvs.tv_nsec / 1000));
+}
+
 // Signal handler function (async-signal-safe)
 static void
 sigint_handler (int sig)
@@ -533,7 +541,7 @@ try_flush_buffer (Conn *conn)
 	  if (errno == EAGAIN)
 	    {
 	      DBG_LOGF ("FD %d: Send blocked (EAGAIN).", conn->fd);
-	      return; 
+	      return;
 	    }
 
 	  msgf ("write() error: %s", strerror (errno));
