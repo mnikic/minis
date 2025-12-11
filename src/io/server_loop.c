@@ -94,7 +94,7 @@ fd_set_nb (int file_des)
 }
 
 static int32_t
-accept_new_conn (int file_des)
+accept_new_conn (int file_des, uint64_t now_us)
 {
   struct sockaddr_in client_addr = { 0 };
   socklen_t socklen = sizeof (client_addr);
@@ -134,7 +134,7 @@ accept_new_conn (int file_des)
   conn->rbuf_size = 0;
   conn->wbuf_size = 0;
   conn->wbuf_sent = 0;
-  conn->idle_start = get_monotonic_usec ();
+  conn->idle_start = now_us;
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   connpool_add (g_data.fd2conn, conn);
@@ -192,7 +192,7 @@ dump_error_and_close (Conn *conn, int code, const char *str)
 // On failure, dump_error_and_close has already been called.
 static bool
 do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
-	    Buffer *out_buf)
+	    Buffer *out_buf, uint64_t now_us)
 {
   if (reqlen < 4)
     {
@@ -293,7 +293,7 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
 	    cmd_size);
   success =
     TIME_EXPR ("cache_execute",
-	       cache_execute (cache, cmd, cmd_size, out_buf));
+	       cache_execute (cache, cmd, cmd_size, out_buf, now_us));
   // Execute the command. The command array pointers point directly into the read buffer.
   if (!success)
     {
@@ -318,7 +318,7 @@ CLEANUP:
 // Executes the request and buffers the response directly into conn->wbuf.
 // Returns true on success, false on failure.
 static bool
-execute_and_buffer_response (Cache *cache, Conn *conn,
+execute_and_buffer_response (Cache *cache, uint64_t now_us, Conn *conn,
 			     uint8_t *req_data, uint32_t req_len)
 {
   if (conn->wbuf_size + 4 >= sizeof (conn->wbuf))
@@ -337,7 +337,7 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
   bool success;
   success =
     TIME_EXPR ("do_request",
-	       do_request (cache, conn, req_data, req_len, &out_buf));
+	       do_request (cache, conn, req_data, req_len, &out_buf, now_us));
   if (!success)
     return false;
 
@@ -358,7 +358,8 @@ execute_and_buffer_response (Cache *cache, Conn *conn,
 
 
 static bool
-try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
+try_one_request (Cache *cache, uint64_t now_us, Conn *conn,
+		 uint32_t *start_index)
 {
   if (conn->rbuf_size < *start_index + 4)
     return false;
@@ -383,7 +384,7 @@ try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
   if (4 + len + *start_index > conn->rbuf_size)
     return false;
 
-  bool success = execute_and_buffer_response (cache, conn,
+  bool success = execute_and_buffer_response (cache, now_us, conn,
 					      &conn->rbuf[*start_index + 4],
 					      len);
 
@@ -448,14 +449,15 @@ read_data_from_socket (Conn *conn, size_t cap)
 }
 
 static bool
-process_received_data (Cache *cache, Conn *conn, uint32_t bytes_read)
+process_received_data (Cache *cache, uint64_t now_us, Conn *conn,
+		       uint32_t bytes_read)
 {
   uint32_t start_index = conn->rbuf_size;
   conn->rbuf_size += bytes_read;
   assert (conn->rbuf_size <= sizeof (conn->rbuf));
 
   int processed = 0;
-  while (try_one_request (cache, conn, &start_index))
+  while (try_one_request (cache, now_us, conn, &start_index))
     {
       if (++processed >= MAX_CHUNKS)
 	break;
@@ -484,7 +486,7 @@ process_received_data (Cache *cache, Conn *conn, uint32_t bytes_read)
 }
 
 static bool
-try_fill_buffer (Cache *cache, Conn *conn)
+try_fill_buffer (Cache *cache, uint64_t now_us, Conn *conn)
 {
   while (1)
     {
@@ -506,7 +508,7 @@ try_fill_buffer (Cache *cache, Conn *conn)
       if (bytes_read == -1)
 	return false;		// EAGAIN
 
-      if (process_received_data (cache, conn, (uint32_t) bytes_read))
+      if (process_received_data (cache, now_us, conn, (uint32_t) bytes_read))
 	return true;
     }
 
@@ -577,11 +579,11 @@ CLEANUP:
 }
 
 static void
-state_req (Cache *cache, Conn *conn)
+state_req (Cache *cache, uint64_t now_us, Conn *conn)
 {
   DBG_LOGF ("FD %d: Entering STATE_REQ handler.", conn->fd);
 
-  while (try_fill_buffer (cache, conn))
+  while (try_fill_buffer (cache, now_us, conn))
     {
       if (conn->state != STATE_REQ)
 	break;
@@ -613,10 +615,8 @@ conn_done (Conn *conn)
 }
 
 static void
-process_timers (Cache *cache)
+process_timers (Cache *cache, uint64_t now_us)
 {
-  uint64_t now_us = get_monotonic_usec ();
-
   while (!dlist_empty (&g_data.idle_list))
     {
 #pragma GCC diagnostic push
@@ -637,27 +637,27 @@ process_timers (Cache *cache)
 }
 
 static void
-connection_io (Cache *cache, Conn *conn)
+connection_io (Cache *cache, Conn *conn, uint64_t now_us)
 {
-  conn->idle_start = get_monotonic_usec ();
+  conn->idle_start = now_us;
   dlist_detach (&conn->idle_list);
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   if (conn->state == STATE_REQ)
-    state_req (cache, conn);
+    state_req (cache, now_us, conn);
 
   if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE)
     state_res (conn);
 }
 
 static void
-handle_listener_event (int listen_fd)
+handle_listener_event (int listen_fd, uint64_t now_us)
 {
   int epfd = g_data.epfd;
 
   while (1)
     {
-      int conn_fd = accept_new_conn (listen_fd);
+      int conn_fd = accept_new_conn (listen_fd, now_us);
 
       if (conn_fd < 0)
 	{
@@ -680,7 +680,8 @@ handle_listener_event (int listen_fd)
 }
 
 static void
-handle_connection_event (Cache *cache, struct epoll_event *event)
+handle_connection_event (Cache *cache, struct epoll_event *event,
+			 uint64_t now_us)
 {
   Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
   if (!conn)
@@ -699,7 +700,7 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
     }
 
   if (event->events & (EPOLLIN | EPOLLOUT))
-    TIME_STMT ("connection_io", connection_io (cache, conn));
+    TIME_STMT ("connection_io", connection_io (cache, conn, now_us));
 
   if (conn->state == STATE_END)
     conn_done (conn);
@@ -707,14 +708,14 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
 
 static void
 process_active_events (Cache *cache, struct epoll_event *events, int count,
-		       int listen_fd)
+		       int listen_fd, uint64_t now_us)
 {
   for (int i = 0; i < count; ++i)
     {
       if (events[i].data.fd == listen_fd)
-	handle_listener_event (listen_fd);
+	handle_listener_event (listen_fd, now_us);
       else
-	handle_connection_event (cache, &events[i]);
+	handle_connection_event (cache, &events[i], now_us);
     }
 }
 
@@ -802,9 +803,8 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 }
 
 static uint32_t
-next_timer_ms (Cache *cache)
+next_timer_ms (Cache *cache, uint64_t now_us)
 {
-  uint64_t now_us = get_monotonic_usec ();
   uint64_t next_us = (uint64_t) - 1;
 
   if (!dlist_empty (&g_data.idle_list))
@@ -851,7 +851,8 @@ server_run (uint16_t port)
 
   while (!g_data.terminate_flag)
     {
-      int timeout_ms = (int) next_timer_ms (cache);
+      uint64_t now_us = get_monotonic_usec ();
+      int timeout_ms = (int) next_timer_ms (cache, now_us);
       DBG_LOGF ("Epoll wait for %dms...", timeout_ms);
 
       int enfd_count = epoll_wait (epfd, events, MAX_EVENTS, timeout_ms);
@@ -869,9 +870,9 @@ server_run (uint16_t port)
       DBG_LOGF ("Processing %d events.", enfd_count);
 
       if (enfd_count > 0)
-	process_active_events (cache, events, enfd_count, listen_fd);
+	process_active_events (cache, events, enfd_count, listen_fd, now_us);
 
-      process_timers (cache);
+      process_timers (cache, now_us);
     }
 
   cleanup_server_resources (cache, listen_fd, epfd);
