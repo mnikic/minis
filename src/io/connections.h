@@ -23,6 +23,7 @@ typedef struct
   size_t wbuf_sent;
   uint8_t wbuf[4 + K_MAX_MSG];
   uint64_t idle_start;
+  uint32_t last_events; // cache, to not EPOLL_CTL_MOD if there is no need
   DList idle_list;
 } Conn;
 

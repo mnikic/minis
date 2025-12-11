@@ -134,6 +134,7 @@ accept_new_conn (int file_des, uint64_t now_us)
   conn->rbuf_size = 0;
   conn->wbuf_size = 0;
   conn->wbuf_sent = 0;
+  conn->last_events = 0;
   conn->idle_start = now_us;
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
@@ -146,7 +147,7 @@ accept_new_conn (int file_des, uint64_t now_us)
 static void
 conn_set_epoll_events (Conn *conn, uint32_t events)
 {
-  if (conn->state == STATE_END)
+  if (conn->state == STATE_END || conn->last_events == events)
     return;
 
   struct epoll_event event;
