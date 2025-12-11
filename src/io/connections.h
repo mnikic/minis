@@ -18,12 +18,21 @@ typedef struct
   int fd;
   uint32_t state;
   uint32_t rbuf_size;
-  uint8_t rbuf[4 + K_MAX_MSG + 1]; // Added 1 extra for ease of string in place 0 termination.
+  uint8_t rbuf[4 + K_MAX_MSG + 1];
+  
+  // Write buffer - where responses are BUILT
   size_t wbuf_size;
-  size_t wbuf_sent;
   uint8_t wbuf[4 + K_MAX_MSG];
+  
+  // Send buffer - where responses are SENT FROM
+  size_t send_buf_size;
+  size_t send_buf_sent;
+  uint8_t send_buf[4 + K_MAX_MSG];
+  
+  // Track pending zerocopy operations
+  uint32_t zerocopy_pending;  // How many send operations are pending completion
+  
   uint64_t idle_start;
-  bool wbuf_in_flight;
   DList idle_list;
 } Conn;
 

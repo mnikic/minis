@@ -95,8 +95,7 @@ state_res (Conn *conn);
 static bool
 try_check_zerocopy_completion (Conn *conn)
 {
-    // Check quickly if we even need to bother reading the error queue
-    if (!conn->wbuf_in_flight)
+    if (conn->zerocopy_pending == 0)
         return false;
 
     struct msghdr msg = { 0 };
@@ -108,45 +107,69 @@ try_check_zerocopy_completion (Conn *conn)
     msg.msg_control = control;
     msg.msg_controllen = sizeof(control);
 
-    // MSG_ERRQUEUE is the key flag to read from the error queue
     ret = (int) recvmsg(conn->fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
     
     if (ret < 0) {
-        if (errno == EAGAIN || errno == ENOMSG) return false;
+        if (errno == EAGAIN || errno == ENOMSG) 
+            return false;
         
-        // Handle connection error (e.g., connection reset while reading error queue)
         msgf ("recvmsg(MSG_ERRQUEUE) error: %s", strerror (errno));
         conn->state = STATE_END;
         return false; 
     }
     
-    // Iterate over control messages
     for (cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
         if (cm->cmsg_level != SOL_IP && cm->cmsg_level != SOL_IPV6)
-            continue; // Skip non-IP errors
+            continue;
 
         if (cm->cmsg_type != IP_RECVERR && cm->cmsg_type != IPV6_RECVERR)
-            continue; // Skip non-error-reporting messages
+            continue;
 
         serr = (void *) CMSG_DATA(cm);
         
-        // Check for the specific SO_EE_ORIGIN_ZEROCOPY origin
         if (serr->ee_origin == SO_EE_ORIGIN_ZEROCOPY) {
+            // ee_info and ee_data can represent a RANGE of notifications
+            // if the kernel batched them. Each notification ID is for one send().
+            uint32_t range_start = serr->ee_info;
+            uint32_t range_end = serr->ee_data;
+            uint32_t completed = range_end - range_start + 1;
             
-            // The kernel has successfully processed the buffer.
-            DBG_LOGF("FD %d: ZEROCOPY completion received. Buffer free (range %u-%u).", 
-                     conn->fd, serr->ee_info, serr->ee_data);
+            DBG_LOGF("FD %d: ZEROCOPY completion range [%u-%u] (%u ops completed). Pending: %u -> %u", 
+                     conn->fd, range_start, range_end, completed,
+                     conn->zerocopy_pending, conn->zerocopy_pending - completed);
             
-            // This is the critical update: we can now reuse the memory.
-            conn->wbuf_in_flight = false;
+            if (completed <= conn->zerocopy_pending) {
+                conn->zerocopy_pending -= completed;
+            } else {
+                msgf("FD %d: WARNING: Got more completions (%u) than pending (%u)",
+                     conn->fd, completed, conn->zerocopy_pending);
+                conn->zerocopy_pending = 0;
+            }
             
-            // Return true to indicate we processed a relevant notification
             return true;
         }
     }
 
-    // If we reached here, we processed an error, but not a ZEROCOPY completion.
     return false;
+}
+
+static void
+prepare_send_buffer (Conn *conn)
+{
+    // Transfer data from wbuf to send_buf
+    // This is the ONE memcpy we pay per response
+    assert(conn->zerocopy_pending == 0);  // All previous sends must be complete    
+    assert(conn->send_buf_sent >= conn->send_buf_size);  // Previous send complete
+    
+    conn->send_buf_size = conn->wbuf_size;
+    conn->send_buf_sent = 0;
+    memcpy(conn->send_buf, conn->wbuf, conn->wbuf_size);
+    
+    // Clear wbuf - it's now free for building the next response
+    conn->wbuf_size = 0;
+    
+    DBG_LOGF("FD %d: Prepared send_buf with %zu bytes. wbuf now free.",
+             conn->fd, conn->send_buf_size);
 }
 
 // Signal handler function (async-signal-safe)
@@ -210,14 +233,14 @@ accept_new_conn (int file_des)
       msgf ("accept() error: %s", strerror (errno));
       return -2;
     }
+    
   int sndbuf = 2 * 1024 * 1024;
   setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
-  // ** NEW: Enable SO_ZEROCOPY and request completions **
-    int val = 1;
-    if (setsockopt(connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof(val))) {
-        msgf("setsockopt(SO_ZEROCOPY) failed: %s. Using standard copy.", strerror(errno));
-        // Server will continue, but without the optimization on this connection
-    }
+  
+  int val = 1;
+  if (setsockopt(connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof(val))) {
+      msgf("setsockopt(SO_ZEROCOPY) failed: %s. Using standard copy.", strerror(errno));
+  }
 
   Conn *conn = calloc (1, sizeof (Conn));
   if (!conn)
@@ -230,9 +253,10 @@ accept_new_conn (int file_des)
   conn->state = STATE_REQ;
   conn->rbuf_size = 0;
   conn->wbuf_size = 0;
-  conn->wbuf_sent = 0;
+  conn->send_buf_size = 0;      // NEW
+  conn->send_buf_sent = 0;      // NEW
+  conn->zerocopy_pending = 0;
   conn->idle_start = get_monotonic_usec ();
-  conn->wbuf_in_flight = false;
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   connpool_add (g_data.fd2conn, conn);
@@ -279,7 +303,7 @@ dump_error_and_close (Conn *conn, int code, const char *str)
   uint32_t nwlen = htonl ((uint32_t) errlen);
 
   conn->wbuf_size = 0;
-  conn->wbuf_sent = 0;
+//  conn->wbuf_sent = 0;
   memcpy (&conn->wbuf, &nwlen, 4);
   conn->wbuf_size += 4 + errlen;
   conn->state = STATE_RES_CLOSE;
@@ -612,56 +636,74 @@ try_fill_buffer (Cache *cache, Conn *conn)
   return true;
 }
 
-static bool
+  static bool
 try_flush_buffer (Conn *conn)
 {
-    DBG_LOGF ("FD %d: Flushing WBuf (size %zu, sent %zu).",
-             conn->fd, conn->wbuf_size, conn->wbuf_sent);
+    DBG_LOGF ("FD %d: Flushing send_buf (size %zu, sent %zu, pending %u).",
+             conn->fd, conn->send_buf_size, conn->send_buf_sent, conn->zerocopy_pending);
 
-    // ** 1. Process all pending ZEROCOPY completions first **
-    // This flips conn->wbuf_in_flight to false if a completion is found.
+    // ** 1. Check for zerocopy completions **
     while (try_check_zerocopy_completion (conn)) {}
 
-    // ** 2. BLOCKING CHECK **
-    // If the kernel still owns the buffer, we cannot send or modify it.
-    if (conn->wbuf_in_flight) {
-        DBG_LOGF("FD %d: WBuf is in-flight (waiting for kernel completion). Blocking send.", conn->fd);
-        // Return false (equivalent to EAGAIN) but ensure EPOLLOUT is still set
-        // to call us back when more I/O can happen.
-       return false;
-    }
+    // ** 2. If send_buf is fully sent, check if we need to load new data **
+    if (conn->send_buf_sent >= conn->send_buf_size) {
+        // send_buf is drained
+        
+        if (conn->wbuf_size > 0) {
+            // We have a response waiting in wbuf
+            
+            // CRITICAL: Can't reuse send_buf until ALL zerocopy ops complete
+            if (conn->zerocopy_pending > 0) {
+                DBG_LOGF("FD %d: send_buf drained but %u zerocopy ops still pending. Waiting.",
+                         conn->fd, conn->zerocopy_pending);
+                return false;
+            }
+            
+            prepare_send_buffer(conn);
+            // Fall through to send the data below
+        } else {
+            // Nothing to send
+            
+            // If there are still pending completions, wait for them
+            // (we want a clean slate before transitioning states)
+            if (conn->zerocopy_pending > 0) {
+                DBG_LOGF("FD %d: All data sent but %u completions pending. Waiting.",
+                         conn->fd, conn->zerocopy_pending);
+                return false;
+            }
+            
+            conn->send_buf_size = 0;
+            conn->send_buf_sent = 0;
+            
+            // State transition
+            if (conn->state == STATE_RES_CLOSE) {
+                DBG_LOGF ("FD %d: Response sent, transitioning to STATE_END.", conn->fd);
+                conn->state = STATE_END;
+                return true;
+            }
 
-    // ** 3. Check if all data is sent from the *previous* response **
-    if (conn->wbuf_sent >= conn->wbuf_size) {
-        // Response fully sent/cleared. Reset for next use.
-        conn->wbuf_sent = 0;
-        conn->wbuf_size = 0;
-
-        // Transition logic (State changes only happen AFTER a full buffer send)
-        if (conn->state == STATE_RES_CLOSE) {
-            DBG_LOGF ("FD %d: Response sent, transitioning to STATE_END for close.", conn->fd);
-            conn->state = STATE_END;
+            if (conn->state == STATE_RES) {
+                DBG_LOGF ("FD %d: Response sent, transitioning back to STATE_REQ.", conn->fd);
+                conn->state = STATE_REQ;
+                conn_set_epoll_events (conn, EPOLLIN);
+                conn->idle_start = get_monotonic_usec ();
+                dlist_detach (&conn->idle_list);
+                dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+            }
+            
             return true;
         }
-
-        if (conn->state == STATE_RES) {
-            DBG_LOGF ("FD %d: Response sent, transitioning back to STATE_REQ.", conn->fd);
-            conn->state = STATE_REQ;
-            conn_set_epoll_events (conn, EPOLLIN);
-            // NEW: Mark connection as idle and re-insert into list
-            conn->idle_start = get_monotonic_usec ();
-            dlist_detach (&conn->idle_list);
-            dlist_insert_before (&g_data.idle_list, &conn->idle_list);
-        }
-        
-        return true;
     }
-    
-    // ** 4. Send the remaining buffer using sendmsg with MSG_ZEROCOPY **
-    size_t remain = conn->wbuf_size - conn->wbuf_sent;
 
+    // ** 3. Send data from send_buf **
+    // NOTE: We do NOT block on zerocopy_pending here!
+    // We can keep calling sendmsg() with MSG_ZEROCOPY multiple times
+    // on the same buffer. The kernel queues the operations.
+    
+    size_t remain = conn->send_buf_size - conn->send_buf_sent;
+    
     struct iovec iov = {
-        .iov_base = &conn->wbuf[conn->wbuf_sent],
+        .iov_base = &conn->send_buf[conn->send_buf_sent],
         .iov_len = remain
     };
     
@@ -674,19 +716,11 @@ try_flush_buffer (Conn *conn)
         .msg_controllen = 0,
     };
 
-    if (conn->wbuf_in_flight) {
-        // If the buffer is IN-FLIGHT, but not fully sent, we MUST wait for the completion 
-        // to free the first chunk before we can safely re-send the remainder of the buffer. 
-        // THIS IS THE STARVATION POINT! 
-        return false;
-    }
-
-    // Use sendmsg with both MSG_DONTWAIT and MSG_ZEROCOPY
     ssize_t err = sendmsg(conn->fd, &message, MSG_DONTWAIT | MSG_ZEROCOPY | MSG_NOSIGNAL);
 
     if (err < 0) {
         if (errno == EAGAIN) {
-            DBG_LOGF ("FD %d: Send blocked (EAGAIN/EWOULDBLOCK).", conn->fd);
+            DBG_LOGF ("FD %d: Send blocked (EAGAIN).", conn->fd);
             return false;
         }
         
@@ -701,24 +735,30 @@ try_flush_buffer (Conn *conn)
         return true;
     }
 
-    // ** 5. Success: Update state to in-flight **
-    conn->wbuf_sent += (size_t) err;
-    conn->wbuf_in_flight = true; 
-    DBG_LOGF("FD %d: Sent %zd bytes with ZEROCOPY. Buffer is now IN-FLIGHT.", conn->fd, err);
-    uint32_t events = EPOLLERR; // Always listen for completion
-
-if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE) {
-    // Keep EPOLLIN for pipelining requests, even while sending response.
-    events |= EPOLLIN;
-}
-
-// Explicitly remove EPOLLOUT to prevent the spurious wake-ups.
-conn_set_epoll_events (conn, events);
-        
+    // ** 4. Update state **
+    conn->send_buf_sent += (size_t) err;
+    conn->zerocopy_pending++;  // One more operation pending completion
     
-    // After a successful ZEROCOPY send, we must stop and wait for completion.
-    return false;
+    DBG_LOGF("FD %d: Sent %zd bytes with ZEROCOPY (sent: %zu/%zu, pending: %u).",
+             conn->fd, err, conn->send_buf_sent, conn->send_buf_size, conn->zerocopy_pending);
+
+    // ** 5. Update epoll interest **
+    uint32_t events = EPOLLERR;  // Always listen for completions
+    
+    if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE) {
+        events |= EPOLLIN;  // Pipelining
+        
+        // Request EPOLLOUT if more data to send
+        if (conn->send_buf_sent < conn->send_buf_size) {
+            events |= EPOLLOUT;
+        }
+    }
+    
+    conn_set_epoll_events (conn, events);
+    
+    return false;  // More work potentially to do
 }
+
 // Note: The old `state_res` loop logic might need slight review. The `while` loop 
 // is no longer necessary if we assume one message per send operation.
 
