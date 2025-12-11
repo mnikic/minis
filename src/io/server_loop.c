@@ -119,8 +119,8 @@ accept_new_conn (int file_des, uint64_t now_us)
       msgf ("accept() error: %s", strerror (errno));
       return -2;
     }
-  int sndbuf = 4 * 1024 * 1024;
-  setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
+  //int sndbuf = 4 * 1024 * 1024;
+  //setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
 
   Conn *conn = calloc (1, sizeof (Conn));
   if (!conn)
@@ -516,7 +516,7 @@ try_fill_buffer (Cache *cache, uint64_t now_us, Conn *conn)
   return true;
 }
 
-static bool
+static void
 try_flush_buffer (Conn *conn)
 {
   DBG_LOGF ("FD %d: Flushing WBuf (size %zu, sent %zu).",
@@ -535,19 +535,19 @@ try_flush_buffer (Conn *conn)
 	  if (errno == EAGAIN)
 	    {
 	      DBG_LOGF ("FD %d: Send blocked (EAGAIN).", conn->fd);
-	      goto CLEANUP;
+	      return; 
 	    }
 
 	  msgf ("write() error: %s", strerror (errno));
 	  conn->state = STATE_END;
-	  goto CLEANUP;
+	  return;
 	}
 
       if (err == 0)
 	{
 	  msg ("write returned 0 unexpectedly");
 	  conn->state = STATE_END;
-	  goto CLEANUP;
+	  return;
 	}
 
       conn->wbuf_sent += (size_t) err;
@@ -564,7 +564,7 @@ try_flush_buffer (Conn *conn)
       DBG_LOGF ("FD %d: Response sent, transitioning to STATE_END for close.",
 		conn->fd);
       conn->state = STATE_END;
-      goto CLEANUP;
+      return;
     }
 
   if (conn->state == STATE_RES)
@@ -574,9 +574,6 @@ try_flush_buffer (Conn *conn)
       conn->state = STATE_REQ;
       conn_set_epoll_events (conn, EPOLLIN);
     }
-
-CLEANUP:
-  return false;
 }
 
 static void
@@ -597,8 +594,9 @@ state_req (Cache *cache, uint64_t now_us, Conn *conn)
 static void
 state_res (Conn *conn)
 {
-  while (!TIME_EXPR ("try_flush_buffer", try_flush_buffer (conn)))
+  while (1)
     {
+      TIME_STMT ("try_flush_buffer", try_flush_buffer (conn));
       if (conn->state != STATE_RES && conn->state != STATE_RES_CLOSE)
 	break;
     }
