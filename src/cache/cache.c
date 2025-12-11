@@ -380,10 +380,7 @@ do_zscore (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
     {
       return out_dbl (out, znode->score);
     }
-  else
-    {
-      return out_nil (out);
-    }
+  return out_nil (out);
 }
 
 // zquery zset score name offset limit

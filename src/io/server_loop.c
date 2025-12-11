@@ -119,8 +119,6 @@ accept_new_conn (int file_des, uint64_t now_us)
       msgf ("accept() error: %s", strerror (errno));
       return -2;
     }
-  //int sndbuf = 4 * 1024 * 1024;
-  //setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
 
   Conn *conn = calloc (1, sizeof (Conn));
   if (!conn)
@@ -855,7 +853,8 @@ server_run (uint16_t port)
       DBG_LOGF ("Epoll wait for %dms...", timeout_ms);
 
       int enfd_count = epoll_wait (epfd, events, MAX_EVENTS, timeout_ms);
-
+      // We might have slept for quite a while!
+      now_us = get_monotonic_usec ();
       if (g_data.terminate_flag)
 	break;
 
