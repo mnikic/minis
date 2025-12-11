@@ -119,7 +119,7 @@ accept_new_conn (int file_des, uint64_t now_us)
       msgf ("accept() error: %s", strerror (errno));
       return -2;
     }
-  int sndbuf = 8 * 1024 * 1024;
+  int sndbuf = 4 * 1024 * 1024;
   setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
 
   Conn *conn = calloc (1, sizeof (Conn));
