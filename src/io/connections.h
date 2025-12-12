@@ -35,6 +35,8 @@ typedef struct
 
   // Read index: Points to the oldest response ready to be SENT
   uint32_t read_idx;
+  size_t res_sent;		// Progress tracker: How many bytes of 
+  // res_slots[read_idx] have been sent.
 
   // Write index: Points to the next free slot ready to be WRITTEN
   uint32_t write_idx;

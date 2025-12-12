@@ -8,6 +8,7 @@
  */
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +58,13 @@ static struct
   int epfd;
   volatile sig_atomic_t terminate_flag;
 } g_data;
+
+static inline bool
+is_res_queue_full (Conn *conn)
+{
+  // Standard ring buffer full check
+  return ((conn->write_idx + 1) % K_SLOT_COUNT) == conn->read_idx;
+}
 
 static inline uint64_t
 get_monotonic_usec (void)
@@ -176,7 +184,12 @@ dump_error_and_close (Conn *conn, int code, const char *str)
   DBG_LOGF ("FD %d: Sending error %d and closing: %s", conn->fd, code, str);
 
   // Use small stack buffer for error messages (errors are always small)
-  Buffer err_buf = buf_init (conn->wbuf + 4, sizeof conn->wbuf - 4);
+  uint32_t w_idx = conn->write_idx;
+  uint8_t *slot_mem = &conn->res_data[(size_t) (w_idx * K_MAX_MSG)];
+
+  // 2. Reserve 4 bytes for header, initialize Buffer for the rest of the slot
+  // The available space for payload is (K_MAX_MSG - 4 bytes)
+  Buffer err_buf = buf_init (slot_mem + 4, K_MAX_MSG - 4);
 
   if (!out_err (&err_buf, code, str))
     {
@@ -184,13 +197,12 @@ dump_error_and_close (Conn *conn, int code, const char *str)
       conn->state = STATE_END;
       return;
     }
-  size_t errlen = buf_len (&err_buf);
-  uint32_t nwlen = htonl ((uint32_t) errlen);
+  size_t err_payload_len = buf_len (&err_buf);
+  uint32_t nwlen = htonl ((uint32_t) err_payload_len);
+  memcpy (slot_mem, &nwlen, 4);
 
-  conn->wbuf_size = 0;
-  conn->wbuf_sent = 0;
-  memcpy (&conn->wbuf, &nwlen, 4);
-  conn->wbuf_size += 4 + errlen;
+  conn->res_slots[w_idx].actual_length = 4 + err_payload_len;
+  conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
   conn->state = STATE_RES_CLOSE;
   conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
 }
@@ -328,46 +340,58 @@ static bool
 execute_and_buffer_response (Cache *cache, uint64_t now_us, Conn *conn,
 			     uint8_t *req_data, uint32_t req_len)
 {
-  if (conn->wbuf_size + 4 >= sizeof (conn->wbuf))
+  // 1. Identify current slot memory location
+  uint32_t w_idx = conn->write_idx;
+  uint8_t *slot_mem = &conn->res_data[w_idx * K_MAX_MSG];
+
+  // 2. Reserve 4 bytes for header, initialize Buffer for the rest of the slot
+  // The available space for payload is (K_MAX_MSG - 4 bytes)
+  Buffer out_buf = buf_init (slot_mem + 4, K_MAX_MSG - 4);
+
+  bool success = TIME_EXPR ("do_request",
+			    do_request (cache, conn, req_data, req_len,
+					&out_buf, now_us));
+
+  if (!success)
     {
-      dump_error_and_close (conn, ERR_UNKNOWN, "write buffer full");
+      // do_request failed (likely already called dump_error_and_close)
       return false;
     }
-  uint8_t *out_mem = conn->wbuf + conn->wbuf_size;
-  // OPTIMIZATION: Initialize the output buffer to start 4 bytes (sizeof uint32_t )
-  // into the raw output memory (out_mem). This reserves the first 4 bytes for the
-  // message length header, allowing 'cache_execute' to write the payload directly
-  // into its final destination so we can skip copying temporary buffer.
-  Buffer out_buf =
-    buf_init (out_mem + 4, sizeof conn->wbuf - conn->wbuf_size - 4);
 
-  bool success;
-  success =
-    TIME_EXPR ("do_request",
-	       do_request (cache, conn, req_data, req_len, &out_buf, now_us));
-  if (!success)
-    return false;
-
-  // Header Backfilling
+  // 3. Header Backfilling (Network Byte Order)
   size_t payload_len = buf_len (&out_buf);
   uint32_t nwlen = htonl ((uint32_t) payload_len);
-  memcpy (out_mem, &nwlen, 4);
+  memcpy (slot_mem, &nwlen, 4);
 
-  // Advance the wbuf_size index to accommodate all we've written
-  conn->wbuf_size += 4 + payload_len;
+  // 4. Update Slot Metadata
+  conn->res_slots[w_idx].actual_length = 4 + payload_len;
 
-  DBG_LOGF
-    ("FD %d: Buffered response of length %zu directly. wbuf_size now %zu.",
-     conn->fd, 4 + payload_len, conn->wbuf_size);
+  // 5. Advance the Ring Buffer Index
+  conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
+
+  DBG_LOGF ("FD %d: Response (len %zu) written to slot %u. write_idx now %u.",
+	    conn->fd, 4 + payload_len, w_idx, conn->write_idx);
 
   return true;
 }
 
-
 static bool
 try_one_request (Cache *cache, uint64_t now_us, Conn *conn,
-		 uint32_t *start_index)
+		 size_t *start_index)
 {
+  // --- NEW: BACKPRESSURE CHECK ---
+  // Check if the response ring buffer is full BEFORE parsing
+  if (((conn->write_idx + 1) % K_SLOT_COUNT) == conn->read_idx)
+    {
+      DBG_LOGF ("FD %d: Response queue full. Pausing request parsing.",
+		conn->fd);
+      // We return false to stop the loop, but remain in STATE_REQ.
+      // We must ensure EPOLLOUT is set so we can clear slots.
+      conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+      return false;
+    }
+
+  // 1. Check if header is available
   if (conn->rbuf_size < *start_index + 4)
     return false;
 
@@ -375,51 +399,47 @@ try_one_request (Cache *cache, uint64_t now_us, Conn *conn,
   memcpy (&len, &conn->rbuf[*start_index], 4);
   len = ntohl (len);
 
-  DBG_LOGF ("FD %d: Parsing request starting at index %u with length %u.",
-	    conn->fd, *start_index, len);
-
-  // Check against maximum message size
+  // 2. Protocol Validation
   if (len > K_MAX_MSG)
     {
       msgf ("request too long %u", len);
-      dump_error_and_close (conn, ERR_2BIG,
-			    "request too large; connection closed.");
+      dump_error_and_close (conn, ERR_2BIG, "request too large");
       *start_index = conn->rbuf_size;
       return false;
     }
 
+  // 3. Check if full payload is available
   if (4 + len + *start_index > conn->rbuf_size)
     return false;
 
+  // 4. Process and Buffer into the current slot
   bool success = execute_and_buffer_response (cache, now_us, conn,
 					      &conn->rbuf[*start_index + 4],
 					      len);
 
   if (!success)
     {
-      // Malformed request or response too large
-      // dump_error_and_close or error handling already set STATE_RES_CLOSE/STATE_END
+      // Error already handled (STATE_RES_CLOSE or STATE_END)
       *start_index += 4 + len;
-      msg
-	("request failed, or could not buffer response, stopping processing");
       return false;
     }
 
-  // Request succeeded
+  // 5. Update RBuf consumption
   *start_index += 4 + len;
-  DBG_LOGF ("FD %d: Request processed, consumed %u bytes.", conn->fd,
-	    4 + len);
 
+  // 6. Transition Logic
   if (*start_index >= conn->rbuf_size)
     {
-      // All data consumed, transition to sending response
-      conn->state = STATE_RES;
-      DBG_LOGF ("FD %d: RBuf fully consumed, transitioning to STATE_RES.",
-		conn->fd);
+      // All data consumed from read buffer
+      if (conn->state == STATE_REQ)
+	{
+	  conn->state = STATE_RES;
+	}
       conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
-      return false;
+      return false;		// Stop loop
     }
 
+  // Continue loop if we are still healthy and have more data
   return (conn->state == STATE_REQ);
 }
 
@@ -455,41 +475,55 @@ read_data_from_socket (Conn *conn, size_t cap)
   return err;
 }
 
-static bool
-process_received_data (Cache *cache, uint64_t now_us, Conn *conn,
-		       uint32_t bytes_read)
+static void
+process_received_data (Cache *cache, Conn *conn, uint64_t now_us)
 {
-  uint32_t start_index = 0;
-  conn->rbuf_size += bytes_read;
-  assert (conn->rbuf_size <= sizeof (conn->rbuf));
+  size_t consumed_bytes = 0;	// Tracks bytes processed in this loop run
 
-  int processed = 0;
-  while (try_one_request (cache, now_us, conn, &start_index))
+  while (1)
     {
-      if (++processed >= MAX_CHUNKS)
-	break;
+      if (is_res_queue_full (conn))
+	{
+	  // ... backpressure logic ...
+	  break;
+	}
+
+      // Pass the address of the consumed_bytes tracker. 
+      // try_one_request will internally update it to conn->rbuf_size 
+      // if it processes everything.
+      if (!try_one_request (cache, now_us, conn, &consumed_bytes))
+	{
+	  // Stop parsing if: 
+	  // 1. Not enough data (false return with state == STATE_REQ)
+	  // 2. Error occurred (false return with state == STATE_RES_CLOSE)
+	  break;
+	}
+
+      if (conn->state == STATE_RES_CLOSE)
+	{
+	  break;
+	}
     }
 
-  // Buffer compaction
-  uint32_t remain = conn->rbuf_size - start_index;
-  if (remain)
-    memmove (conn->rbuf, &conn->rbuf[start_index], remain);
+  // --- RBUF COMPACTION ---
+  if (consumed_bytes > 0)
+    {
+      // Shift remaining data to the beginning of the buffer
+      conn->rbuf_size -= (uint32_t) consumed_bytes;
+      memmove (conn->rbuf, conn->rbuf + consumed_bytes, conn->rbuf_size);
+      DBG_LOGF ("FD %d: RBuf compacted. Consumed %zu bytes. New size %zu.",
+		conn->fd, consumed_bytes, conn->rbuf_size);
+    }
 
-  conn->rbuf_size = remain;
-
-  DBG_LOGF
-    ("FD %d: Processed %d requests. RBuf remaining: %u. New state: %d.",
-     conn->fd, processed, remain, conn->state);
-
-  // Check if state changed
-  if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE ||
-      conn->state == STATE_END)
-    return true;
-
-  if (processed >= MAX_CHUNKS)
-    return true;
-
-  return false;
+  // After processing what we can, if there are responses, try to send them
+  // This check is the definitive way to transition to STATE_RES
+  if (conn->res_slots[conn->read_idx].actual_length > 0)
+    {
+      if (conn->state == STATE_REQ)
+	{
+	  conn->state = STATE_RES;
+	}
+    }
 }
 
 static bool
@@ -510,153 +544,113 @@ try_fill_buffer (Cache *cache, uint64_t now_us, Conn *conn)
       ssize_t bytes_read = read_data_from_socket (conn, cap);
 
       if (bytes_read == -2)
-	return true;		// Error or EOF
-
+	return true;		// EOF/Error
       if (bytes_read == -1)
 	return false;		// EAGAIN
 
-      if (process_received_data (cache, now_us, conn, (uint32_t) bytes_read))
-	return true;
-    }
+      // --- MISSING LINE ---
+      conn->rbuf_size += (uint32_t) bytes_read;
 
+      process_received_data (cache, conn, now_us);
+    }
   return true;
 }
 
-static bool try_flush_buffer(Conn *conn) {
-    if (conn->res_slots[conn->read_idx].actual_length == 0) {
-        return true; // Nothing to send, technically "finished"
-    }
-
-    while (true) {
-        ResponseSlot *slot = &conn->res_slots[conn->read_idx];
-        uint8_t *data_start = &conn->res_data[conn->read_idx * K_MAX_MSG];
-        
-        size_t total_to_send = slot->actual_length;
-        size_t remain = total_to_send - conn->res_sent;
-
-        ssize_t err = send(conn->fd, &data_start[conn->res_sent], remain, MSG_NOSIGNAL);
-        
-        if (err < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN) {
-                // Socket is full. Register for EPOLLOUT and stop looping.
-                conn_set_epoll_events(conn, EPOLLIN | EPOLLOUT);
-                return false; 
-            }
-            conn->state = STATE_END;
-            return false;
-        }
-
-        conn->res_sent += (size_t)err;
-
-        if (conn->res_sent == total_to_send) {
-            slot->actual_length = 0; 
-            conn->res_sent = 0;
-            conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
-            
-            // If the next slot is empty, we are fully caught up.
-            if (conn->res_slots[conn->read_idx].actual_length == 0) {
-                return true; 
-            }
-        } else {
-            // Partial write: the kernel accepted some data but not all.
-            // This is effectively the same as EAGAIN for our loop.
-            conn_set_epoll_events(conn, EPOLLIN | EPOLLOUT);
-            return false;
-        }
-    }
-}
-
-static void state_res(Conn *conn) {
-    while (1) {
-        // We call the flush. It returns true only if the buffer is now empty.
-        bool finished = false;
-        TIME_STMT("try_flush_buffer", finished = try_flush_buffer(conn));
-
-        // 1. If we hit a terminal state (END), stop.
-        if (conn->state == STATE_END) {
-            break;
-        }
-
-        // 2. If we are blocked (not finished), stop the loop and wait for epoll.
-        if (!finished) {
-            break;
-        }
-
-        // 3. If we finished flushing everything, handle transitions.
-        if (conn->state == STATE_RES_CLOSE) {
-            conn->state = STATE_END;
-            break;
-        } else if (conn->state == STATE_RES) {
-            conn->state = STATE_REQ;
-            conn_set_epoll_events(conn, EPOLLIN);
-            break;
-        }
-        
-        // If we are still in STATE_RES but finished is true, it might be 
-        // because we just cleared one slot and more are coming, but 
-        // usually the internal while(true) in try_flush_buffer handles that.
-        break; 
-    }
-}
-
-static void
+static bool
 try_flush_buffer (Conn *conn)
 {
-  DBG_LOGF ("FD %d: Flushing WBuf (size %zu, sent %zu).",
-	    conn->fd, conn->wbuf_size, conn->wbuf_sent);
-
-  while (conn->wbuf_sent < conn->wbuf_size)
+  if (conn->res_slots[conn->read_idx].actual_length == 0)
     {
-      size_t remain = conn->wbuf_size - conn->wbuf_sent;
-      ssize_t err = send (conn->fd, &conn->wbuf[conn->wbuf_sent],
-			  remain, MSG_NOSIGNAL);
+      return true;		// Nothing to send, technically "finished"
+    }
+
+  while (true)
+    {
+      ResponseSlot *slot = &conn->res_slots[conn->read_idx];
+      uint8_t *data_start = &conn->res_data[conn->read_idx * K_MAX_MSG];
+
+      size_t total_to_send = slot->actual_length;
+      size_t remain = total_to_send - conn->res_sent;
+
+      ssize_t err =
+	send (conn->fd, &data_start[conn->res_sent], remain, MSG_NOSIGNAL);
+
       if (err < 0)
 	{
 	  if (errno == EINTR)
 	    continue;
-
 	  if (errno == EAGAIN)
 	    {
-	      DBG_LOGF ("FD %d: Send blocked (EAGAIN).", conn->fd);
-	      return;
+	      // Socket is full. Register for EPOLLOUT and stop looping.
+	      conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+	      return false;
 	    }
-
-	  msgf ("write() error: %s", strerror (errno));
 	  conn->state = STATE_END;
-	  return;
+	  return false;
 	}
 
-      if (err == 0)
+      conn->res_sent += (size_t) err;
+
+      if (conn->res_sent == total_to_send)
 	{
-	  msg ("write returned 0 unexpectedly");
-	  conn->state = STATE_END;
-	  return;
+	  slot->actual_length = 0;
+	  conn->res_sent = 0;
+	  conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
+
+	  // If the next slot is empty, we are fully caught up.
+	  if (conn->res_slots[conn->read_idx].actual_length == 0)
+	    {
+	      return true;
+	    }
+	}
+      else
+	{
+	  // Partial write: the kernel accepted some data but not all.
+	  // This is effectively the same as EAGAIN for our loop.
+	  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
+	  return false;
+	}
+    }
+}
+
+static void
+state_res (Conn *conn)
+{
+  while (1)
+    {
+      // We call the flush. It returns true only if the buffer is now empty.
+      bool finished = false;
+      TIME_STMT ("try_flush_buffer", finished = try_flush_buffer (conn));
+
+      // 1. If we hit a terminal state (END), stop.
+      if (conn->state == STATE_END)
+	{
+	  break;
 	}
 
-      conn->wbuf_sent += (size_t) err;
-      DBG_LOGF ("FD %d: Sent %zd bytes. Total sent %zu.",
-		conn->fd, err, conn->wbuf_sent);
-    }
+      // 2. If we are blocked (not finished), stop the loop and wait for epoll.
+      if (!finished)
+	{
+	  break;
+	}
 
-  // Response fully sent
-  conn->wbuf_sent = 0;
-  conn->wbuf_size = 0;
+      // 3. If we finished flushing everything, handle transitions.
+      if (conn->state == STATE_RES_CLOSE)
+	{
+	  conn->state = STATE_END;
+	  break;
+	}
+      else if (conn->state == STATE_RES)
+	{
+	  conn->state = STATE_REQ;
+	  conn_set_epoll_events (conn, EPOLLIN);
+	  break;
+	}
 
-  if (conn->state == STATE_RES_CLOSE)
-    {
-      DBG_LOGF ("FD %d: Response sent, transitioning to STATE_END for close.",
-		conn->fd);
-      conn->state = STATE_END;
-      return;
-    }
-
-  if (conn->state == STATE_RES)
-    {
-      DBG_LOGF ("FD %d: Response sent, transitioning back to STATE_REQ.",
-		conn->fd);
-      conn->state = STATE_REQ;
-      conn_set_epoll_events (conn, EPOLLIN);
+      // If we are still in STATE_RES but finished is true, it might be 
+      // because we just cleared one slot and more are coming, but 
+      // usually the internal while(true) in try_flush_buffer handles that.
+      break;
     }
 }
 
