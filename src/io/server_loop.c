@@ -138,8 +138,8 @@ accept_new_conn (int file_des, uint64_t now_us)
   conn->fd = connfd;
   conn->state = STATE_REQ;
   conn->rbuf_size = 0;
-  conn->wbuf_size = 0;
-  conn->wbuf_sent = 0;
+  conn->write_idx = 0;
+  conn->read_idx = 0;
   conn->last_events = 0;
   conn->idle_start = now_us;
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
