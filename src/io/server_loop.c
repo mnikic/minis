@@ -459,7 +459,7 @@ static bool
 process_received_data (Cache *cache, uint64_t now_us, Conn *conn,
 		       uint32_t bytes_read)
 {
-  uint32_t start_index = conn->rbuf_size;
+  uint32_t start_index = 0;
   conn->rbuf_size += bytes_read;
   assert (conn->rbuf_size <= sizeof (conn->rbuf));
 

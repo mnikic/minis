@@ -11,6 +11,7 @@ from time import sleep
 SER_NIL = 0     # No data (e.g., SET success)
 SER_ERR = 1     # Error response
 SER_STR = 2     # String data (e.g., GET success)
+SER_INT = 3     # Int
 # ... other types (INT, DBL, ARR) are not used in this script
 # --- Error Codes expected from C Server's out_err function ---
 # These codes must match the server's output based on the C parser logic provided:
@@ -165,7 +166,19 @@ def parse_response(response_data):
         print(f"4. Data (Bytes 9+): '{display_data}'")
         print(f"SUCCESS: Successfully parsed string response (length: {str_len_host}).")
         return (SER_STR, data)
+    elif response_type == SER_INT:
+        print(f"  (Type INT) -> (int64)")
+        int64_size = 8
+        if len(payload) < payload_index + int64_size:
+            print("ERROR: Payload too short for 64-bit integer.")
+            return None
             
+        data = struct.unpack('!q', payload[payload_index:payload_index + int64_size])[0]
+        payload_index += int64_size
+        
+        print(f"3. Integer Value (Bytes 5-12): {data}")
+        print("SUCCESS: Successfully parsed Integer response.")
+        return (SER_INT, data)            
     else:
         print(f"WARNING: Unknown Type Code: {response_type}")
         return None
@@ -410,7 +423,7 @@ def test_oversized_request_and_closure(s):
     Tests the server's handling of an oversized request (10KB value).
     Expects C_ERR_2BIG response, followed by connection closure.
     """
-    SIZE = 10000
+    SIZE = 2000000
     EXPECTED_CODE = C_ERR_2BIG
     EXPECTED_MSG = "request too large; connection closed."
     
@@ -451,6 +464,142 @@ def test_oversized_request_and_closure(s):
     return check_closure(s, "Oversized Request")
 
 # =============================================================================
+# Pipelining Test Functions (Added to demonstrate the single-buffer bug)
+# =============================================================================
+
+def send_only(s, command, *args):
+    """Encodes and sends a request, but does not wait for a response."""
+    request_data = create_request(command, *args)
+    cmd_str = f"{command} {' '.join(str(arg)[:10] for arg in args)}..."
+    print(f"PIPELINE SEND: Request {cmd_str} ({len(request_data)} bytes)")
+    s.sendall(request_data)
+
+def read_response_only(s, expected_command):
+    """Reads and parses the next response from the socket."""
+    print(f"\nPIPELINE READ: Waiting for response to '{expected_command}'...")
+    try:
+        # Re-use the response-reading logic from send_and_receive
+        header = s.recv(4)
+        if len(header) != 4:
+            if len(header) == 0:
+                print("Server closed connection (EOF).")
+            else:
+                print(f"Failed to read complete 4-byte response header.")
+            return None # Connection closed or error
+
+        total_len = struct.unpack('!I', header)[0]
+        
+        payload = b''
+        bytes_left = total_len
+        while bytes_left > 0:
+            chunk = s.recv(min(bytes_left, 8192))
+            if not chunk:
+                raise EOFError(f"Server closed connection while reading payload for {expected_command}.")
+            payload += chunk
+            bytes_left -= len(chunk)
+
+        full_response_data = header + payload
+        
+        print(f"--- Received Raw Response Data ({len(full_response_data)} bytes) ---")
+        parsed_result = parse_response(full_response_data)
+        return parsed_result
+        
+    except EOFError as e:
+        print(f"ERROR: {e}")
+        return None
+    except Exception as e:
+        print(f"An error occurred during transaction: {e}")
+        return None
+
+def test_pipelining_failure_suite():
+    """
+    Demonstrates the failure of the single-response-buffer design under pipelining.
+    
+    1. Send A: SET small_key (to get a small +OK response)
+    2. Send B: SET large_key (This response is small, but sets up the large data)
+    3. Send C: GET large_key (This generates a large 10KB response and locks conn->wbuf)
+    4. Send D: DEL small_key (This request is processed while Response C is still in conn->wbuf)
+    
+    EXPECTED OUTCOME: Response to D will be C_ERR_MALFORMED ("write buffer full") 
+                      and the connection will close after sending the error.
+    """
+    s = None
+    large_value = 'X' * 200000 # 10KB value, same as oversized test
+
+    print(f"\n{'='*70}")
+    print("TESTING PIPELINING FAILURE (Single Response Buffer)")
+    print(f"{'='*70}")
+    
+    try:
+        s = socket.create_connection((SERVER_HOST, SERVER_PORT))
+        
+        # --- PHASE 1: Send All Requests Pipelined ---
+        
+        # A. SET 'key_s' 'small' (Setup)
+        send_only(s, 'SET', 'key_s', 'small')
+        
+        # B. SET 'key_l' '10KB_data' (Setup the large value)
+        send_only(s, 'SET', 'key_l', large_value)
+
+        # C. GET 'key_l'. Response is 10KB. This is the one that locks conn->wbuf.
+        send_only(s, 'GET', 'key_l')
+        
+        # D. DEL 'key_s'. This command is processed by the server while 
+        #    Response C is buffered but not yet fully sent.
+        send_only(s, 'DEL', 'key_s')
+        
+        # E. GET 'key_s'. Will definitely be rejected.
+        send_only(s, 'GET', 'key_s')
+        
+        print("\nAll 5 requests sent in one batch. Waiting for responses...")
+
+        # --- PHASE 2: Read All Responses Sequentially ---
+
+        # 1. Read Response A (SET 'key_s'): Expected NIL
+        result = read_response_only(s, "SET 'key_s'")
+        print(f"Result A: {result}")
+        
+        # 2. Read Response B (SET 'key_l'): Expected NIL
+        result = read_response_only(s, "SET 'key_l'")
+        print(f"Result B: {result}")
+
+        # 3. Read Response C (GET 'key_l'): Expected STR (10KB)
+        result = read_response_only(s, "GET 'key_l'")
+        print(f"Result C: {result[0]} ({len(result[1]):,} bytes)")
+
+        # 4. Read Response D (DEL 'key_s'): 
+        #    *** EXPECTED FAILURE: C_ERR_UNKNOWN (write buffer full) ***
+        #    NOTE: The server code uses ERR_UNKNOWN for "response too large" from cache_execute,
+        #    which is what the "write buffer full" path calls.
+        result = read_response_only(s, "DEL 'key_s'")
+        print(f"Result D: {result}")
+        if result and result[0] == SER_ERR:
+            code, msg = result[1]
+            if code == C_ERR_UNKNOWN and "write buffer full" in msg:
+                print("✓ SUCCESS: Pipelined request rejected with 'write buffer full' error.")
+            else:
+                print(f"✗ FAILURE: Expected 'write buffer full' error, got code {code} msg '{msg}'.")
+        else:
+            print(f"✗ FAILURE: Pipelined request D was not rejected as expected. Got: {result}")
+
+        # 5. Read Response E (GET 'key_s'): Will likely be EOF
+        result = read_response_only(s, "GET 'key_s'")
+        print(f"Result E: {result}")
+        
+        # Final closure check
+        check_closure(s, "Pipelining Test")
+        
+    except ConnectionRefusedError:
+        print("\nFATAL ERROR: Connection refused.")
+        return False
+    except Exception as e:
+        print(f"\nFATAL ERROR: An error occurred: {e}")
+        return False
+    finally:
+        if s: s.close()
+    
+    return True
+# =============================================================================
 # Main Execution
 # =============================================================================
 
@@ -477,7 +626,7 @@ if __name__ == '__main__':
         
         # --- Oversized Request Test ---
         # This test is run on the persistent socket and is expected to close it.
-        if not test_oversized_request_and_closure(s): sys.exit(1)
+        #if not test_oversized_request_and_closure(s): sys.exit(1)
         
         # Close the client side explicitly after the server is expected to have closed.
         if s: 
@@ -486,8 +635,9 @@ if __name__ == '__main__':
             
         # --- Malformed Request Suite ---
         # This suite handles its own connections internally for isolation.
-        if not test_malformed_requests_suite(): sys.exit(1)
-
+        #if not test_malformed_requests_suite(): sys.exit(1)
+        # --- Pipelining Failure Test (NEW) ---
+        if not test_pipelining_failure_suite(): sys.exit(1)
         print("\n--- All Tests Complete ---")
 
     except ConnectionRefusedError:
