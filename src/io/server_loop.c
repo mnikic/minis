@@ -3,11 +3,12 @@
  *============================================================================
  * Name             : server_loop.c
  * Author           : Milos
- * Description      : Core networking logic (epoll event loop, connection handling).
+ * Description      : Server loop, connection handling.
  *============================================================================
  */
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,29 +27,15 @@
 #include <signal.h>
 
 #include "cache/cache.h"
+#include "connection_handler.h"
 #include "connections.h"
-#include "buffer.h"
 #include "common/common.h"
-#include "out.h"
 #include "server_loop.h"
 #include "list.h"
 
 #define MAX_EVENTS 10000
 #define MAX_CHUNKS 16
 #define K_IDLE_TIMEOUT_US 5000000
-
-enum
-{
-  RES_OK = 0, RES_ERR = 1, RES_NX = 2,
-};
-
-enum
-{
-  STATE_REQ = 0,
-  STATE_RES = 1,
-  STATE_RES_CLOSE = 2,		// Send response then close connection
-  STATE_END = 3,		// Mark the connection for deletion
-};
 
 static struct
 {
@@ -138,8 +125,8 @@ accept_new_conn (int file_des, uint64_t now_us)
   conn->fd = connfd;
   conn->state = STATE_REQ;
   conn->rbuf_size = 0;
-  conn->wbuf_size = 0;
-  conn->wbuf_sent = 0;
+  conn->write_idx = 0;
+  conn->read_idx = 0;
   conn->last_events = 0;
   conn->idle_start = now_us;
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
@@ -150,465 +137,7 @@ accept_new_conn (int file_des, uint64_t now_us)
   return connfd;
 }
 
-static void
-conn_set_epoll_events (Conn *conn, uint32_t events)
-{
-  if (conn->state == STATE_END || conn->last_events == events)
-    return;
-
-  struct epoll_event event;
-  event.data.fd = conn->fd;
-  event.events = events | EPOLLET;
-
-  if (epoll_ctl (g_data.epfd, EPOLL_CTL_MOD, conn->fd, &event) == -1)
-    {
-      if (errno == ENOENT)
-	return;
-      msgf ("epoll ctl: MOD failed: %s", strerror (errno));
-    }
-}
-
-// Sends an error response and marks the connection to close after sending.
-// WARNING: This discards any pending responses in the write buffer.
-static void
-dump_error_and_close (Conn *conn, int code, const char *str)
-{
-  DBG_LOGF ("FD %d: Sending error %d and closing: %s", conn->fd, code, str);
-
-  // Use small stack buffer for error messages (errors are always small)
-  Buffer err_buf = buf_init (conn->wbuf + 4, sizeof conn->wbuf - 4);
-
-  if (!out_err (&err_buf, code, str))
-    {
-      // If even the error won't fit, hard close
-      conn->state = STATE_END;
-      return;
-    }
-  size_t errlen = buf_len (&err_buf);
-  uint32_t nwlen = htonl ((uint32_t) errlen);
-
-  conn->wbuf_size = 0;
-  conn->wbuf_sent = 0;
-  memcpy (&conn->wbuf, &nwlen, 4);
-  conn->wbuf_size += 4 + errlen;
-  conn->state = STATE_RES_CLOSE;
-  conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
-}
-
-// Returns true on success, false on failure.
-// On failure, dump_error_and_close has already been called.
-static bool
-do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
-	    Buffer *out_buf, uint64_t now_us)
-{
-  if (reqlen < 4)
-    {
-      dump_error_and_close (conn, ERR_MALFORMED,
-			    "Request too short for argument count");
-      return false;
-    }
-
-  uint32_t num = 0;
-  memcpy (&num, &req[0], 4);
-  num = ntohl (num);
-
-  if (num > K_MAX_ARGS)
-    {
-      DBG_LOG ("too many arguments");
-      dump_error_and_close (conn, ERR_MALFORMED, "Too many arguments.");
-      return false;
-    }
-
-  if (num < 1)
-    {
-      dump_error_and_close (conn, ERR_MALFORMED,
-			    "Must have at least one argument (the command)");
-      return false;
-    }
-
-  // NON-COPY/IN-PLACE PARSING
-  //
-  // We will mess up the header of a next string temporarily because the next stage (cache)
-  // doesn't care about headers (it only cares about the actual strings).
-  // We will restore the messed up bytes at the end to avoid messing up buffer compaction etc.
-
-  // Allocate the array of pointers on the heap (small, size 'num'), but NOT the strings.
-  // The strings will be temporarily null-terminated inside the 'req' buffer.
-  char *cmd[K_MAX_ARGS];
-  // Stack arrays to store pointers and original characters for restoration
-  uint8_t *restore_ptrs[K_MAX_ARGS];
-  uint8_t restore_chars[K_MAX_ARGS];
-  size_t restore_count = 0;
-
-  size_t cmd_size = 0;
-  bool success = false;
-  size_t pos = 4;
-
-  while (num--)
-    {
-      if (pos + 4 > reqlen)
-	{
-	  dump_error_and_close (conn, ERR_MALFORMED,
-				"Argument count mismatch: missing length header");
-	  goto CLEANUP;
-	}
-
-      uint32_t siz = 0;
-      memcpy (&siz, &req[pos], 4);
-      siz = ntohl (siz);
-
-      if (pos + 4 + siz > reqlen)
-	{
-	  dump_error_and_close (conn, ERR_MALFORMED,
-				"Argument count mismatch: data length exceeds packet size");
-	  goto CLEANUP;
-	}
-
-      if (restore_count >= K_MAX_ARGS)
-	{
-	  dump_error_and_close (conn, ERR_MALFORMED,
-				"Too many arguments detected.");
-	  goto CLEANUP;
-	}
-
-      // Get the address of the byte immediately following the argument data.
-      uint8_t *null_term_loc = &req[pos + 4 + siz];
-
-      // Save the pointer and original character for restoration.
-      restore_ptrs[restore_count] = null_term_loc;
-      restore_chars[restore_count] = *null_term_loc;
-      restore_count++;
-
-      // Temporarily null-terminate the string in the read buffer.
-      *null_term_loc = '\0';
-
-      // Store the pointer to the argument data.
-      cmd[cmd_size] = (char *) &req[pos + 4];
-
-      cmd_size++;
-      pos += 4 + siz;
-    }
-
-  if (pos != reqlen)
-    {
-      dump_error_and_close (conn, ERR_MALFORMED,
-			    "Trailing garbage in request");
-      goto CLEANUP;
-    }
-
-  DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd,
-	    cmd_size);
-  success =
-    TIME_EXPR ("cache_execute",
-	       cache_execute (cache, cmd, cmd_size, out_buf, now_us));
-  // Execute the command. The command array pointers point directly into the read buffer.
-  if (!success)
-    {
-      msg ("cache couldn't write message, no space.");
-      dump_error_and_close (conn, ERR_UNKNOWN, "response too large");
-      conn->state = STATE_RES_CLOSE;
-      goto CLEANUP;
-    }
-
-  success = true;
-
-CLEANUP:
-  for (size_t i = 0; i < restore_count; i++)
-    {
-      // Restore the original character at the location we overwrote with '\0'
-      *restore_ptrs[i] = restore_chars[i];
-    }
-
-  return success;
-}
-
-// Executes the request and buffers the response directly into conn->wbuf.
-// Returns true on success, false on failure.
-static bool
-execute_and_buffer_response (Cache *cache, uint64_t now_us, Conn *conn,
-			     uint8_t *req_data, uint32_t req_len)
-{
-  if (conn->wbuf_size + 4 >= sizeof (conn->wbuf))
-    {
-      dump_error_and_close (conn, ERR_UNKNOWN, "write buffer full");
-      return false;
-    }
-  uint8_t *out_mem = conn->wbuf + conn->wbuf_size;
-  // OPTIMIZATION: Initialize the output buffer to start 4 bytes (sizeof uint32_t )
-  // into the raw output memory (out_mem). This reserves the first 4 bytes for the
-  // message length header, allowing 'cache_execute' to write the payload directly
-  // into its final destination so we can skip copying temporary buffer.
-  Buffer out_buf =
-    buf_init (out_mem + 4, sizeof conn->wbuf - conn->wbuf_size - 4);
-
-  bool success;
-  success =
-    TIME_EXPR ("do_request",
-	       do_request (cache, conn, req_data, req_len, &out_buf, now_us));
-  if (!success)
-    return false;
-
-  // Header Backfilling
-  size_t payload_len = buf_len (&out_buf);
-  uint32_t nwlen = htonl ((uint32_t) payload_len);
-  memcpy (out_mem, &nwlen, 4);
-
-  // Advance the wbuf_size index to accommodate all we've written
-  conn->wbuf_size += 4 + payload_len;
-
-  DBG_LOGF
-    ("FD %d: Buffered response of length %zu directly. wbuf_size now %zu.",
-     conn->fd, 4 + payload_len, conn->wbuf_size);
-
-  return true;
-}
-
-
-static bool
-try_one_request (Cache *cache, uint64_t now_us, Conn *conn,
-		 uint32_t *start_index)
-{
-  if (conn->rbuf_size < *start_index + 4)
-    return false;
-
-  uint32_t len = 0;
-  memcpy (&len, &conn->rbuf[*start_index], 4);
-  len = ntohl (len);
-
-  DBG_LOGF ("FD %d: Parsing request starting at index %u with length %u.",
-	    conn->fd, *start_index, len);
-
-  // Check against maximum message size
-  if (len > K_MAX_MSG)
-    {
-      msgf ("request too long %u", len);
-      dump_error_and_close (conn, ERR_2BIG,
-			    "request too large; connection closed.");
-      *start_index = conn->rbuf_size;
-      return false;
-    }
-
-  if (4 + len + *start_index > conn->rbuf_size)
-    return false;
-
-  bool success = execute_and_buffer_response (cache, now_us, conn,
-					      &conn->rbuf[*start_index + 4],
-					      len);
-
-  if (!success)
-    {
-      // Malformed request or response too large
-      // dump_error_and_close or error handling already set STATE_RES_CLOSE/STATE_END
-      *start_index += 4 + len;
-      msg
-	("request failed, or could not buffer response, stopping processing");
-      return false;
-    }
-
-  // Request succeeded
-  *start_index += 4 + len;
-  DBG_LOGF ("FD %d: Request processed, consumed %u bytes.", conn->fd,
-	    4 + len);
-
-  if (*start_index >= conn->rbuf_size)
-    {
-      // All data consumed, transition to sending response
-      conn->state = STATE_RES;
-      DBG_LOGF ("FD %d: RBuf fully consumed, transitioning to STATE_RES.",
-		conn->fd);
-      conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT);
-      return false;
-    }
-
-  return (conn->state == STATE_REQ);
-}
-
-static ssize_t
-read_data_from_socket (Conn *conn, size_t cap)
-{
-  ssize_t err;
-
-  do
-    {
-      err = read (conn->fd, &conn->rbuf[conn->rbuf_size], cap);
-    }
-  while (err < 0 && errno == EINTR);
-
-  if (err < 0)
-    {
-      if (errno == EAGAIN)
-	return -1;
-
-      msgf ("read() error: %s", strerror (errno));
-      conn->state = STATE_END;
-      return -2;
-    }
-
-  if (err == 0)
-    {
-      DBG_LOGF ("FD %d: EOF received, setting state to STATE_END.", conn->fd);
-      conn->state = STATE_END;
-      return -2;
-    }
-
-  DBG_LOGF ("FD %d: Read %zd bytes from socket.", conn->fd, err);
-  return err;
-}
-
-static bool
-process_received_data (Cache *cache, uint64_t now_us, Conn *conn,
-		       uint32_t bytes_read)
-{
-  uint32_t start_index = 0;
-  conn->rbuf_size += bytes_read;
-  assert (conn->rbuf_size <= sizeof (conn->rbuf));
-
-  int processed = 0;
-  while (try_one_request (cache, now_us, conn, &start_index))
-    {
-      if (++processed >= MAX_CHUNKS)
-	break;
-    }
-
-  // Buffer compaction
-  uint32_t remain = conn->rbuf_size - start_index;
-  if (remain)
-    memmove (conn->rbuf, &conn->rbuf[start_index], remain);
-
-  conn->rbuf_size = remain;
-
-  DBG_LOGF
-    ("FD %d: Processed %d requests. RBuf remaining: %u. New state: %d.",
-     conn->fd, processed, remain, conn->state);
-
-  // Check if state changed
-  if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE ||
-      conn->state == STATE_END)
-    return true;
-
-  if (processed >= MAX_CHUNKS)
-    return true;
-
-  return false;
-}
-
-static bool
-try_fill_buffer (Cache *cache, uint64_t now_us, Conn *conn)
-{
-  while (1)
-    {
-      size_t cap = sizeof (conn->rbuf) - conn->rbuf_size;
-
-      if (cap == 0)
-	{
-	  DBG_LOGF ("FD %d: RBuf full, transitioning to STATE_RES.",
-		    conn->fd);
-	  conn->state = STATE_RES;
-	  break;
-	}
-
-      ssize_t bytes_read = read_data_from_socket (conn, cap);
-
-      if (bytes_read == -2)
-	return true;		// Error or EOF
-
-      if (bytes_read == -1)
-	return false;		// EAGAIN
-
-      if (process_received_data (cache, now_us, conn, (uint32_t) bytes_read))
-	return true;
-    }
-
-  return true;
-}
-
-static void
-try_flush_buffer (Conn *conn)
-{
-  DBG_LOGF ("FD %d: Flushing WBuf (size %zu, sent %zu).",
-	    conn->fd, conn->wbuf_size, conn->wbuf_sent);
-
-  while (conn->wbuf_sent < conn->wbuf_size)
-    {
-      size_t remain = conn->wbuf_size - conn->wbuf_sent;
-      ssize_t err = send (conn->fd, &conn->wbuf[conn->wbuf_sent],
-			  remain, MSG_NOSIGNAL);
-      if (err < 0)
-	{
-	  if (errno == EINTR)
-	    continue;
-
-	  if (errno == EAGAIN)
-	    {
-	      DBG_LOGF ("FD %d: Send blocked (EAGAIN).", conn->fd);
-	      return;
-	    }
-
-	  msgf ("write() error: %s", strerror (errno));
-	  conn->state = STATE_END;
-	  return;
-	}
-
-      if (err == 0)
-	{
-	  msg ("write returned 0 unexpectedly");
-	  conn->state = STATE_END;
-	  return;
-	}
-
-      conn->wbuf_sent += (size_t) err;
-      DBG_LOGF ("FD %d: Sent %zd bytes. Total sent %zu.",
-		conn->fd, err, conn->wbuf_sent);
-    }
-
-  // Response fully sent
-  conn->wbuf_sent = 0;
-  conn->wbuf_size = 0;
-
-  if (conn->state == STATE_RES_CLOSE)
-    {
-      DBG_LOGF ("FD %d: Response sent, transitioning to STATE_END for close.",
-		conn->fd);
-      conn->state = STATE_END;
-      return;
-    }
-
-  if (conn->state == STATE_RES)
-    {
-      DBG_LOGF ("FD %d: Response sent, transitioning back to STATE_REQ.",
-		conn->fd);
-      conn->state = STATE_REQ;
-      conn_set_epoll_events (conn, EPOLLIN);
-    }
-}
-
-static void
-state_req (Cache *cache, uint64_t now_us, Conn *conn)
-{
-  DBG_LOGF ("FD %d: Entering STATE_REQ handler.", conn->fd);
-
-  while (try_fill_buffer (cache, now_us, conn))
-    {
-      if (conn->state != STATE_REQ)
-	break;
-    }
-
-  DBG_LOGF ("FD %d: Exiting STATE_REQ handler. New state: %d.",
-	    conn->fd, conn->state);
-}
-
-static void
-state_res (Conn *conn)
-{
-  while (1)
-    {
-      TIME_STMT ("try_flush_buffer", try_flush_buffer (conn));
-      if (conn->state != STATE_RES && conn->state != STATE_RES_CLOSE)
-	break;
-    }
-}
-
-static void
+static inline void
 conn_done (Conn *conn)
 {
   DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
@@ -648,11 +177,7 @@ connection_io (Cache *cache, Conn *conn, uint64_t now_us)
   dlist_detach (&conn->idle_list);
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
-  if (conn->state == STATE_REQ)
-    state_req (cache, now_us, conn);
-
-  if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE)
-    state_res (conn);
+  handle_connection_io (g_data.epfd, cache, conn, now_us);
 }
 
 static void
@@ -660,7 +185,7 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 {
   int epfd = g_data.epfd;
 
-  while (1)
+  while (true)
     {
       int conn_fd = accept_new_conn (listen_fd, now_us);
 
