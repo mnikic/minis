@@ -522,6 +522,84 @@ try_fill_buffer (Cache *cache, uint64_t now_us, Conn *conn)
   return true;
 }
 
+static bool try_flush_buffer(Conn *conn) {
+    if (conn->res_slots[conn->read_idx].actual_length == 0) {
+        return true; // Nothing to send, technically "finished"
+    }
+
+    while (true) {
+        ResponseSlot *slot = &conn->res_slots[conn->read_idx];
+        uint8_t *data_start = &conn->res_data[conn->read_idx * K_MAX_MSG];
+        
+        size_t total_to_send = slot->actual_length;
+        size_t remain = total_to_send - conn->res_sent;
+
+        ssize_t err = send(conn->fd, &data_start[conn->res_sent], remain, MSG_NOSIGNAL);
+        
+        if (err < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN) {
+                // Socket is full. Register for EPOLLOUT and stop looping.
+                conn_set_epoll_events(conn, EPOLLIN | EPOLLOUT);
+                return false; 
+            }
+            conn->state = STATE_END;
+            return false;
+        }
+
+        conn->res_sent += (size_t)err;
+
+        if (conn->res_sent == total_to_send) {
+            slot->actual_length = 0; 
+            conn->res_sent = 0;
+            conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
+            
+            // If the next slot is empty, we are fully caught up.
+            if (conn->res_slots[conn->read_idx].actual_length == 0) {
+                return true; 
+            }
+        } else {
+            // Partial write: the kernel accepted some data but not all.
+            // This is effectively the same as EAGAIN for our loop.
+            conn_set_epoll_events(conn, EPOLLIN | EPOLLOUT);
+            return false;
+        }
+    }
+}
+
+static void state_res(Conn *conn) {
+    while (1) {
+        // We call the flush. It returns true only if the buffer is now empty.
+        bool finished = false;
+        TIME_STMT("try_flush_buffer", finished = try_flush_buffer(conn));
+
+        // 1. If we hit a terminal state (END), stop.
+        if (conn->state == STATE_END) {
+            break;
+        }
+
+        // 2. If we are blocked (not finished), stop the loop and wait for epoll.
+        if (!finished) {
+            break;
+        }
+
+        // 3. If we finished flushing everything, handle transitions.
+        if (conn->state == STATE_RES_CLOSE) {
+            conn->state = STATE_END;
+            break;
+        } else if (conn->state == STATE_RES) {
+            conn->state = STATE_REQ;
+            conn_set_epoll_events(conn, EPOLLIN);
+            break;
+        }
+        
+        // If we are still in STATE_RES but finished is true, it might be 
+        // because we just cleared one slot and more are coming, but 
+        // usually the internal while(true) in try_flush_buffer handles that.
+        break; 
+    }
+}
+
 static void
 try_flush_buffer (Conn *conn)
 {
@@ -595,17 +673,6 @@ state_req (Cache *cache, uint64_t now_us, Conn *conn)
 
   DBG_LOGF ("FD %d: Exiting STATE_REQ handler. New state: %d.",
 	    conn->fd, conn->state);
-}
-
-static void
-state_res (Conn *conn)
-{
-  while (1)
-    {
-      TIME_STMT ("try_flush_buffer", try_flush_buffer (conn));
-      if (conn->state != STATE_RES && conn->state != STATE_RES_CLOSE)
-	break;
-    }
 }
 
 static void
