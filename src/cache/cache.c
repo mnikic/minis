@@ -420,14 +420,14 @@ do_zquery (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
       if (buf_len (out) > 0 && buf_data (out)[0] == SER_NIL)
 	{
 	  buf_clear (out);
-	  return out_arr (out, (uint32_t) 0);
+	  return out_arr (out, 0);
 	}
       return true;
     }
 
   if (limit <= 0)
     {
-      return out_arr (out, (uint32_t) 0);
+      return out_arr (out, 0);
     }
   ZNode *znode = zset_query (ent->zset, score, cmd[3], strlen (cmd[3]));
   znode = znode_offset (znode, offset);
@@ -600,7 +600,7 @@ do_get (Cache *cache, char *key_param, Buffer *out, uint64_t now_us)
 static bool
 do_mget (Cache *cache, char **cmd, size_t nkeys, Buffer *out, uint64_t now_us)
 {
-  if (!out_arr (out, (uint32_t) nkeys))
+  if (!out_arr (out, nkeys))
     {
       // If the header itself cannot be written, fail immediately.
       return false;

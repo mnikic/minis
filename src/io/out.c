@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -171,7 +172,7 @@ out_err (Buffer *out, int32_t code, const char *msg)
  * @return bool True on success, False if buffer overflow occurs.
  */
 bool
-out_arr (Buffer *out, uint32_t num)
+out_arr (Buffer *out, size_t num)
 {
   // Check space for: 1 byte (SER_ARR) + 4 bytes (Count)
   if (!buf_has_space (out, 1 + sizeof (uint32_t)))
@@ -179,7 +180,7 @@ out_arr (Buffer *out, uint32_t num)
 
   // Space guaranteed, append without further checks
   buf_append_byte (out, SER_ARR);
-  buf_append_u32 (out, num);
+  buf_append_u32 (out, (uint32_t) num);
 
   return true;
 }
@@ -214,7 +215,7 @@ out_arr_begin (Buffer *out)
  * @return bool True on success, False on invalid position or state.
  */
 bool
-out_arr_end (Buffer *out, size_t pos, uint32_t num)
+out_arr_end (Buffer *out, size_t pos, size_t num)
 {
   // Validation checks remain the same as this is a patching operation, not an append.
   if (!out || pos == 0 || (pos + sizeof (uint32_t) > buf_len (out)))
@@ -232,7 +233,7 @@ out_arr_end (Buffer *out, size_t pos, uint32_t num)
 
   // Patch in the actual count
   // Must convert to Network Byte Order (Big-Endian) manually for memcpy
-  uint32_t n_net = hton_u32 (num);
+  uint32_t n_net = hton_u32 ((uint32_t) num);
 
   memcpy (&data[pos], &n_net, sizeof (uint32_t));
   return true;
