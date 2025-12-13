@@ -603,7 +603,9 @@ try_flush_buffer (int epfd, Conn *conn)
             .iov_len = remain
         };
         
-        struct msghdr message = { .msg_iov = &iov, .msg_iovlen = 1, /* ... */ };
+        struct msghdr message = { 0 };
+        message.msg_iov = &iov;
+        message.msg_iovlen = 1;
 
         ssize_t err = sendmsg(conn->fd, &message, MSG_DONTWAIT | MSG_ZEROCOPY | MSG_NOSIGNAL);
 
