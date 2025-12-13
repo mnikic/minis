@@ -159,6 +159,7 @@ accept_new_conn (int file_des, uint64_t now_us)
   conn->read_idx = 0;
   conn->last_events = 0;
   conn->idle_start = now_us;
+  dlist_init (&conn->idle_list);
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   connpool_add (g_data.fd2conn, conn);
@@ -205,20 +206,14 @@ connection_io (Cache *cache, Conn *conn, uint64_t now_us)
 {
     handle_connection_io (g_data.epfd, cache, conn, now_us);
 
-    // CRITICAL: Only mark as idle *after* all processing is complete and the state is STATE_REQ.
-    // If STATE_REQ is reached, it means we are now waiting for the client.
     if (conn->state == STATE_REQ) {
         conn->idle_start = get_monotonic_usec ();
-        dlist_detach (&conn->idle_list); // Should already be detached, but safe
+        dlist_detach (&conn->idle_list);
+
         dlist_insert_before (&g_data.idle_list, &conn->idle_list);
     } else {
-        // If we are in STATE_RES (sending), ensure we are NOT in the idle list.
-        // This makes next_timer_ms ignore this connection.
         dlist_detach (&conn->idle_list);
     }
-  conn->idle_start = now_us;
-  dlist_detach (&conn->idle_list);
-  dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 }
 
 static void
