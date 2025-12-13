@@ -313,7 +313,7 @@ conn_set_epoll_events (Conn *conn, uint32_t events)
 // Sends an error response and marks the connection to close after sending.
 // WARNING: This discards any pending responses in the write buffers.
 static void
-dump_error_and_close (int epfd, Conn *conn, const int code, const char *str)
+dump_error_and_close ( Conn *conn, const int code, const char *str)
 {
   DBG_LOGF ("FD %d: Sending error %d and closing: %s", conn->fd, code, str);
 
@@ -333,10 +333,10 @@ dump_error_and_close (int epfd, Conn *conn, const int code, const char *str)
   uint32_t nwlen = htonl ((uint32_t) err_payload_len);
   memcpy (slot_mem, &nwlen, 4);
 
-  conn->res_slots[w_idx].actual_length = 4 + err_payload_len;
+  conn->res_slots[w_idx].actual_length = (uint32_t)(4 + err_payload_len);
   conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
   conn->state = STATE_RES_CLOSE;
-  conn_set_epoll_events (epfd, conn, EPOLLIN | EPOLLOUT);
+  conn_set_epoll_events ( conn, EPOLLIN | EPOLLOUT);
 }
 
 // Returns true on success, false on failure.
@@ -467,85 +467,110 @@ CLEANUP:
 }
 
 static bool
-try_one_request (Cache *cache, Conn *conn, uint32_t *start_index)
+try_one_request (int epfd, Cache *cache, Conn *conn)
 {
-  if (conn->rbuf_size < *start_index + 4)
-    return false;
+    // Rework Note: We are now passing conn->read_offset directly 
+    // instead of using a pointer 'start_index'. The caller (process_received_data) 
+    // will now use conn->read_offset as its loop variable.
 
-  uint32_t len = 0;
-  memcpy (&len, &conn->rbuf[*start_index], 4);
-  len = ntohl (len);
-
-  DBG_LOGF ("FD %d: Parsing request starting at index %u with length %u.",
-        conn->fd, *start_index, len);
-
-  // Check against maximum message size
-  if (len > K_MAX_MSG)
+    // 1. Pipelining Check: Stop parsing if the response queue is full.
+    if (is_res_queue_full (conn))
     {
-      msgf ("request too long %u", len);
-      dump_error_and_close (conn, ERR_2BIG,
-                "request too large; connection closed.");
-      *start_index = conn->rbuf_size;
-      return false;
+        DBG_LOGF ("FD %d: Response queue full. Pausing request parsing.", conn->fd);
+        // Ensure EPOLLOUT and EPOLLERR are set to drain the response queue
+        conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT | EPOLLERR);
+        return false;
     }
 
-  if (4 + len + *start_index > conn->rbuf_size)
-    return false;
+    size_t bytes_remain = conn->rbuf_size - conn->read_offset;
 
-  // 1. Setup response buffer pointing to conn->wbuf
-  Buffer out_buf = buf_init (conn->wbuf + 4, sizeof conn->wbuf - 4);
+    // Check for length prefix (4 bytes)
+    if (bytes_remain < 4)
+        return false;
 
-  // 2. Execute the request
-  bool success = do_request (cache, conn,
-                          &conn->rbuf[*start_index + 4],
-                          len,
-                          &out_buf);
+    uint32_t len = 0;
+    // Read length prefix from current offset
+    memcpy (&len, &conn->rbuf[conn->read_offset], 4); 
+    len = ntohl (len);
 
-  // Request succeeded
-  if (success)
+    DBG_LOGF ("FD %d: Parsing request starting at offset %u with length %u.",
+              conn->fd, conn->read_offset, len);
+
+    // Check against maximum message size
+    if (len > K_MAX_MSG)
     {
-      size_t reslen = buf_len (&out_buf);
-      uint32_t nwlen = htonl ((uint32_t) reslen);
-
-      // Finalize wbuf with length prefix
-      conn->wbuf_size = 0;
-      memcpy (&conn->wbuf, &nwlen, 4);
-      conn->wbuf_size += 4 + reslen;
-      
-      // 3. Hand off the response data from wbuf to the in-flight queue
-      if (!hand_off_response(conn)) {
-          // hand_off_response sets STATE_END on memory failure
-          success = false;
-      }
+        msgf ("request too long %u", len);
+        dump_error_and_close (conn, ERR_2BIG, "request too large; connection closed.");
+        // Consume the whole buffer on error to prevent re-parsing the bad data
+        conn->read_offset = conn->rbuf_size; 
+        return false;
     }
 
-  if (!success)
+    size_t total_req_len = 4 + len;
+    
+    // Check if the entire request is in the buffer
+    if (total_req_len > bytes_remain)
+        return false;
+
+    // --- NEW RESPONSE BUFFERING SETUP (Using Ring Buffer) ---
+    uint32_t w_idx = conn->write_idx;
+    uint8_t *slot_mem_data = 
+        &conn->res_data[(size_t) (w_idx * K_MAX_MSG)];
+    
+    // The Buffer structure will only operate on the payload area of the slot
+    Buffer out_buf = buf_init (slot_mem_data + 4, K_MAX_MSG - 4);
+    
+    // 2. Execute the request (do_request writes payload into out_buf)
+    bool success = do_request (cache, conn,
+                             &conn->rbuf[conn->read_offset + 4], // Request payload
+                             len,
+                             &out_buf);
+
+    // --- NEW RESPONSE FINALIZATION (No Hand-Off/Copy Required) ---
+    if (success)
     {
-      // Malformed request or response too large (dump_error_and_close handles state)
-      *start_index += 4 + len;
-      msg
-    ("request failed, or could not buffer response, stopping processing");
-      return false;
+        size_t reslen = buf_len (&out_buf); // Actual size of payload written
+        uint32_t nwlen = htonl ((uint32_t) reslen);
+
+        // Finalize the response slot with the length prefix
+        memcpy (slot_mem_data, &nwlen, 4); 
+        
+        // Mark the ResponseSlot as ready for sending
+        ResponseSlot *slot = &conn->res_slots[w_idx];
+        slot->actual_length = 4 + (uint32_t)reslen;
+        slot->sent = 0;
+        slot->pending_ops = 0; // Ready for MSG_ZEROCOPY send
+        
+        // Advance the write index
+        conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
+        
+        // Update state to RES if we are not already sending
+        if (conn->state == STATE_REQ) {
+            conn->state = STATE_RES;
+            // Ensure EPOLLOUT and EPOLLERR are set for response draining
+            conn_set_epoll_events ( conn, EPOLLIN | EPOLLOUT | EPOLLERR);
+        }
+    }
+    
+    // 3. Consume the Request Data
+    conn->read_offset += total_req_len; 
+
+    if (!success)
+    {
+        // Malformed request or response too large (dump_error_and_close handles state)
+        // Since the state machine is now responsible for compaction/reset, we just
+        // let the offset stick, and the next call to process_received_data will
+        // either consume the rest of the buffer (if error forced offset advance) 
+        // or break the loop.
+        msg("request failed, stopping processing.");
+        return false; 
     }
 
-  // Request succeeded
-  *start_index += 4 + len;
-  DBG_LOGF ("FD %d: Request processed, consumed %u bytes.", conn->fd,
-        4 + len);
+    DBG_LOGF ("FD %d: Request processed, consumed %u bytes.", conn->fd, 4 + len);
 
-  if (*start_index >= conn->rbuf_size)
-    {
-      // All data consumed, transition to sending response
-      conn->state = STATE_RES;
-      DBG_LOGF ("FD %d: RBuf fully consumed, transitioning to STATE_RES.",
-        conn->fd);
-      // Must call state_res here to immediately try flushing the response we just queued
-      conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT | EPOLLERR);
-      state_res(conn);
-      return false;
-    }
-
-  return (conn->state == STATE_REQ);
+    // Continue processing if the connection is still in a request state
+    // (i.e., not forced to close due to error).
+    return (conn->state == STATE_REQ || conn->state == STATE_RES);
 }
 
 static ssize_t
@@ -708,7 +733,7 @@ try_flush_buffer (int epfd, Conn *conn)
 
         if (err < 0) {
             if (errno == EAGAIN) {
-                conn_set_epoll_events (epfd, conn, EPOLLIN | EPOLLOUT | EPOLLERR);
+                conn_set_epoll_events ( conn, EPOLLIN | EPOLLOUT | EPOLLERR);
                 return false; // Stop due to EWOULDBLOCK
             }
             // Handle fatal error (sets STATE_END)
@@ -742,7 +767,7 @@ try_flush_buffer (int epfd, Conn *conn)
         conn->state = STATE_END;
     } else if (conn->state == STATE_RES) {
         conn->state = STATE_REQ;
-        conn_set_epoll_events (epfd, conn, EPOLLIN); // Stop listening for OUT/ERR
+        conn_set_epoll_events ( conn, EPOLLIN); // Stop listening for OUT/ERR
         // Idle list management is now in state_res caller (connection_io)
     }
 
