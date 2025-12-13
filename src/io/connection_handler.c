@@ -51,7 +51,6 @@
 #include "out.h"
 
 
-// NEW HELPER FUNCTION: Read zerocopy completions from the error queue
 // Returns true if a zerocopy completion was processed, false otherwise.
 static bool
 try_check_zerocopy_completion (Conn *conn)

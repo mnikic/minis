@@ -252,38 +252,32 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 
 static void
 handle_connection_event (Cache *cache, struct epoll_event *event,
-			 uint64_t now_us)
+      uint64_t now_us)
 {
- Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
- if (!conn)
- return;
+Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
+if (!conn)
+return;
 
- DBG_LOGF ("FD %d: Handling epoll event (events: 0x%x). State: %d",
- event->data.fd, event->events, conn->state);
+DBG_LOGF ("FD %d: Handling epoll event (events: 0x%x). State: %d",
+event->data.fd, event->events, conn->state);
 
- // If EPOLLHUP or EPOLLRDHUP, or if any event is detected while waiting for zero-copy
-    // completion, let connection_io run. It will check for completions (if EPOLLERR is set)
-    // and handle state transitions and normal I/O.
-    
-    // Check for fatal errors (HUP/RDHUP) first
-    if (event->events & (EPOLLHUP | EPOLLRDHUP))
-    {
-        DBG_LOGF ("FD %d: Hangup/Error detected (0x%x). Closing.",
-                 event->data.fd, event->events);
-        conn->state = STATE_END;
-        conn_done (conn);
-        return;
-    }
+// Check for fatal errors (HUP/RDHUP) first
+  if (event->events & (EPOLLHUP | EPOLLRDHUP))
+  {
+    DBG_LOGF ("FD %d: Hangup/Error detected (0x%x). Closing.",
+        event->data.fd, event->events);
+    conn->state = STATE_END;
+    conn_done (conn);
+    return;
+  }
 
-    // Call connection_io regardless of what events we got (IN, OUT, ERR),
-    // as ERR contains the zero-copy completion, and IN/OUT are standard I/O.
-    // connection_io contains the logic to run try_flush_buffer which in turn
-    // calls try_check_zerocopy_completion when needed.
-  if (event->events & (EPOLLIN | EPOLLOUT))
-    TIME_STMT ("connection_io", connection_io (cache, conn, now_us));
+  // CRITICAL CHANGE: We MUST check for EPOLLERR (Zero-Copy Completion)
+  // as well as EPOLLIN (read) and EPOLLOUT (write).
+  if (event->events & (EPOLLIN | EPOLLOUT | EPOLLERR)) // <-- Change is here
+   TIME_STMT ("connection_io", connection_io (cache, conn, now_us));
 
- if (conn->state == STATE_END)
- conn_done (conn);
+if (conn->state == STATE_END)
+conn_done (conn);
 }
 
 static void
