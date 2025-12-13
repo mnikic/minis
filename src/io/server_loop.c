@@ -88,6 +88,12 @@ static struct
   volatile sig_atomic_t terminate_flag;
 } g_data;
 
+static inline bool
+is_res_queue_full (Conn *conn)
+{
+  return ((conn->write_idx + 1) % K_SLOT_COUNT) == conn->read_idx;
+}
+
 static void
 state_res (Conn *conn);
 // NEW HELPER FUNCTION: Read zerocopy completions from the error queue
@@ -467,7 +473,7 @@ CLEANUP:
 }
 
 static bool
-try_one_request (int epfd, Cache *cache, Conn *conn)
+try_one_request (Cache *cache, Conn *conn)
 {
     // Rework Note: We are now passing conn->read_offset directly 
     // instead of using a pointer 'start_index'. The caller (process_received_data) 
@@ -613,7 +619,7 @@ process_received_data (Cache *cache, Conn *conn, uint32_t bytes_read)
   assert (conn->rbuf_size <= sizeof (conn->rbuf));
 
   int processed = 0;
-  while (try_one_request (cache, conn, &start_index))
+  while (try_one_request (cache, conn))
     {
       if (++processed >= MAX_CHUNKS)
 	break;
@@ -672,22 +678,10 @@ try_fill_buffer (Cache *cache, Conn *conn)
 }
 
 static bool
-try_flush_buffer (int epfd, Conn *conn)
-{
-    // *** 1. Check for zerocopy completions (Always first) ***
-    // NOTE: If you keep try_check_zerocopy_completion in server_loop.c, 
-    // you must pass the completion information back here to update the slots.
-    // For now, let's assume it still operates on the old in_flight_list, 
-    // which MUST be replaced with logic to update the ResponseSlot (see next step).
-    // Let's assume you have modified the original try_check_zerocopy_completion
-    // to work with a linked list of *pointers to* the slots.
-    
-    // For simplicity, let's keep the error queue logic external for now, 
-    // but its effect must be reflected on the ResponseSlots. 
-    // We will focus on the send part first.
-    
+try_flush_buffer (Conn *conn)
+{ 
     // Assume: try_check_zerocopy_completion has been called via EPOLLERR handler
-
+    while (try_check_zerocopy_completion (conn)) {}
     while (true) 
     {
         ResponseSlot *slot = &conn->res_slots[conn->read_idx];
@@ -742,7 +736,7 @@ try_flush_buffer (int epfd, Conn *conn)
         }
         
         // Update state
-        slot->sent += (size_t) err;
+        slot->sent += (uint32_t) err;
         slot->pending_ops++; // One more operation waiting for completion
         
         DBG_LOGF("FD %d: Sent %zd bytes on slot %u with ZEROCOPY (sent: %u/%u, pending: %u).",
