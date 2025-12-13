@@ -477,7 +477,7 @@ read_data_from_socket (Conn *conn, size_t cap)
       return -2;
     }
 
-  DBG_LOGF ("FD %d: Read %zd bytes from socket.", conn->fd, err);
+  DBG_LOGF ("FD %d: Read %zd bytes from socket.", conn->fd, ret_val);
   return ret_val;
 }
 
