@@ -743,14 +743,9 @@ try_flush_buffer (Conn *conn)
                   conn->fd, err, conn->read_idx, slot->sent, slot->actual_length, slot->pending_ops);
         
         // If fully sent, we must stop and wait for completions before advancing to the next slot.
-        if (slot->sent == slot->actual_length) {
-            // The slot is fully sent. We wait for EPOLLERR completion(s).
-            return false;
-        }
 
         // If partially sent, we continue the loop, relying on the kernel to give us EPOLLOUT 
         // later, or we stop now (typical ET logic). Let's return false to wait for EPOLLOUT.
-        return false;
     }
 
     // --- State Transition when send queue is empty ---
