@@ -29,9 +29,11 @@
 #define DEFAULT_PORT 1234
 
 // Max size of a single request message (payload data after the 4-byte length prefix).
-// Currently at 8KB (8192 bytes) to accommodate larger commands.
 // This must be consistent between the client and the server's read buffer capacity.
 #define K_MAX_MSG (1024 * 1024)
+// Number of slots in the ring buffer (e.g., 16 total slots)
+#define K_SLOT_COUNT    16
+
 #define K_MAX_ARGS 2048
 #define K_MAX_KEY 42
 #define K_MAX_VAL (1024 * 7)
@@ -44,8 +46,6 @@
     /* byte-level arithmetic is safe and avoids integer cast warnings. */    \
     (type *)((char *)__mptr - offsetof(type, member));                      \
 })
-
-uint64_t get_monotonic_usec (void);
 
 #ifdef DEBUG_LOGGING
     // If DEBUG_LOGGING is defined, the macros call the implementation functions.
@@ -62,11 +62,21 @@ void msgf (const char *fmt, ...);
 void msg (const char *msg);
 
 #ifdef K_ENABLE_BENCHMARK
+#include <time.h>
+
 static uint64_t req_count;
 static uint64_t do_request_us;
 static uint64_t cache_execute_us;
 static uint64_t try_flush_buffer_us;
 static uint64_t connection_io_us;
+
+static inline uint64_t
+get_time_usec (void)
+{
+  struct timespec tvs = { 0, 0 };
+  clock_gettime (CLOCK_MONOTONIC, &tvs);
+  return (uint64_t) ((tvs.tv_sec * 1000000) + (tvs.tv_nsec / 1000));
+}
 
 static inline void
 record_time (const char *label, uint64_t micros)
@@ -81,11 +91,11 @@ record_time (const char *label, uint64_t micros)
     }
   else if (strcmp (label, "try_flush_buffer") == 0)
     {
-       try_flush_buffer_us += micros;
+      try_flush_buffer_us += micros;
     }
   else if (strcmp (label, "connection_io") == 0)
     {
-        connection_io_us += micros;
+      connection_io_us += micros;
     }
   else
     msgf ("unknown label is %s, %u", label, micros);
@@ -103,9 +113,9 @@ dump_stats (void)
 }
 
 #define TIME_EXPR(label, expr) __extension__ ({\
-  uint64_t __start = get_monotonic_usec ();  \
+  uint64_t __start = get_time_usec ();  \
   __auto_type __ret = (expr);\
-  record_time(label,get_monotonic_usec () - __start);\
+  record_time(label,get_time_usec () - __start);\
   __ret; \
 })
 #define TIME_STMT(label, stmt) __extension__ ({\

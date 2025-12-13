@@ -12,6 +12,7 @@
 #include "hashtable.h"
 #include "heap.h"
 #include "thread_pool.h"
+#include <stdint.h>
 
 typedef struct
 {
@@ -28,7 +29,7 @@ typedef struct
 Cache *cache_init (void);
 void cache_evict (Cache * cache, uint64_t now_us);
 uint64_t cache_next_expiry (Cache * cache);
-bool cache_execute (Cache * cache, char **cmd, size_t size, Buffer * out);
+bool cache_execute (Cache * cache, char **cmd, size_t size, Buffer * out, uint64_t now_us);
 void cache_free (Cache * cache);
 
 #endif /* CACHE_H */

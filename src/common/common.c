@@ -26,15 +26,6 @@ str_hash (const uint8_t *data, size_t len)
   return seed;
 }
 
-uint64_t
-get_monotonic_usec (void)
-{
-  struct timespec tvs = { 0, 0 };
-  clock_gettime (CLOCK_MONOTONIC, &tvs);
-  return (uint64_t) ((tvs.tv_sec * 1000000) + (tvs.tv_nsec / 1000));
-}
-
-
 __attribute__((format (printf, 1, 2)))
      void msgf (const char *fmt, ...)
 {

@@ -68,7 +68,7 @@ entry_del_async (void *arg)
 
 // set or remove the TTL
 static void
-entry_set_ttl (Cache *cache, Entry *ent, int64_t ttl_ms)
+entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
 {
   if (ttl_ms < 0 && ent->heap_idx != (size_t) -1)
     {
@@ -79,8 +79,7 @@ entry_set_ttl (Cache *cache, Entry *ent, int64_t ttl_ms)
     }
   else if (ttl_ms >= 0)
     {
-      uint64_t new_expire_at_us =
-	get_monotonic_usec () + (uint64_t) (ttl_ms * 1000);
+      uint64_t new_expire_at_us = now_us + (uint64_t) (ttl_ms * 1000);
       ent->expire_at_us = new_expire_at_us;
 
       size_t pos = ent->heap_idx;
@@ -102,10 +101,10 @@ entry_set_ttl (Cache *cache, Entry *ent, int64_t ttl_ms)
 }
 
 static void
-entry_del (Cache *cache, Entry *ent)
+entry_del (Cache *cache, Entry *ent, uint64_t now_us)
 {
   // Ensure TTL is removed from the heap and expire_at_us is set to 0.
-  entry_set_ttl (cache, ent, -1);
+  entry_set_ttl (cache, now_us, ent, -1);
 
   const size_t k_large_container_size = 10000;
   bool too_big = false;
@@ -230,7 +229,7 @@ str2int (const char *string, int64_t *out)
  */
 static bool
 expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
-	     bool *is_valid_zset)
+	     bool *is_valid_zset, uint64_t now_us)
 {
   *is_valid_zset = false;
 
@@ -248,8 +247,6 @@ expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
 
   if ((*ent)->expire_at_us != 0)
     {
-      const uint64_t now_us = get_monotonic_usec ();
-
       if ((*ent)->expire_at_us < now_us)
 	{
 	  // Key is expired. Perform passive eviction.
@@ -257,7 +254,7 @@ expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
 	    hm_pop (&cache->db, &(*ent)->node, &hnode_same);
 	  assert (removed_node == &(*ent)->node);
 
-	  entry_del (cache, *ent);
+	  entry_del (cache, *ent, now_us);
 	  *ent = NULL;
 
 	  return out_nil (out);
@@ -336,13 +333,13 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
 
 // zrem zset name
 static bool
-do_zrem (Cache *cache, char **cmd, Buffer *out)
+do_zrem (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 {
   Entry *ent = NULL;
   bool is_valid_zset;
 
   // expect_zset handles lookup, passive expiration check, and type check
-  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
+  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset, now_us))
     {
       return false;		// Buffer write failure (backpressure)
     }
@@ -362,13 +359,13 @@ do_zrem (Cache *cache, char **cmd, Buffer *out)
 
 // zscore zset name
 static bool
-do_zscore (Cache *cache, char **cmd, Buffer *out)
+do_zscore (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 {
   Entry *ent = NULL;
   bool is_valid_zset;
 
   // expect_zset handles lookup, passive expiration check, and type check
-  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
+  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset, now_us))
     {
       return false;		// Buffer write failure (backpressure)
     }
@@ -383,15 +380,12 @@ do_zscore (Cache *cache, char **cmd, Buffer *out)
     {
       return out_dbl (out, znode->score);
     }
-  else
-    {
-      return out_nil (out);
-    }
+  return out_nil (out);
 }
 
 // zquery zset score name offset limit
 static bool
-do_zquery (Cache *cache, char **cmd, Buffer *out)
+do_zquery (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 {
 // parse args
   double score = 0;
@@ -414,7 +408,7 @@ do_zquery (Cache *cache, char **cmd, Buffer *out)
   bool is_valid_zset;
 
   // expect_zset handles lookup, passive expiration check, and type check
-  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset))
+  if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset, now_us))
     {
       return false;		// Buffer write failure (backpressure)
     }
@@ -426,14 +420,14 @@ do_zquery (Cache *cache, char **cmd, Buffer *out)
       if (buf_len (out) > 0 && buf_data (out)[0] == SER_NIL)
 	{
 	  buf_clear (out);
-	  return out_arr (out, (uint32_t) 0);
+	  return out_arr (out, 0);
 	}
       return true;
     }
 
   if (limit <= 0)
     {
-      return out_arr (out, (uint32_t) 0);
+      return out_arr (out, 0);
     }
   ZNode *znode = zset_query (ent->zset, score, cmd[3], strlen (cmd[3]));
   znode = znode_offset (znode, offset);
@@ -458,7 +452,7 @@ do_zquery (Cache *cache, char **cmd, Buffer *out)
 }
 
 static bool
-do_keys (Cache *cache, char **cmd, Buffer *out)
+do_keys (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 {
   (void) cmd;
 
@@ -467,7 +461,8 @@ do_keys (Cache *cache, char **cmd, Buffer *out)
   if (idx == 0)
     return false;
 
-  ScanContext ctx = {.out = out,.count = 0,.now_us = get_monotonic_usec () };
+  ScanContext ctx = {.out = out,.count = 0 };
+  ctx.now_us = now_us;
 
   // We cannot stop the scan if a write fails, but the subsequent calls will
   // also fail, and the final count will be accurate.
@@ -478,7 +473,7 @@ do_keys (Cache *cache, char **cmd, Buffer *out)
 }
 
 static bool
-do_del (Cache *cache, char **cmd, Buffer *out)
+do_del (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 {
   Entry key;
   key.key = cmd[1];
@@ -489,7 +484,7 @@ do_del (Cache *cache, char **cmd, Buffer *out)
     {
       Entry *entry = fetch_entry (node);
       // entry_del handles heap removal and asynchronous destruction
-      entry_del (cache, entry);
+      entry_del (cache, entry, now_us);
     }
   return out_int (out, node ? 1 : 0);
 }
@@ -551,7 +546,7 @@ do_set (Cache *cache, char **cmd, Buffer *out)
 }
 
 static bool
-do_get (Cache *cache, char *key_param, Buffer *out)
+do_get (Cache *cache, char *key_param, Buffer *out, uint64_t now_us)
 {
   Entry key;
   key.key = key_param;
@@ -572,15 +567,13 @@ do_get (Cache *cache, char *key_param, Buffer *out)
   // Check against the timestamp stored directly in the entry.
   if (ent->expire_at_us != 0)
     {
-      const uint64_t now_us = get_monotonic_usec ();
-
       if (ent->expire_at_us < now_us)
 	{
 	  // Key is expired. Initiate passive eviction (the garbage collector role).
 	  HNode *removed_node = hm_pop (&cache->db, &ent->node, &hnode_same);
 	  assert (removed_node == &ent->node);
 
-	  entry_del (cache, ent);	// Handles heap removal and async cleanup
+	  entry_del (cache, ent, now_us);	// Handles heap removal and async cleanup
 	  return out_nil (out);	// Key is deleted, return NIL.
 	}
     }
@@ -605,9 +598,9 @@ do_get (Cache *cache, char *key_param, Buffer *out)
  * was successfully written; false otherwise (buffer exhausted).
  */
 static bool
-do_mget (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
+do_mget (Cache *cache, char **cmd, size_t nkeys, Buffer *out, uint64_t now_us)
 {
-  if (!out_arr (out, (uint32_t) nkeys))
+  if (!out_arr (out, nkeys))
     {
       // If the header itself cannot be written, fail immediately.
       return false;
@@ -620,7 +613,7 @@ do_mget (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
       // do_get will write either the value (Bulk String) or (NIL) 
       // to the output buffer 'out'.
       // It returns false only if the output buffer fills up during the write.
-      if (!do_get (cache, cmd[i + 1], out))
+      if (!do_get (cache, cmd[i + 1], out, now_us))
 	{
 	  // FAIL-FAST: If writing the result of the current key failed, 
 	  // the buffer is exhausted and the response is incomplete. 
@@ -634,7 +627,7 @@ do_mget (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
 }
 
 static bool
-do_expire (Cache *cache, char **cmd, Buffer *out)
+do_expire (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 {
   int64_t ttl_ms = 0;
   if (!str2int (cmd[2], &ttl_ms))
@@ -650,13 +643,13 @@ do_expire (Cache *cache, char **cmd, Buffer *out)
   if (node)
     {
       Entry *ent = fetch_entry (node);
-      entry_set_ttl (cache, ent, ttl_ms);
+      entry_set_ttl (cache, now_us, ent, ttl_ms);
     }
   return out_int (out, node ? 1 : 0);
 }
 
 static bool
-do_ttl (Cache *cache, char **cmd, Buffer *out)
+do_ttl (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 {
   Entry key;
   key.key = cmd[1];
@@ -676,8 +669,6 @@ do_ttl (Cache *cache, char **cmd, Buffer *out)
       return out_int (out, -1);	// TTL not set
     }
 
-  uint64_t now_us = get_monotonic_usec ();
-
   // Check if the key is already expired in-memory (though it should be passively deleted on read)
   if (ent->expire_at_us < now_us)
     {
@@ -689,56 +680,55 @@ do_ttl (Cache *cache, char **cmd, Buffer *out)
 }
 
 bool
-cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out)
+cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out,
+	       uint64_t now_us)
 {
   if (size == 1 && cmd_is (cmd[0], "keys"))
     {
-      return do_keys (cache, cmd, out);
+      return do_keys (cache, cmd, out, now_us);
     }
-  else if (size == 2 && cmd_is (cmd[0], "get"))
+  if (size == 2 && cmd_is (cmd[0], "get"))
     {
-      return do_get (cache, cmd[1], out);
+      return do_get (cache, cmd[1], out, now_us);
     }
-  else if (cmd_is (cmd[0], "mget") && size > 1)
+  if (cmd_is (cmd[0], "mget") && size > 1)
     {
-      return do_mget (cache, cmd, size - 1, out);
+      return do_mget (cache, cmd, size - 1, out, now_us);
     }
-  else if (size == 3 && cmd_is (cmd[0], "set"))
+  if (size == 3 && cmd_is (cmd[0], "set"))
     {
       return do_set (cache, cmd, out);
     }
-  else if (size == 2 && cmd_is (cmd[0], "del"))
+  if (size == 2 && cmd_is (cmd[0], "del"))
     {
-      return do_del (cache, cmd, out);
+      return do_del (cache, cmd, out, now_us);
     }
-  else if (size == 3 && cmd_is (cmd[0], "pexpire"))
+  if (size == 3 && cmd_is (cmd[0], "pexpire"))
     {
-      return do_expire (cache, cmd, out);
+      return do_expire (cache, cmd, out, now_us);
     }
-  else if (size == 2 && cmd_is (cmd[0], "pttl"))
+  if (size == 2 && cmd_is (cmd[0], "pttl"))
     {
-      return do_ttl (cache, cmd, out);
+      return do_ttl (cache, cmd, out, now_us);
     }
-  else if (size == 4 && cmd_is (cmd[0], "zadd"))
+  if (size == 4 && cmd_is (cmd[0], "zadd"))
     {
       return do_zadd (cache, cmd, out);
     }
-  else if (size == 3 && cmd_is (cmd[0], "zrem"))
+  if (size == 3 && cmd_is (cmd[0], "zrem"))
     {
-      return do_zrem (cache, cmd, out);
+      return do_zrem (cache, cmd, out, now_us);
     }
-  else if (size == 3 && cmd_is (cmd[0], "zscore"))
+  if (size == 3 && cmd_is (cmd[0], "zscore"))
     {
-      return do_zscore (cache, cmd, out);
+      return do_zscore (cache, cmd, out, now_us);
     }
-  else if (size == 6 && cmd_is (cmd[0], "zquery"))
+  if (size == 6 && cmd_is (cmd[0], "zquery"))
     {
-      return do_zquery (cache, cmd, out);
+      return do_zquery (cache, cmd, out, now_us);
     }
-  else
-    {
-      return out_err (out, ERR_UNKNOWN, "Unknown cmd");
-    }
+
+  return out_err (out, ERR_UNKNOWN, "Unknown cmd");
 }
 
 Cache *
@@ -767,7 +757,7 @@ cache_evict (Cache *cache, uint64_t now_us)
       HNode *node = hm_pop (&cache->db, &ent->node, &hnode_same);
       assert (node == &ent->node);
       // entry_del handles heap removal (via entry_set_ttl) and cleanup
-      entry_del (cache, ent);
+      entry_del (cache, ent, now_us);
       if (nworks++ >= k_max_works)
 	{
 	  // don't stall the server if too many keys are expiring at once

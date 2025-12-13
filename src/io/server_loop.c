@@ -3,7 +3,7 @@
  *============================================================================
  * Name             : server_loop.c
  * Author           : Milos
- * Description      : Core networking logic (epoll event loop, connection handling).
+ * Description      : Server loop, connection handling.
  *============================================================================
  */
 #include <arpa/inet.h>
@@ -38,47 +38,24 @@
 #include <linux/rds.h>
 
 #include <assert.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <errno.h>
+#include <stddef.h>
 #include <fcntl.h>
-#include <unistd.h>
-#include <arpa/inet.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/socket.h>
-#include <stdbool.h>
 #include <time.h>
-#include <netinet/ip.h>
 #include <sys/epoll.h>
 #include <signal.h>
 
 #include "cache/cache.h"
+#include "connection_handler.h"
 #include "connections.h"
-#include "buffer.h"
 #include "common/common.h"
-#include "out.h"
 #include "server_loop.h"
 #include "list.h"
+#include "out.h"
 
 #define MAX_EVENTS 10000
 #define MAX_CHUNKS 16
 #define K_IDLE_TIMEOUT_US 5000000
-
-enum
-{
-  RES_OK = 0, RES_ERR = 1, RES_NX = 2,
-};
-
-enum
-{
-  STATE_REQ = 0,
-  STATE_RES = 1,
-  STATE_RES_CLOSE = 2,		// Send response then close connection
-  STATE_END = 3,		// Mark the connection for deletion
-};
 
 static struct
 {
@@ -88,128 +65,16 @@ static struct
   volatile sig_atomic_t terminate_flag;
 } g_data;
 
-static inline bool
-is_res_queue_full (Conn *conn)
-{
-  return ((conn->write_idx + 1) % K_SLOT_COUNT) == conn->read_idx;
-}
-
-static void
-state_res (Conn *conn);
-// NEW HELPER FUNCTION: Read zerocopy completions from the error queue
-// Returns true if a zerocopy completion was processed, false otherwise.
-static bool
-try_check_zerocopy_completion (Conn *conn)
-{
-    // The connection's read index (conn->read_idx) points to the OLDEST response slot
-    // that the client is currently trying to consume. This is the slot that 
-    // corresponds to the oldest pending zero-copy operation.
-    ResponseSlot *current_slot = &conn->res_slots[conn->read_idx];
-
-    // Check if the current slot is even active (if actual_length == 0, there's nothing 
-    // to complete, unless this is a late error for a previous block).
-    // We rely on the pending_ops count for safety.
-    if (current_slot->actual_length == 0 && current_slot->pending_ops == 0) {
-        // If the current slot is clear, check the next one. This is a crucial safety measure
-        // in case a completion for a past slot was delayed, but in a ring buffer, 
-        // read_idx should always point to the next expected completion.
-        // We'll proceed with the error queue logic regardless to consume the error.
-        DBG_LOGF("FD %d: WARNING: Received EPOLLERR but current slot %u is clear. Continuing to consume error queue.",
-                 conn->fd, conn->read_idx);
-    }
-    
-    // --- 1. Standard Error Queue Setup and Read ---
-    struct msghdr msg = { 0 };
-    struct sock_extended_err *serr;
-    struct cmsghdr *cm;
-    char control[100];
-    int ret;
-
-    msg.msg_control = control;
-    msg.msg_controllen = sizeof(control);
-
-    ret = (int) recvmsg(conn->fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
-
-    if (ret < 0) {
-        if (errno == EAGAIN || errno == ENOMSG)
-            return false; // No more errors/completions to process
-
-        msgf ("recvmsg(MSG_ERRQUEUE) error: %s", strerror (errno));
-        conn->state = STATE_END;
-        return false;
-    }
-
-    bool completion_processed = false;
-
-    // --- 2. Iterate Control Messages and Process Completions ---
-    for (cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
-        if (cm->cmsg_level != SOL_IP && cm->cmsg_level != SOL_IPV6)
-            continue;
-
-        if (cm->cmsg_type != IP_RECVERR && cm->cmsg_type != IPV6_RECVERR)
-            continue;
-
-        serr = (void *) CMSG_DATA(cm);
-
-        if (serr->ee_origin == SO_EE_ORIGIN_ZEROCOPY) {
-            uint32_t range_start = serr->ee_info;
-            uint32_t range_end = serr->ee_data;
-            uint32_t completed_ops = range_end - range_start + 1;
-            
-            // The completion relates to the slot at conn->read_idx
-            // (since completions are ordered).
-            
-            if (current_slot->pending_ops == 0) {
-                // If we get a completion but have no pending ops, 
-                // it might mean a completion for a previously cleared slot arrived late.
-                DBG_LOGF("FD %d: WARNING: Completion received (%u ops) but slot %u has 0 pending.",
-                         conn->fd, completed_ops, conn->read_idx);
-                completion_processed = true;
-                continue;
-            }
-
-            if (completed_ops > current_slot->pending_ops) {
-                 DBG_LOGF("FD %d: WARNING: Completion overflow. Got %u ops, only %u pending.",
-                          conn->fd, completed_ops, current_slot->pending_ops);
-                 current_slot->pending_ops = 0;
-            } else {
-                 current_slot->pending_ops -= completed_ops;
-            }
-
-            DBG_LOGF("FD %d: ZEROCOPY completion range [%u-%u] (%u ops). Slot %u pending: %u.",
-                     conn->fd, range_start, range_end, completed_ops,
-                     conn->read_idx, current_slot->pending_ops);
-
-            completion_processed = true;
-
-            // --- 3. Slot Cleanup and Advancement ---
-            // A slot is fully finished ONLY if:
-            // a) It has been fully SENT (slot->sent == slot->actual_length)
-            // b) All zero-copy operations have been ACKNOWLEDGED (slot->pending_ops == 0)
-            if (current_slot->pending_ops == 0 && current_slot->sent == current_slot->actual_length) {
-                
-                // Clear the slot memory tracking
-                current_slot->actual_length = 0; 
-                current_slot->sent = 0; 
-                // pending_ops is already 0
-
-                DBG_LOGF("FD %d: Fully completed slot %u released from the ring buffer.",
-                         conn->fd, conn->read_idx);
-                
-                // Move the read index to the next slot
-                conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
-                
-                // CRITICAL: Update the pointer to current_slot for the next CMSG/loop iteration.
-                // Since completions are ordered, the next completion applies to the new oldest slot.
-                current_slot = &conn->res_slots[conn->read_idx]; 
-            }
-        }
-    }
-
-    return completion_processed;
-}
-
 // Signal handler function (async-signal-safe)
+static inline uint64_t
+get_monotonic_usec (void)
+{
+  struct timespec tvs = { 0, 0 };
+  clock_gettime (CLOCK_MONOTONIC, &tvs);
+  return (uint64_t) ((tvs.tv_sec * 1000000) + (tvs.tv_nsec / 1000));
+}
+
+// Signal handler function
 static void
 sigint_handler (int sig)
 {
@@ -245,7 +110,7 @@ fd_set_nb (int file_des)
 }
 
 static int32_t
-accept_new_conn (int file_des)
+accept_new_conn (int file_des, uint64_t now_us)
 {
   struct sockaddr_in client_addr = { 0 };
   socklen_t socklen = sizeof (client_addr);
@@ -290,6 +155,10 @@ accept_new_conn (int file_des)
   conn->state = STATE_REQ;
   conn->rbuf_size = 0;
   conn->idle_start = get_monotonic_usec ();
+  conn->write_idx = 0;
+  conn->read_idx = 0;
+  conn->last_events = 0;
+  conn->idle_start = now_us;
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   connpool_add (g_data.fd2conn, conn);
@@ -298,496 +167,7 @@ accept_new_conn (int file_des)
   return connfd;
 }
 
-static void
-conn_set_epoll_events (Conn *conn, uint32_t events)
-{
-  if (conn->state == STATE_END)
-    return;
-
-  struct epoll_event event;
-  event.data.fd = conn->fd;
-  event.events = events | EPOLLET | EPOLLERR;
-
-  if (epoll_ctl (g_data.epfd, EPOLL_CTL_MOD, conn->fd, &event) == -1)
-    {
-      if (errno == ENOENT)
-	return;
-      msgf ("epoll ctl: MOD failed: %s", strerror (errno));
-    }
-}
-
-// Sends an error response and marks the connection to close after sending.
-// WARNING: This discards any pending responses in the write buffers.
-static void
-dump_error_and_close ( Conn *conn, const int code, const char *str)
-{
-  DBG_LOGF ("FD %d: Sending error %d and closing: %s", conn->fd, code, str);
-
-  // Use small stack buffer for error messages (errors should always be small)
-  uint32_t w_idx = conn->write_idx;
-  uint8_t *slot_mem = &conn->res_data[(size_t) (w_idx * K_MAX_MSG)];
-
-  Buffer err_buf = buf_init (slot_mem + 4, K_MAX_MSG - 4);
-
-  if (!out_err (&err_buf, code, str))
-    {
-      // If even the error won't fit, hard close.
-      conn->state = STATE_END;
-      return;
-    }
-  size_t err_payload_len = buf_len (&err_buf);
-  uint32_t nwlen = htonl ((uint32_t) err_payload_len);
-  memcpy (slot_mem, &nwlen, 4);
-
-  conn->res_slots[w_idx].actual_length = (uint32_t)(4 + err_payload_len);
-  conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
-  conn->state = STATE_RES_CLOSE;
-  conn_set_epoll_events ( conn, EPOLLIN | EPOLLOUT);
-}
-
-// Returns true on success, false on failure.
-// On failure, dump_error_and_close has already been called.
-static bool
-do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
-	    Buffer *out_buf)
-{
-  if (reqlen < 4)
-    {
-      dump_error_and_close (conn, ERR_MALFORMED,
-			    "Request too short for argument count");
-      return false;
-    }
-
-  uint32_t num = 0;
-  memcpy (&num, &req[0], 4);
-  num = ntohl (num);
-
-  if (num > K_MAX_ARGS)
-    {
-      DBG_LOG ("too many arguments");
-      dump_error_and_close (conn, ERR_MALFORMED, "Too many arguments.");
-      return false;
-    }
-
-  if (num < 1)
-    {
-      dump_error_and_close (conn, ERR_MALFORMED,
-			    "Must have at least one argument (the command)");
-      return false;
-    }
-
-  // NON-COPY/IN-PLACE PARSING
-  //
-  // We will mess up the header of a next string temporarily because the next stage (cache)
-  // doesn't care about headers (it only cares about the actual strings).
-  // We will restore the messed up bytes at the end to avoid messing up buffer compaction etc.
-
-  // Allocate the array of pointers on the heap (small, size 'num'), but NOT the strings.
-  // The strings will be temporarily null-terminated inside the 'req' buffer.
-  char *cmd[K_MAX_ARGS];
-  // Stack arrays to store pointers and original characters for restoration
-  uint8_t *restore_ptrs[K_MAX_ARGS];
-  uint8_t restore_chars[K_MAX_ARGS];
-  size_t restore_count = 0;
-
-  size_t cmd_size = 0;
-  bool success = false;
-  size_t pos = 4;
-
-  while (num--)
-    {
-      if (pos + 4 > reqlen)
-	{
-	  dump_error_and_close (conn, ERR_MALFORMED,
-				"Argument count mismatch: missing length header");
-	  goto CLEANUP;
-	}
-
-      uint32_t siz = 0;
-      memcpy (&siz, &req[pos], 4);
-      siz = ntohl (siz);
-
-      if (pos + 4 + siz > reqlen)
-	{
-	  dump_error_and_close (conn, ERR_MALFORMED,
-				"Argument count mismatch: data length exceeds packet size");
-	  goto CLEANUP;
-	}
-
-      if (restore_count >= K_MAX_ARGS)
-	{
-	  dump_error_and_close (conn, ERR_MALFORMED,
-				"Too many arguments detected.");
-	  goto CLEANUP;
-	}
-
-      // Get the address of the byte immediately following the argument data.
-      uint8_t *null_term_loc = &req[pos + 4 + siz];
-
-      // Save the pointer and original character for restoration.
-      restore_ptrs[restore_count] = null_term_loc;
-      restore_chars[restore_count] = *null_term_loc;
-      restore_count++;
-
-      // Temporarily null-terminate the string in the read buffer.
-      *null_term_loc = '\0';
-
-      // Store the pointer to the argument data.
-      cmd[cmd_size] = (char *) &req[pos + 4];
-
-      cmd_size++;
-      pos += 4 + siz;
-    }
-
-  if (pos != reqlen)
-    {
-      dump_error_and_close (conn, ERR_MALFORMED,
-			    "Trailing garbage in request");
-      goto CLEANUP;
-    }
-
-  DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd,
-	    cmd_size);
-  success =
-    TIME_EXPR ("cache_execute",
-	       cache_execute (cache, cmd, cmd_size, out_buf));
-  // Execute the command. The command array pointers point directly into the read buffer.
-  if (!success)
-    {
-      msg ("cache couldn't write message, no space.");
-      dump_error_and_close (conn, ERR_UNKNOWN, "response too large");
-      conn->state = STATE_RES_CLOSE;
-      goto CLEANUP;
-    }
-
-  success = true;
-
-CLEANUP:
-  for (size_t i = 0; i < restore_count; i++)
-    {
-      // Restore the original character at the location we overwrote with '\0'
-      *restore_ptrs[i] = restore_chars[i];
-    }
-
-  return success;
-}
-
-static bool
-try_one_request (Cache *cache, Conn *conn)
-{
-    // Rework Note: We are now passing conn->read_offset directly 
-    // instead of using a pointer 'start_index'. The caller (process_received_data) 
-    // will now use conn->read_offset as its loop variable.
-
-    // 1. Pipelining Check: Stop parsing if the response queue is full.
-    if (is_res_queue_full (conn))
-    {
-        DBG_LOGF ("FD %d: Response queue full. Pausing request parsing.", conn->fd);
-        // Ensure EPOLLOUT and EPOLLERR are set to drain the response queue
-        conn_set_epoll_events (conn, EPOLLIN | EPOLLOUT | EPOLLERR);
-        return false;
-    }
-
-    size_t bytes_remain = conn->rbuf_size - conn->read_offset;
-
-    // Check for length prefix (4 bytes)
-    if (bytes_remain < 4)
-        return false;
-
-    uint32_t len = 0;
-    // Read length prefix from current offset
-    memcpy (&len, &conn->rbuf[conn->read_offset], 4); 
-    len = ntohl (len);
-
-    DBG_LOGF ("FD %d: Parsing request starting at offset %u with length %u.",
-              conn->fd, conn->read_offset, len);
-
-    // Check against maximum message size
-    if (len > K_MAX_MSG)
-    {
-        msgf ("request too long %u", len);
-        dump_error_and_close (conn, ERR_2BIG, "request too large; connection closed.");
-        // Consume the whole buffer on error to prevent re-parsing the bad data
-        conn->read_offset = conn->rbuf_size; 
-        return false;
-    }
-
-    size_t total_req_len = 4 + len;
-    
-    // Check if the entire request is in the buffer
-    if (total_req_len > bytes_remain)
-        return false;
-
-    // --- NEW RESPONSE BUFFERING SETUP (Using Ring Buffer) ---
-    uint32_t w_idx = conn->write_idx;
-    uint8_t *slot_mem_data = 
-        &conn->res_data[(size_t) (w_idx * K_MAX_MSG)];
-    
-    // The Buffer structure will only operate on the payload area of the slot
-    Buffer out_buf = buf_init (slot_mem_data + 4, K_MAX_MSG - 4);
-    
-    // 2. Execute the request (do_request writes payload into out_buf)
-    bool success = do_request (cache, conn,
-                             &conn->rbuf[conn->read_offset + 4], // Request payload
-                             len,
-                             &out_buf);
-
-    // --- NEW RESPONSE FINALIZATION (No Hand-Off/Copy Required) ---
-    if (success)
-    {
-        size_t reslen = buf_len (&out_buf); // Actual size of payload written
-        uint32_t nwlen = htonl ((uint32_t) reslen);
-
-        // Finalize the response slot with the length prefix
-        memcpy (slot_mem_data, &nwlen, 4); 
-        
-        // Mark the ResponseSlot as ready for sending
-        ResponseSlot *slot = &conn->res_slots[w_idx];
-        slot->actual_length = 4 + (uint32_t)reslen;
-        slot->sent = 0;
-        slot->pending_ops = 0; // Ready for MSG_ZEROCOPY send
-        
-        // Advance the write index
-        conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
-        
-        // Update state to RES if we are not already sending
-        if (conn->state == STATE_REQ) {
-            conn->state = STATE_RES;
-            // Ensure EPOLLOUT and EPOLLERR are set for response draining
-            conn_set_epoll_events ( conn, EPOLLIN | EPOLLOUT | EPOLLERR);
-        }
-    }
-    
-    // 3. Consume the Request Data
-    conn->read_offset += total_req_len; 
-
-    if (!success)
-    {
-        // Malformed request or response too large (dump_error_and_close handles state)
-        // Since the state machine is now responsible for compaction/reset, we just
-        // let the offset stick, and the next call to process_received_data will
-        // either consume the rest of the buffer (if error forced offset advance) 
-        // or break the loop.
-        msg("request failed, stopping processing.");
-        return false; 
-    }
-
-    DBG_LOGF ("FD %d: Request processed, consumed %u bytes.", conn->fd, 4 + len);
-
-    // Continue processing if the connection is still in a request state
-    // (i.e., not forced to close due to error).
-    return (conn->state == STATE_REQ || conn->state == STATE_RES);
-}
-
-static ssize_t
-read_data_from_socket (Conn *conn, size_t cap)
-{
-  ssize_t err;
-
-  do
-    {
-      err = read (conn->fd, &conn->rbuf[conn->rbuf_size], cap);
-    }
-  while (err < 0 && errno == EINTR);
-
-  if (err < 0)
-    {
-      if (errno == EAGAIN)
-	return -1;
-
-      msgf ("read() error: %s", strerror (errno));
-      conn->state = STATE_END;
-      return -2;
-    }
-
-  if (err == 0)
-    {
-      DBG_LOGF ("FD %d: EOF received, setting state to STATE_END.", conn->fd);
-      conn->state = STATE_END;
-      return -2;
-    }
-
-  DBG_LOGF ("FD %d: Read %zd bytes from socket.", conn->fd, err);
-  return err;
-}
-
-static bool
-process_received_data (Cache *cache, Conn *conn, uint32_t bytes_read)
-{
-  uint32_t start_index = conn->rbuf_size;
-  conn->rbuf_size += bytes_read;
-  assert (conn->rbuf_size <= sizeof (conn->rbuf));
-
-  int processed = 0;
-  while (try_one_request (cache, conn))
-    {
-      if (++processed >= MAX_CHUNKS)
-	break;
-    }
-
-  // Buffer compaction
-  uint32_t remain = conn->rbuf_size - start_index;
-  if (remain)
-    memmove (conn->rbuf, &conn->rbuf[start_index], remain);
-
-  conn->rbuf_size = remain;
-
-  DBG_LOGF
-    ("FD %d: Processed %d requests. RBuf remaining: %u. New state: %d.",
-     conn->fd, processed, remain, conn->state);
-
-  // Check if state changed
-  if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE ||
-      conn->state == STATE_END)
-    return true;
-
-  if (processed >= MAX_CHUNKS)
-    return true;
-
-  return false;
-}
-
-static bool
-try_fill_buffer (Cache *cache, Conn *conn)
-{
-  while (1)
-    {
-      size_t cap = sizeof (conn->rbuf) - conn->rbuf_size;
-
-      if (cap == 0)
-	{
-	  DBG_LOGF ("FD %d: RBuf full, transitioning to STATE_RES.",
-		    conn->fd);
-	  conn->state = STATE_RES;
-	  break;
-	}
-
-      ssize_t bytes_read = read_data_from_socket (conn, cap);
-
-      if (bytes_read == -2)
-	return true;		// Error or EOF
-
-      if (bytes_read == -1)
-	return false;		// EAGAIN
-
-      if (process_received_data (cache, conn, (uint32_t) bytes_read))
-	return true;
-    }
-
-  return true;
-}
-
-static bool
-try_flush_buffer (Conn *conn)
-{ 
-    // Assume: try_check_zerocopy_completion has been called via EPOLLERR handler
-    while (try_check_zerocopy_completion (conn)) {}
-    while (true) 
-    {
-        ResponseSlot *slot = &conn->res_slots[conn->read_idx];
-        
-        // If the current slot is empty, we are done sending.
-        if (slot->actual_length == 0) {
-            break; 
-        }
-
-        uint8_t *data_start = 
-            &conn->res_data[(size_t) (conn->read_idx * K_MAX_MSG)];
-
-        // --- Skip fully sent blocks ---
-        if (slot->sent == slot->actual_length) {
-            // Block fully sent. Must wait for completion(s) (pending_ops > 0)
-            // If pending_ops is zero, the completion was handled, and slot->actual_length 
-            // would have been set to 0. This shouldn't happen here, but safety first.
-            if (slot->pending_ops > 0) {
-                DBG_LOGF("FD %d: Slot %u fully sent (%u bytes). Waiting for %u completion(s).",
-                         conn->fd, conn->read_idx, slot->actual_length, slot->pending_ops);
-                
-                // No more data to send on this slot. Stop sending loop.
-                return false; 
-            }
-            // If actual_length was not reset to 0, something went wrong, 
-            // treat it as done and advance index.
-            slot->actual_length = 0; 
-            conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
-            continue; // Try the next slot
-        }
-
-        // --- Send Logic (MSG_ZEROCOPY) ---
-        size_t remain = slot->actual_length - slot->sent;
-        
-        struct iovec iov = {
-            .iov_base = data_start + slot->sent,
-            .iov_len = remain
-        };
-        
-        struct msghdr message = { .msg_iov = &iov, .msg_iovlen = 1, /* ... (other fields NULL) */ };
-
-        ssize_t err = sendmsg(conn->fd, &message, MSG_DONTWAIT | MSG_ZEROCOPY | MSG_NOSIGNAL);
-
-        if (err < 0) {
-            if (errno == EAGAIN) {
-                conn_set_epoll_events ( conn, EPOLLIN | EPOLLOUT | EPOLLERR);
-                return false; // Stop due to EWOULDBLOCK
-            }
-            // Handle fatal error (sets STATE_END)
-            conn->state = STATE_END;
-            return false;
-        }
-        
-        // Update state
-        slot->sent += (uint32_t) err;
-        slot->pending_ops++; // One more operation waiting for completion
-        
-        DBG_LOGF("FD %d: Sent %zd bytes on slot %u with ZEROCOPY (sent: %u/%u, pending: %u).",
-                  conn->fd, err, conn->read_idx, slot->sent, slot->actual_length, slot->pending_ops);
-        
-        // If fully sent, we must stop and wait for completions before advancing to the next slot.
-
-        // If partially sent, we continue the loop, relying on the kernel to give us EPOLLOUT 
-        // later, or we stop now (typical ET logic). Let's return false to wait for EPOLLOUT.
-    }
-
-    // --- State Transition when send queue is empty ---
-    // If we exit the while loop, it means conn->res_slots[conn->read_idx].actual_length == 0
-    // and all preceding slots have been fully cleared (sent=actual_length and pending_ops=0).
-    // The state transition logic now relies ONLY on the slot being cleared.
-    if (conn->state == STATE_RES_CLOSE) {
-        conn->state = STATE_END;
-    } else if (conn->state == STATE_RES) {
-        conn->state = STATE_REQ;
-        conn_set_epoll_events ( conn, EPOLLIN); // Stop listening for OUT/ERR
-        // Idle list management is now in state_res caller (connection_io)
-    }
-
-    return true; // Successfully finished flushing all available data
-}
-
-// Note: The old `state_res` loop logic might need slight review. The `while` loop 
-// is no longer necessary if we assume one message per send operation.
-
-static void
-state_req (Cache *cache, Conn *conn)
-{
-  DBG_LOGF ("FD %d: Entering STATE_REQ handler.", conn->fd);
-
-  while (try_fill_buffer (cache, conn))
-    {
-      if (conn->state != STATE_REQ)
-	break;
-    }
-
-  DBG_LOGF ("FD %d: Exiting STATE_REQ handler. New state: %d.",
-	    conn->fd, conn->state);
-}
-
-static void
-state_res (Conn *conn)
-{
-  (void) TIME_EXPR ("try_flush_buffer", try_flush_buffer (conn));
-}
-
-static void
+static inline void
 conn_done (Conn *conn)
 {
   DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
@@ -799,10 +179,8 @@ conn_done (Conn *conn)
 }
 
 static void
-process_timers (Cache *cache)
+process_timers (Cache *cache, uint64_t now_us)
 {
-  uint64_t now_us = get_monotonic_usec ();
-
   while (!dlist_empty (&g_data.idle_list))
     {
 #pragma GCC diagnostic push
@@ -822,17 +200,10 @@ process_timers (Cache *cache)
   cache_evict (cache, now_us);
 }
 
-// NEW connection_io (around line 1069)
 static void
-connection_io (Cache *cache, Conn *conn)
+connection_io (Cache *cache, Conn *conn, uint64_t now_us)
 {
-    // NO-OP: Do not update idle timer or list at the start of every I/O event.
-
-    if (conn->state == STATE_REQ)
-        state_req (cache, conn);
-
-    if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE)
-        state_res (conn);
+    handle_connection_io (g_data.epfd, cache, conn, now_us);
 
     // CRITICAL: Only mark as idle *after* all processing is complete and the state is STATE_REQ.
     // If STATE_REQ is reached, it means we are now waiting for the client.
@@ -845,16 +216,19 @@ connection_io (Cache *cache, Conn *conn)
         // This makes next_timer_ms ignore this connection.
         dlist_detach (&conn->idle_list);
     }
+  conn->idle_start = now_us;
+  dlist_detach (&conn->idle_list);
+  dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 }
 
 static void
-handle_listener_event (int listen_fd)
+handle_listener_event (int listen_fd, uint64_t now_us)
 {
   int epfd = g_data.epfd;
 
-  while (1)
+  while (true)
     {
-      int conn_fd = accept_new_conn (listen_fd);
+      int conn_fd = accept_new_conn (listen_fd, now_us);
 
       if (conn_fd < 0)
 	{
@@ -877,7 +251,8 @@ handle_listener_event (int listen_fd)
 }
 
 static void
-handle_connection_event (Cache *cache, struct epoll_event *event)
+handle_connection_event (Cache *cache, struct epoll_event *event,
+			 uint64_t now_us)
 {
  Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
  if (!conn)
@@ -904,7 +279,8 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
     // as ERR contains the zero-copy completion, and IN/OUT are standard I/O.
     // connection_io contains the logic to run try_flush_buffer which in turn
     // calls try_check_zerocopy_completion when needed.
- TIME_STMT ("connection_io", connection_io (cache, conn));
+  if (event->events & (EPOLLIN | EPOLLOUT))
+    TIME_STMT ("connection_io", connection_io (cache, conn, now_us));
 
  if (conn->state == STATE_END)
  conn_done (conn);
@@ -912,14 +288,14 @@ handle_connection_event (Cache *cache, struct epoll_event *event)
 
 static void
 process_active_events (Cache *cache, struct epoll_event *events, int count,
-		       int listen_fd)
+		       int listen_fd, uint64_t now_us)
 {
   for (int i = 0; i < count; ++i)
     {
       if (events[i].data.fd == listen_fd)
-	handle_listener_event (listen_fd);
+	handle_listener_event (listen_fd, now_us);
       else
-	handle_connection_event (cache, &events[i]);
+	handle_connection_event (cache, &events[i], now_us);
     }
 }
 
@@ -1007,9 +383,8 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 }
 
 static uint32_t
-next_timer_ms (Cache *cache)
+next_timer_ms (Cache *cache, uint64_t now_us)
 {
-  uint64_t now_us = get_monotonic_usec ();
   uint64_t next_us = (uint64_t) - 1;
 
   if (!dlist_empty (&g_data.idle_list))
@@ -1056,11 +431,13 @@ server_run (uint16_t port)
 
   while (!g_data.terminate_flag)
     {
-      int timeout_ms = (int) next_timer_ms (cache);
+      uint64_t now_us = get_monotonic_usec ();
+      int timeout_ms = (int) next_timer_ms (cache, now_us);
       DBG_LOGF ("Epoll wait for %dms...", timeout_ms);
 
       int enfd_count = epoll_wait (epfd, events, MAX_EVENTS, timeout_ms);
-
+      // We might have slept for quite a while!
+      now_us = get_monotonic_usec ();
       if (g_data.terminate_flag)
 	break;
 
@@ -1074,9 +451,9 @@ server_run (uint16_t port)
       DBG_LOGF ("Processing %d events.", enfd_count);
 
       if (enfd_count > 0)
-	process_active_events (cache, events, enfd_count, listen_fd);
+	process_active_events (cache, events, enfd_count, listen_fd, now_us);
 
-      process_timers (cache);
+      process_timers (cache, now_us);
     }
 
   cleanup_server_resources (cache, listen_fd, epfd);
