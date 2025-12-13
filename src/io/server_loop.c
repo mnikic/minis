@@ -129,6 +129,7 @@ accept_new_conn (int file_des, uint64_t now_us)
   conn->read_idx = 0;
   conn->last_events = 0;
   conn->idle_start = now_us;
+  dlist_init (&conn->idle_list);
   dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
   connpool_add (g_data.fd2conn, conn);
@@ -173,11 +174,19 @@ process_timers (Cache *cache, uint64_t now_us)
 static void
 connection_io (Cache *cache, Conn *conn, uint64_t now_us)
 {
-  conn->idle_start = now_us;
-  dlist_detach (&conn->idle_list);
-  dlist_insert_before (&g_data.idle_list, &conn->idle_list);
-
   handle_connection_io (g_data.epfd, cache, conn, now_us);
+
+  if (conn->state == STATE_REQ)
+    {
+      conn->idle_start = now_us;
+
+      dlist_detach (&conn->idle_list);
+      dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+    }
+  else
+    {
+      dlist_detach (&conn->idle_list);
+    }
 }
 
 static void
