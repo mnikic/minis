@@ -53,7 +53,7 @@ get_monotonic_usec (void)
   return (uint64_t) ((tvs.tv_sec * 1000000) + (tvs.tv_nsec / 1000));
 }
 
-// Signal handler function (async-signal-safe)
+// Signal handler function
 static void
 sigint_handler (int sig)
 {

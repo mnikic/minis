@@ -47,6 +47,7 @@ conn_set_epoll_events (int epfd, Conn *conn, uint32_t events)
 	return;
       msgf ("epoll ctl: MOD failed: %s", strerror (errno));
     }
+  conn->last_events = events;
 }
 
 static inline bool
