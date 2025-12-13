@@ -13,6 +13,14 @@
 #include "list.h"
 #include "common/common.h"
 
+typedef enum
+{
+  STATE_REQ = 0,
+  STATE_RES = 1,
+  STATE_RES_CLOSE = 2,		// Send response then close connection
+  STATE_END = 3,		// Mark the connection for deletion
+} ConnectionState;
+
 typedef struct
 {
   size_t actual_length;		// The total length (4-byte header + payload) of the response. 
@@ -22,7 +30,7 @@ typedef struct
 typedef struct
 {
   int fd;
-  uint32_t state;
+  ConnectionState state;
   uint32_t rbuf_size;
   size_t read_offset;
   uint8_t rbuf[4 + K_MAX_MSG + 1];	// Added 1 extra for ease of string in place 0 termination.
