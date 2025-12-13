@@ -13,37 +13,42 @@
 #include "list.h"
 #include "common/common.h"
 
-// New structure for a buffer block that is IN-FLIGHT
-typedef struct InFlightBuffer {
-    uint8_t *data; // Pointer to the dynamically allocated response data
-    size_t size;   // Total size of the response
-    size_t sent;   // Bytes sent (to support chunking)
-    uint32_t pending_ops; // zerocopy_pending for this specific block
-    DList list_entry; // For linking to the Conn's in_flight_list
-} InFlightBuffer;
+#define K_SLOT_COUNT 10
+
+typedef struct {
+    uint32_t actual_length; // The total size of the response (Header + Payload)
+    
+    // --- ZEROCOPY TRACKING ADDITIONS ---
+    uint32_t pending_ops;   // Count of sendmsg() operations waiting for completion
+    uint32_t sent;          // Bytes already passed to sendmsg() (may not be confirmed yet)
+    // The ResponseSlot itself acts as the "in-flight" block
+} ResponseSlot;
 
 typedef struct
 {
   int fd;
   uint32_t state;
   uint32_t rbuf_size;
-  uint8_t rbuf[4 + K_MAX_MSG + 1];
-  
-  // Write buffer - where responses are BUILT
-  size_t wbuf_size;
-  uint8_t wbuf[4 + K_MAX_MSG];
-  // Linked list of buffers that have been sent with MSG_ZEROCOPY 
-    // and are awaiting EPOLLERR completion.
-  DList in_flight_list;  
-  // Send buffer - where responses are SENT FROM
-  size_t send_buf_size;
-  size_t send_buf_sent;
-  uint8_t send_buf[4 + K_MAX_MSG];
-  
-  InFlightBuffer *current_build;
-  // Track pending zerocopy operations
-  
+  size_t read_offset;
+  uint8_t rbuf[4 + K_MAX_MSG + 1];	// Added 1 extra for ease of string in place 0 termination.
+
+  // Metadata for each response slot
+  ResponseSlot res_slots[K_SLOT_COUNT];
+
+  // Continuous memory for all response payloads (K_SLOT_COUNT * K_MAX_MSG)
+  // The size of the memory block is now K_SLOT_COUNT * K_MAX_MSG
+  uint8_t res_data[K_SLOT_COUNT * K_MAX_MSG];
+
+  // Read index: Points to the oldest response ready to be SENT
+  uint32_t read_idx;
+  size_t res_sent;		// Progress tracker: How many bytes of 
+  // res_slots[read_idx] have been sent.
+
+  // Write index: Points to the next free slot ready to be WRITTEN
+  uint32_t write_idx;
+
   uint64_t idle_start;
+  uint32_t last_events;		// cache, to not EPOLL_CTL_MOD if there is no need
   DList idle_list;
 } Conn;
 
