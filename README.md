@@ -59,12 +59,25 @@ make
 
 *This creates a build folder containing all compiled objects (build/obj) and executables (build/bin).*  
 Start the Server:  
+```
 ./build/bin/server
+```
 
 Use the Client (in a separate shell):  
+```
 ./build/bin/client set k 12  
-./build/bin/client get k  
+./build/bin/client get k
+./build/bin/client set a 11
+./build/bin/client mget k a  
+```
 \# etc.
+
+There is also an interactive_client, which is there for, well, interactive usage of redis. Very alpha though.
+```
+./build/bin/interactive_client 
+minis> set a 23
+```
+And fire away.
 
 ### **2\. Run Tests**
 
