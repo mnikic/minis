@@ -35,7 +35,7 @@
 
 #define MAX_EVENTS 10000
 #define MAX_CHUNKS 16
-#define K_IDLE_TIMEOUT_US 5000000
+#define K_IDLE_TIMEOUT_US 300000000
 
 static struct
 {
