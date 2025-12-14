@@ -13,6 +13,13 @@
 #include "list.h"
 #include "common/common.h"
 
+typedef struct {
+    uint32_t actual_length; // The total size of the response (Header + Payload)
+    uint32_t pending_ops;   // Count of sendmsg() operations waiting for completion
+    uint32_t sent;          // Bytes already passed to sendmsg() (may not be confirmed yet)
+    bool is_zerocopy;
+} ResponseSlot;
+
 typedef enum
 {
   STATE_REQ = 0,
@@ -21,11 +28,6 @@ typedef enum
   STATE_END = 3,		// Mark the connection for deletion
 } ConnectionState;
 
-typedef struct
-{
-  size_t actual_length;		// The total length (4-byte header + payload) of the response. 
-  // Set to 0 if the slot is free.
-} ResponseSlot;
 
 typedef struct
 {

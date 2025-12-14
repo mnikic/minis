@@ -524,7 +524,7 @@ def test_pipelining_failure_suite():
                       and the connection will close after sending the error.
     """
     s = None
-    large_value = 'X' * 200000 
+    large_value = 'X' * 200000
 
     print(f"\n{'='*70}")
     print("TESTING PIPELINING")
