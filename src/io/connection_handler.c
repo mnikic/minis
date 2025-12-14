@@ -548,7 +548,12 @@ try_fill_buffer (int epfd, Cache *cache, uint64_t now_us, Conn *conn)
       if (bytes_read == -2)
 	return true;
       if (bytes_read == -1)
-	return false;
+      {
+        if (conn->rbuf_size > conn->read_offset) {
+              process_received_data (epfd, cache, conn, now_us);
+          }
+          return false; // Exit due to EAGAIN
+      }
 
       conn->rbuf_size += (uint32_t) bytes_read;
       process_received_data (epfd, cache, conn, now_us);
@@ -565,6 +570,17 @@ try_flush_buffer (int epfd, Conn *conn)
     // We must drain the error queue until EAGAIN/ENOMSG is hit.
     while (try_check_zerocopy_completion (conn)) {}
 
+    if (conn->state == STATE_RES && conn->read_offset < conn->rbuf_size) {
+        // We have pending requests remaining in the buffer. Switch back to STATE_REQ
+        // so that the next pass through handle_connection_io (or the current state_res
+        // processing, if it transitions) can handle the input.
+        // However, since we are about to aggressively send, we only update the state.
+        DBG_LOGF("FD %d: ZC ACKs cleared, %u bytes remain in RBuf. Resetting state to STATE_REQ for pipeline processing.",
+                 conn->fd, conn->rbuf_size - conn->read_offset);
+        conn->state = STATE_REQ;
+        // We rely on the state transition logic at the end of this function
+        // (or state_res) to reset EPOLL events.
+    }
     // --- 2. START AGGRESSIVE SENDING LOOP ---
     while (true)
     {
