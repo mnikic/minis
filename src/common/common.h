@@ -30,9 +30,9 @@
 
 // Max size of a single request message (payload data after the 4-byte length prefix).
 // This must be consistent between the client and the server's read buffer capacity.
-#define K_MAX_MSG (1024 * 1024)
-// Number of slots in the ring buffer (e.g., 16 total slots)
-#define K_SLOT_COUNT    16
+#define K_MAX_MSG (200 * 1024)
+// Number of slots in the ring buffer
+#define K_SLOT_COUNT    4
 
 #define K_MAX_ARGS 2048
 #define K_MAX_KEY 42
