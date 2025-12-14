@@ -9,6 +9,7 @@
 #define LIST_H_
 
 #include <stddef.h>
+#include <stdbool.h>
 
 typedef struct dlist
 {
@@ -18,7 +19,10 @@ typedef struct dlist
 
 void dlist_init (DList * node);
 
-int dlist_empty (DList * node);
+bool dlist_empty (DList * node);
+
+bool
+dlist_is_linked (DList * node);
 
 void dlist_detach (DList * node);
 

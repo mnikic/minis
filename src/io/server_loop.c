@@ -6,23 +6,42 @@
  * Description      : Server loop, connection handling.
  *============================================================================
  */
-
-#include <assert.h>
-#include <stddef.h>
+#include <arpa/inet.h>
+#include <error.h>
+#include <errno.h>
+#include <limits.h>
+#include <linux/errqueue.h>
+#include <linux/if_packet.h>
+#include <linux/ipv6.h>
+#include <linux/socket.h>
+#include <linux/sockios.h>
+#include <net/ethernet.h>
+#include <net/if.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include <poll.h>
+#include <sched.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <stdbool.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <linux/rds.h>
+
+#include <assert.h>
+#include <stddef.h>
+#include <fcntl.h>
+#include <netinet/in.h>
 #include <time.h>
-#include <netinet/ip.h>
 #include <sys/epoll.h>
 #include <signal.h>
 
@@ -35,7 +54,7 @@
 
 #define MAX_EVENTS 10000
 #define MAX_CHUNKS 16
-#define K_IDLE_TIMEOUT_US 300000000
+#define K_IDLE_TIMEOUT_US 5000000
 
 static struct
 {
@@ -88,7 +107,7 @@ fd_set_nb (int file_des)
     die ("fcntl error");
 }
 
-static int32_t
+static Conn *
 accept_new_conn (int file_des, uint64_t now_us)
 {
   struct sockaddr_in client_addr = { 0 };
@@ -109,11 +128,14 @@ accept_new_conn (int file_des, uint64_t now_us)
       if (errno == EAGAIN)
 	{
 	  DBG_LOG ("No more connections to accept (EAGAIN).");
-	  return -1;
+	  return NULL;
 	}
       msgf ("accept() error: %s", strerror (errno));
-      return -2;
+      return NULL;
     }
+
+  int sndbuf = 2 * 1024 * 1024;
+  setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
 
   Conn *conn = calloc (1, sizeof (Conn));
   if (!conn)
@@ -135,17 +157,27 @@ accept_new_conn (int file_des, uint64_t now_us)
   connpool_add (g_data.fd2conn, conn);
   DBG_LOGF ("Accepted new connection: FD %d", connfd);
 
-  return connfd;
+  return conn;
 }
 
 static inline void
 conn_done (Conn *conn)
 {
   DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
-  (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);
+  if (conn->fd == -1)
+    {
+      return;
+    }
   connpool_remove (g_data.fd2conn, conn->fd);
-  close (conn->fd);
+  Conn *lookup = connpool_lookup (g_data.fd2conn, conn->fd);
+  if (lookup != NULL)
+    die ("removed conn shouldn't be lookupabale any more.");
   dlist_detach (&conn->idle_list);
+  (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);
+  close (conn->fd);
+  conn->idle_list.prev = NULL;
+  conn->idle_list.next = NULL;
+  conn->fd = -1;
   free (conn);
 }
 
@@ -172,49 +204,45 @@ process_timers (Cache *cache, uint64_t now_us)
 }
 
 static void
-connection_io (Cache *cache, Conn *conn, uint64_t now_us)
-{
-  handle_connection_io (g_data.epfd, cache, conn, now_us);
-
-  if (conn->state == STATE_REQ)
-    {
-      conn->idle_start = now_us;
-
-      dlist_detach (&conn->idle_list);
-      dlist_insert_before (&g_data.idle_list, &conn->idle_list);
-    }
-  else
-    {
-      dlist_detach (&conn->idle_list);
-    }
-}
-
-static void
 handle_listener_event (int listen_fd, uint64_t now_us)
 {
   int epfd = g_data.epfd;
 
   while (true)
     {
-      int conn_fd = accept_new_conn (listen_fd, now_us);
-
-      if (conn_fd < 0)
-	{
-	  if (conn_fd == -1)
-	    break;
-	  break;
-	}
-
+      Conn *conn = accept_new_conn (listen_fd, now_us);
+      if (!conn)
+	break;
       struct epoll_event event;
-      event.data.fd = conn_fd;
-      event.events = EPOLLIN | EPOLLET;
+      event.data.fd = conn->fd;
+      event.events = EPOLLIN | EPOLLET | EPOLLERR;
 
       if (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1)
 	{
 	  msgf ("epoll ctl: new conn registration failed: %s",
 		strerror (errno));
-	  close (conn_fd);
+	  conn_done (conn);
 	}
+    }
+}
+
+static void
+connection_io (Cache *cache, Conn *conn, uint64_t now_us)
+{
+  handle_connection_io (g_data.epfd, cache, conn, now_us);
+
+  if (conn->state == STATE_END)
+    {
+      return;
+    }
+
+  bool is_linked = dlist_is_linked (&conn->idle_list);
+  if (is_linked)
+    dlist_detach (&conn->idle_list);
+  if (conn->state == STATE_REQ)
+    {
+      conn->idle_start = now_us;
+      dlist_insert_before (&g_data.idle_list, &conn->idle_list);
     }
 }
 
@@ -226,23 +254,20 @@ handle_connection_event (Cache *cache, struct epoll_event *event,
   if (!conn)
     return;
 
-  DBG_LOGF ("FD %d: Handling epoll event (events: 0x%x). State: %d",
-	    event->data.fd, event->events, conn->state);
-
-  if (event->events & (EPOLLHUP | EPOLLERR | EPOLLRDHUP))
+  if (event->events & (EPOLLHUP | EPOLLRDHUP))
     {
       DBG_LOGF ("FD %d: Hangup/Error detected (0x%x). Closing.",
 		event->data.fd, event->events);
       conn->state = STATE_END;
-      conn_done (conn);
-      return;
+      goto CLEANUP;
     }
 
-  if (event->events & (EPOLLIN | EPOLLOUT))
+  if (event->events & (EPOLLIN | EPOLLOUT | EPOLLERR))
     TIME_STMT ("connection_io", connection_io (cache, conn, now_us));
 
+CLEANUP:
   if (conn->state == STATE_END)
-    conn_done (conn);
+    conn_done (conn);		// Free is here
 }
 
 static void
