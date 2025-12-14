@@ -7,7 +7,7 @@ import random
 # --- Configuration ---
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 1234  # Custom port for your server
-NUM_KEYS =  1000 # REDUCED to 3500 keys for a safe payload size (~56KB)
+NUM_KEYS =  100 # REDUCED to 3500 keys for a safe payload size (~56KB)
 KEY_PREFIX = "benchkey_"
 VALUE_SIZE = 1024   # Size of the value in bytes (1KB)
 ITERATIONS = 10000    # How many times to repeat the MGET command for measurement

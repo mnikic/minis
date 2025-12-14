@@ -141,8 +141,9 @@ accept_new_conn (int file_des, uint64_t now_us)
   int val = 1;
   if (setsockopt (connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof (val)))
     {
-      msgf ("setsockopt(SO_ZEROCOPY) failed: %s. Using standard copy.",
-	    strerror (errno));
+      msgf
+	("setsockopt(SO_ZEROCOPY) failed: %s. Zero-Copy path disabled for this connection, only standard copy (write) will be used.",
+	 strerror (errno));
     }
 
   Conn *conn = calloc (1, sizeof (Conn));
@@ -194,8 +195,32 @@ conn_done (Conn *conn)
 static inline bool
 conn_has_pending_write (const Conn *conn)
 {
-  // If the write index is not equal to the read index, we have pending completions.
-  return conn->write_idx != conn->read_idx;
+  uint32_t idx = conn->read_idx;
+
+  // Loop through all slots starting from the oldest (read_idx) up to the newest (write_idx)
+  while (idx != conn->write_idx)
+    {
+      const ResponseSlot *slot = &conn->res_slots[idx];
+
+      // Check for any data waiting to be sent
+      if (slot->sent < slot->actual_length)
+	{
+	  // Found data that still needs a successful write() or sendmsg()
+	  return true;
+	}
+
+      // Check for any Zero-Copy operation waiting for kernel ACK
+      if (slot->is_zerocopy && slot->pending_ops > 0)
+	{
+	  // Found a Zero-Copy buffer the kernel still owns
+	  return true;
+	}
+
+      idx = (idx + 1) % K_SLOT_COUNT;
+    }
+
+  // If the loop finishes, all outstanding slots are fully sent and fully ACK'd.
+  return false;
 }
 
 static void
@@ -220,9 +245,8 @@ process_timers (Cache *cache, uint64_t now_us)
 	  dlist_detach (&next->idle_list);
 	  dlist_insert_before (&g_data.idle_list, &next->idle_list);
 
-	  DBG_LOGF
-	    ("FD %d: ZC pending. Resetting idle timer and skipping close.",
-	     next->fd);
+	  DBG_LOGF ("FD %d: Pending I/O. Resetting idle timer and skipping close.",	// Changed log
+		    next->fd);
 	  continue;		// Skip close and go to next item in the list
 	}
       msgf ("Removing idle connection: %d", next->fd);

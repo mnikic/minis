@@ -15,11 +15,9 @@
 
 typedef struct {
     uint32_t actual_length; // The total size of the response (Header + Payload)
-    
-    // --- ZEROCOPY TRACKING ADDITIONS ---
     uint32_t pending_ops;   // Count of sendmsg() operations waiting for completion
     uint32_t sent;          // Bytes already passed to sendmsg() (may not be confirmed yet)
-    // The ResponseSlot itself acts as the "in-flight" block
+    bool is_zerocopy;
 } ResponseSlot;
 
 typedef enum
