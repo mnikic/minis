@@ -51,7 +51,6 @@
 #include "common/common.h"
 #include "server_loop.h"
 #include "list.h"
-#include "out.h"
 
 #define MAX_EVENTS 10000
 #define MAX_CHUNKS 16
@@ -109,7 +108,7 @@ fd_set_nb (int file_des)
     die ("fcntl error");
 }
 
-static int32_t
+static Conn *
 accept_new_conn (int file_des, uint64_t now_us)
 {
   struct sockaddr_in client_addr = { 0 };
@@ -130,19 +129,21 @@ accept_new_conn (int file_des, uint64_t now_us)
       if (errno == EAGAIN)
 	{
 	  DBG_LOG ("No more connections to accept (EAGAIN).");
-	  return -1;
+	  return NULL;
 	}
       msgf ("accept() error: %s", strerror (errno));
-      return -2;
+      return NULL;
     }
-    
+
   int sndbuf = 2 * 1024 * 1024;
   setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
-  
+
   int val = 1;
-  if (setsockopt(connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof(val))) {
-      msgf("setsockopt(SO_ZEROCOPY) failed: %s. Using standard copy.", strerror(errno));
-  }
+  if (setsockopt (connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof (val)))
+    {
+      msgf ("setsockopt(SO_ZEROCOPY) failed: %s. Using standard copy.",
+	    strerror (errno));
+    }
 
   Conn *conn = calloc (1, sizeof (Conn));
   if (!conn)
@@ -165,18 +166,36 @@ accept_new_conn (int file_des, uint64_t now_us)
   connpool_add (g_data.fd2conn, conn);
   DBG_LOGF ("Accepted new connection: FD %d", connfd);
 
-  return connfd;
+  return conn;
 }
 
 static inline void
 conn_done (Conn *conn)
 {
   DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
-  (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);
+  if (conn->fd == -1)
+    {
+      return;
+    }
   connpool_remove (g_data.fd2conn, conn->fd);
-  close (conn->fd);
+  Conn *lookup = connpool_lookup (g_data.fd2conn, conn->fd);
+  if (lookup != NULL)
+    die ("removed conn shouldn't be lookupabale any more.");
   dlist_detach (&conn->idle_list);
+  drain_zerocopy_errors (conn->fd);
+  (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);
+  close (conn->fd);
+  conn->idle_list.prev = NULL;
+  conn->idle_list.next = NULL;
+  conn->fd = -1;
   free (conn);
+}
+
+static inline bool
+conn_has_pending_write (const Conn *conn)
+{
+  // If the write index is not equal to the read index, we have pending completions.
+  return conn->write_idx != conn->read_idx;
 }
 
 static void
@@ -194,26 +213,23 @@ process_timers (Cache *cache, uint64_t now_us)
       if (next_us > now_us)
 	break;
 
+      if (conn_has_pending_write (next))
+	{
+	  next->idle_start = now_us;
+
+	  dlist_detach (&next->idle_list);
+	  dlist_insert_before (&g_data.idle_list, &next->idle_list);
+
+	  DBG_LOGF
+	    ("FD %d: ZC pending. Resetting idle timer and skipping close.",
+	     next->fd);
+	  continue;		// Skip close and go to next item in the list
+	}
       msgf ("Removing idle connection: %d", next->fd);
       conn_done (next);
     }
 
   cache_evict (cache, now_us);
-}
-
-static void
-connection_io (Cache *cache, Conn *conn, uint64_t now_us)
-{
-    handle_connection_io (g_data.epfd, cache, conn, now_us);
-
-    if (conn->state == STATE_REQ) {
-        conn->idle_start = get_monotonic_usec ();
-        dlist_detach (&conn->idle_list);
-
-        dlist_insert_before (&g_data.idle_list, &conn->idle_list);
-    } else {
-        dlist_detach (&conn->idle_list);
-    }
 }
 
 static void
@@ -223,56 +239,64 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 
   while (true)
     {
-      int conn_fd = accept_new_conn (listen_fd, now_us);
-
-      if (conn_fd < 0)
-	{
-	  if (conn_fd == -1)
-	    break;
-	  break;
-	}
-
+      Conn *conn = accept_new_conn (listen_fd, now_us);
+      if (!conn)
+	break;
       struct epoll_event event;
-      event.data.fd = conn_fd;
+      event.data.fd = conn->fd;
       event.events = EPOLLIN | EPOLLET | EPOLLERR;
 
       if (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1)
 	{
 	  msgf ("epoll ctl: new conn registration failed: %s",
 		strerror (errno));
-	  close (conn_fd);
+	  conn_done (conn);
 	}
     }
 }
 
 static void
-handle_connection_event (Cache *cache, struct epoll_event *event,
-      uint64_t now_us)
+connection_io (Cache *cache, Conn *conn, uint64_t now_us)
 {
-Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
-if (!conn)
-return;
+  handle_connection_io (g_data.epfd, cache, conn, now_us);
 
-DBG_LOGF ("FD %d: Handling epoll event (events: 0x%x). State: %d",
-event->data.fd, event->events, conn->state);
+  if (conn->state == STATE_END)
+    {
+      return;
+    }
 
-// Check for fatal errors (HUP/RDHUP) first
-  if (event->events & (EPOLLHUP | EPOLLRDHUP))
-  {
-    DBG_LOGF ("FD %d: Hangup/Error detected (0x%x). Closing.",
-        event->data.fd, event->events);
-    conn->state = STATE_END;
-    conn_done (conn);
+  bool is_linked = dlist_is_linked (&conn->idle_list);
+  if (is_linked)
+    dlist_detach (&conn->idle_list);
+  if (conn->state == STATE_REQ)
+    {
+      conn->idle_start = now_us;
+      dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+    }
+}
+
+static void
+handle_connection_event (Cache *cache, struct epoll_event *event,
+			 uint64_t now_us)
+{
+  Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
+  if (!conn)
     return;
-  }
 
-  // CRITICAL CHANGE: We MUST check for EPOLLERR (Zero-Copy Completion)
-  // as well as EPOLLIN (read) and EPOLLOUT (write).
-  if (event->events & (EPOLLIN | EPOLLOUT | EPOLLERR)) // <-- Change is here
-   TIME_STMT ("connection_io", connection_io (cache, conn, now_us));
+  if (event->events & (EPOLLHUP | EPOLLRDHUP))
+    {
+      DBG_LOGF ("FD %d: Hangup/Error detected (0x%x). Closing.",
+		event->data.fd, event->events);
+      conn->state = STATE_END;
+      goto CLEANUP;
+    }
 
-if (conn->state == STATE_END)
-conn_done (conn);
+  if (event->events & (EPOLLIN | EPOLLOUT | EPOLLERR))
+    TIME_STMT ("connection_io", connection_io (cache, conn, now_us));
+
+CLEANUP:
+  if (conn->state == STATE_END)
+    conn_done (conn);		// Free is here
 }
 
 static void

@@ -135,13 +135,12 @@ try_check_zerocopy_completion (Conn *conn)
                      conn->read_idx, current_slot->pending_ops);
 
             completion_processed = true;
-
-            // --- 3. Slot Cleanup and Advancement ---
-            // A slot is fully finished ONLY if:
-            // a) It has been fully SENT (slot->sent == slot->actual_length)
-            // b) All zero-copy operations have been ACKNOWLEDGED (slot->pending_ops == 0)
-            if (current_slot->pending_ops == 0 && current_slot->sent == current_slot->actual_length) {
-                
+            // --- 3. Continuous Slot Cleanup and Advancement ---
+            // Process all fully completed slots starting from conn->read_idx
+            while (current_slot->pending_ops == 0 && 
+                   current_slot->sent == current_slot->actual_length && 
+                   current_slot->actual_length > 0) 
+            {
                 // Clear the slot memory tracking
                 current_slot->actual_length = 0; 
                 current_slot->sent = 0; 
@@ -153,8 +152,7 @@ try_check_zerocopy_completion (Conn *conn)
                 // Move the read index to the next slot
                 conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
                 
-                // CRITICAL: Update the pointer to current_slot for the next CMSG/loop iteration.
-                // Since completions are ordered, the next completion applies to the new oldest slot.
+                // CRITICAL: Update the pointer to current_slot for the next loop iteration.
                 current_slot = &conn->res_slots[conn->read_idx]; 
             }
         }
@@ -589,10 +587,7 @@ try_flush_buffer (int epfd, Conn *conn)
                 conn_set_epoll_events (epfd, conn, EPOLLIN | EPOLLERR);
                 return false;
             }
-            // Should not happen, but defensively advance if the slot isn't cleared
-            slot->actual_length = 0;
-            conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
-            continue; // Move to the next slot
+            continue;
         }
 
         // C. Send Logic (MSG_ZEROCOPY)
@@ -709,4 +704,32 @@ handle_connection_io (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 
   if (conn->state == STATE_RES || conn->state == STATE_RES_CLOSE)
     state_res (epfd, conn);
+}
+
+void
+drain_zerocopy_errors(int file_des)
+{
+    struct msghdr msg = { 0 };
+    char control[100];
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    
+    // Loop until recvmsg returns -1 with EAGAIN or ENOMSG
+    while (true) {
+        DBG_LOGF("FD %d: in loop to drain errors.", file_des);
+        errno = 0;
+        int ret = (int) recvmsg(file_des, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
+
+        if (ret < 0) {
+            // EAGAIN or ENOMSG means the queue is empty. Success.
+            if (errno == EAGAIN || errno == ENOMSG) {
+                return;
+            }
+            // Other error (e.g., EBADF if connection is already half-closed), stop.
+            DBG_LOGF("FD %d: recvmsg(MSG_ERRQUEUE) error during close drain: %s", file_des, strerror(errno));
+            return;
+        }
+
+        // On success, we consumed one or more Zero-Copy ACKs (ret > 0). Continue draining.
+    }
 }

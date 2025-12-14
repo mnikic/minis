@@ -48,7 +48,7 @@ endif
 # --- Sanitizer Configurations (Includes remain necessary) ---
 BASE_SANITIZE_FLAGS = -g -O1 -fno-omit-frame-pointer
 
-CFLAGS_ASAN = $(BASE_SANITIZE_FLAGS) -fsanitize=address $(INCLUDE_DIRS)
+CFLAGS_ASAN = $(BASE_SANITIZE_FLAGS) $(DEBUG_FLAG) -fsanitize=address $(INCLUDE_DIRS)
 LDFLAGS_ASAN = -fsanitize=address
 
 CFLAGS_UBSAN = -g -O2 -fno-omit-frame-pointer -fsanitize=undefined $(INCLUDE_DIRS)
@@ -205,7 +205,6 @@ $(CLIENT_ASAN_BIN): $(CLIENT_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-# NEW: ASAN for Interactive Client
 $(INTERACTIVE_CLIENT_ASAN_BIN): CFLAGS := $(CFLAGS_ASAN)
 $(INTERACTIVE_CLIENT_ASAN_BIN): LDFLAGS := $(LDFLAGS_ASAN)
 $(INTERACTIVE_CLIENT_ASAN_BIN): $(INTERACTIVE_CLIENT_OBJ)

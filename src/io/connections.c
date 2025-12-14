@@ -158,33 +158,27 @@ connpool_remove (ConnPool *pool, int file_desc)
     {
       return;
     }
-
   PoolEntry *entry = pool->by_fd[file_desc];
   size_t removed_index = entry->index_in_active;
-
-  // If the connection is not the last in the active list, swap it with the last one.
-  if (removed_index != pool->active_count - 1)
+  if (pool->active_count == 0 || removed_index >= pool->active_count)
     {
-      // 1. Get the connection pointer that is currently at the end of the active array.
-      Conn *moved_conn = pool->active[pool->active_count - 1];
-
-      // 2. Move the last connection into the freed slot.
+      // This case should be caught by the bitmap check, but is a safe guard.
+      return;
+    }
+  size_t last_index = pool->active_count - 1;
+  if (removed_index != last_index)
+    {
+      Conn *moved_conn = pool->active[last_index];
       pool->active[removed_index] = moved_conn;
 
-      // 3. Update the PoolEntry of the moved connection to reflect its new index.
       PoolEntry *moved_entry = pool->by_fd[moved_conn->fd];
       moved_entry->index_in_active = (uint32_t) removed_index;
     }
 
-  if (pool->active_count > 0)
-    {
-      pool->active[pool->active_count - 1] = NULL;
-    }
-
+  pool->active[last_index] = NULL;
   pool->active_count--;
-  pool->fd_bitmap[word_idx] &= ~(1U << bit_idx);
 
-  // Final cleanup of the entry itself
+  pool->fd_bitmap[word_idx] &= ~(1U << bit_idx);
   free (entry);
   pool->by_fd[file_desc] = NULL;
 }
