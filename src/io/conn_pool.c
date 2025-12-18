@@ -8,7 +8,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "connections.h"
+#include "connection.h"
+#include "conn_pool.h"
 #include "common/common.h"
 
 static void

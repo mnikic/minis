@@ -2,152 +2,195 @@ CC=gcc
 INCLUDE_PATHS = $(SRC_DIR) test
 INCLUDE_DIRS = $(addprefix -I,$(INCLUDE_PATHS))
 
-# Define the debug flag (enables logs and adds debugging symbols for gdb)
-DEBUG_FLAG = -DDEBUG_LOGGING -g -O1
-
-# Base CFLAGS for high optimization/security (used by standard and as a base for others)
-CFLAGS_BASE=-std=gnu11 -O3 -pthread \
+# ============================================================================
+# COMMON FLAGS (shared by all build types)
+# ============================================================================
+COMMON_FLAGS = -std=gnu11 -pthread \
 	-Wall -Wextra -Werror -Wno-unused-parameter \
 	-Wformat=2 -Werror=format-security \
 	-Wconversion -Wimplicit-fallthrough \
 	-Wwrite-strings -Wstrict-prototypes -Wold-style-definition \
 	-Wshadow -Wredundant-decls -Wnested-externs -Wmissing-include-dirs \
+	-Wpedantic -Wundef -Wcast-align -Wswitch-enum \
+	-Wfloat-equal -Wcast-qual -Wstrict-overflow=2
+#  -DK_ENABLE_BENCHMARK
+
+# GCC-specific warnings
+ifeq ($(CC),gcc)
+	COMMON_FLAGS += -Wjump-misses-init -Wlogical-op
+endif
+
+# ============================================================================
+# RELEASE BUILD (Maximum performance)
+# ============================================================================
+RELEASE_CFLAGS = $(COMMON_FLAGS) \
+	-O3 -flto=auto \
+	-march=native -mtune=native \
+	-fno-plt -fno-semantic-interposition \
+	-fomit-frame-pointer -funroll-loops \
+	-DNDEBUG \
 	-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 \
 	-fstack-protector-strong -fstack-clash-protection \
 	-fstrict-flex-arrays=3 \
-	-Wpedantic -Wundef -Wcast-align -Wswitch-enum \
-	-Wno-unused-parameter -Wfloat-equal -Wcast-qual -Wstrict-overflow=2 \
-#  -DK_ENABLE_BENCHMARK
+	$(INCLUDE_DIRS)
 
-
-LDFLAGS_BASE=-pthread \
+RELEASE_LDFLAGS = -pthread \
+	-flto=auto -march=native -O3 \
 	-Wl,-z,nodlopen -Wl,-z,noexecstack \
 	-Wl,-z,relro,-z,now \
 	-Wl,--as-needed -Wl,--no-copy-dt-needed-entries
 
-# Append include directories to all CFLAGS definitions
-CFLAGS = $(CFLAGS_BASE) $(INCLUDE_DIRS)
-LDFLAGS = $(LDFLAGS_BASE)
+# ============================================================================
+# DEBUG BUILD (Easy debugging, fast compilation)
+# ============================================================================
+DEBUG_CFLAGS = $(COMMON_FLAGS) \
+	-O0 -g \
+	-DDEBUG_LOGGING \
+	-fno-omit-frame-pointer \
+	$(INCLUDE_DIRS)
 
-ifeq ($(CC),gcc)
-	CFLAGS += -Wjump-misses-init -Wlogical-op
-endif
+DEBUG_LDFLAGS = -pthread -g
 
-# --- Conditional Debug Build CFLAGS ---
-# Check if the target is 'debug' or 'test-debug' and modify the base CFLAGS/LDFLAGS
-# This will force the object files to be rebuilt with debug symbols and logging enabled.
+# ============================================================================
+# SANITIZER BUILDS (Bug detection)
+# ============================================================================
+SANITIZE_BASE = $(COMMON_FLAGS) \
+	-O1 -g \
+	-fno-omit-frame-pointer \
+	-DDEBUG_LOGGING \
+	$(INCLUDE_DIRS)
+
+CFLAGS_ASAN = $(SANITIZE_BASE) -fsanitize=address
+LDFLAGS_ASAN = -pthread -fsanitize=address
+
+CFLAGS_UBSAN = $(SANITIZE_BASE) -fsanitize=undefined
+LDFLAGS_UBSAN = -pthread -fsanitize=undefined
+
+CFLAGS_TSAN = $(SANITIZE_BASE) -fsanitize=thread
+LDFLAGS_TSAN = -pthread -fsanitize=thread
+
+# ============================================================================
+# Default to RELEASE build
+# ============================================================================
+CFLAGS = $(RELEASE_CFLAGS)
+LDFLAGS = $(RELEASE_LDFLAGS)
+
+# Override for debug targets
 ifeq ($(MAKECMDGOALS),debug)
-	CFLAGS = $(CFLAGS_BASE) $(INCLUDE_DIRS) $(DEBUG_FLAG)
-	LDFLAGS = $(LDFLAGS_BASE) -g
+	CFLAGS = $(DEBUG_CFLAGS)
+	LDFLAGS = $(DEBUG_LDFLAGS)
 endif
+
 ifeq ($(MAKECMDGOALS),test-debug)
-	CFLAGS = $(CFLAGS_BASE) $(INCLUDE_DIRS) $(DEBUG_FLAG)
-	LDFLAGS = $(LDFLAGS_BASE) -g
+	CFLAGS = $(DEBUG_CFLAGS)
+	LDFLAGS = $(DEBUG_LDFLAGS)
 endif
 
-# --- Sanitizer Configurations (Includes remain necessary) ---
-BASE_SANITIZE_FLAGS = -g -O1 -fno-omit-frame-pointer
-
-CFLAGS_ASAN = $(BASE_SANITIZE_FLAGS) $(DEBUG_FLAG) -fsanitize=address $(INCLUDE_DIRS)
-LDFLAGS_ASAN = -fsanitize=address
-
-CFLAGS_UBSAN = -g -O2 -fno-omit-frame-pointer -fsanitize=undefined $(INCLUDE_DIRS)
-LDFLAGS_UBSAN = -fsanitize=undefined
-
-CFLAGS_TSAN = $(BASE_SANITIZE_FLAGS) -fsanitize=thread $(INCLUDE_DIRS) $(DEBUG_FLAG)
-LDFLAGS_TSAN = -fsanitize=thread
-
+# ============================================================================
+# DIRECTORY STRUCTURE
+# ============================================================================
 SRC_DIR := src
 OBJ_DIR := build/obj
 BIN_DIR := build/bin
 
-# --- Source Discovery (Uses the new directory structure) ---
+# ============================================================================
+# SOURCE FILES
+# ============================================================================
 COMMON_SRCS := $(wildcard $(SRC_DIR)/common/*.c)
 IO_SRCS := $(wildcard $(SRC_DIR)/io/*.c)
 CACHE_SRCS := $(wildcard $(SRC_DIR)/cache/*.c)
 CLIENT_SRC_FILE := $(SRC_DIR)/client.c
 SERVER_MAIN_SRC := $(SRC_DIR)/server_main.c
-# NEW: Interactive Client Source File
 INTERACTIVE_CLIENT_SRC_FILE := $(SRC_DIR)/interactive_client.c
 
-# Combine all server-related sources
+# Combine sources for each binary
 SERVER_SOURCES := $(COMMON_SRCS) $(IO_SRCS) $(CACHE_SRCS) $(SERVER_MAIN_SRC)
-# Existing client sources
 CLIENT_SOURCES := $(CLIENT_SRC_FILE) $(SRC_DIR)/common/common.c
-# NEW: Interactive client sources
 INTERACTIVE_CLIENT_SOURCES := $(INTERACTIVE_CLIENT_SRC_FILE) $(SRC_DIR)/common/common.c
 
-# --- Test Source Definitions ---
+# ============================================================================
+# TEST SOURCE DEFINITIONS
+# ============================================================================
 TEST_HEAP_SRC = test/heap_test.c
-# Name for the object file of the test runner itself
 HEAP_TEST_OBJ_RUNNER = $(OBJ_DIR)/heap_test.o
 
 HEAP_TEST_DEPS = \
 	$(OBJ_DIR)/cache/heap.o \
 	$(OBJ_DIR)/common/common.o
 
-# Find the corresponding source files for the required object files
 HEAP_TEST_DEP_SRCS = $(patsubst $(OBJ_DIR)/%.o, $(SRC_DIR)/%.c, $(HEAP_TEST_DEPS))
 
-
-# --- Object File Calculation (Preserves subdirectory structure in OBJ_DIR) ---
+# ============================================================================
+# OBJECT FILES (preserves subdirectory structure)
+# ============================================================================
 SERVER_OBJ_PATHS := $(patsubst $(SRC_DIR)/%.c,%.o,$(SERVER_SOURCES))
 SERVER_OBJ := $(addprefix $(OBJ_DIR)/,$(SERVER_OBJ_PATHS))
 
 CLIENT_OBJ_PATHS := $(patsubst $(SRC_DIR)/%.c,%.o,$(CLIENT_SOURCES))
 CLIENT_OBJ := $(addprefix $(OBJ_DIR)/,$(CLIENT_OBJ_PATHS))
 
-# NEW: Interactive Client Object calculation
 INTERACTIVE_CLIENT_OBJ_PATHS := $(patsubst $(SRC_DIR)/%.c,%.o,$(INTERACTIVE_CLIENT_SOURCES))
 INTERACTIVE_CLIENT_OBJ := $(addprefix $(OBJ_DIR)/,$(INTERACTIVE_CLIENT_OBJ_PATHS))
 
-
-# --- Final binaries ---
+# ============================================================================
+# BINARY NAMES
+# ============================================================================
+# Standard binaries
 SERVER_BIN = $(BIN_DIR)/server
 CLIENT_BIN = $(BIN_DIR)/client
-# NEW: Interactive Client Binary
 INTERACTIVE_CLIENT_BIN = $(BIN_DIR)/interactive_client
 HEAP_TEST_BIN = $(BIN_DIR)/heap_test
 
 # Debug binaries
 SERVER_DEBUG_BIN = $(BIN_DIR)/server_debug
 CLIENT_DEBUG_BIN = $(BIN_DIR)/client_debug
-# NEW: Interactive Client Debug Binary
 INTERACTIVE_CLIENT_DEBUG_BIN = $(BIN_DIR)/interactive_client_debug
 
 # Sanitizer binaries
 SERVER_ASAN_BIN = $(BIN_DIR)/server_asan
 CLIENT_ASAN_BIN = $(BIN_DIR)/client_asan
-# NEW: Interactive Client ASAN Binary
 INTERACTIVE_CLIENT_ASAN_BIN = $(BIN_DIR)/interactive_client_asan
 HEAP_TEST_ASAN_BIN = $(BIN_DIR)/heap_test_asan
 
 SERVER_UBSAN_BIN = $(BIN_DIR)/server_ubsan
 CLIENT_UBSAN_BIN = $(BIN_DIR)/client_ubsan
-# NEW: Interactive Client UBSAN Binary
 INTERACTIVE_CLIENT_UBSAN_BIN = $(BIN_DIR)/interactive_client_ubsan
 HEAP_TEST_UBSAN_BIN = $(BIN_DIR)/heap_test_ubsan
 
 SERVER_TSAN_BIN = $(BIN_DIR)/server_tsan
 CLIENT_TSAN_BIN = $(BIN_DIR)/client_tsan
-# NEW: Interactive Client TSAN Binary
 INTERACTIVE_CLIENT_TSAN_BIN = $(BIN_DIR)/interactive_client_tsan
 HEAP_TEST_TSAN_BIN = $(BIN_DIR)/heap_test_tsan
 
+# ============================================================================
+# PHONY TARGETS
+# ============================================================================
+.PHONY: all clean analyze asan ubsan tsan test test-asan test-ubsan test-tsan heap-test debug test-debug
 
+# ============================================================================
+# DEFAULT TARGET
+# ============================================================================
 all: $(SERVER_BIN) $(CLIENT_BIN) $(INTERACTIVE_CLIENT_BIN)
 
+# ============================================================================
+# ANALYZER TARGET
+# ============================================================================
 analyze:
 	mkdir -p build/analyze
 	cd build/analyze && \
-	# This rule needs manual adjustment to reference files correctly
 	$(CC) $(CFLAGS) -fanalyzer $(SERVER_SOURCES) $(CLIENT_SRC_FILE) $(INTERACTIVE_CLIENT_SRC_FILE) -c
 
-# --- Build targets (Phony) ---
+# ============================================================================
+# BUILD TARGETS
+# ============================================================================
 debug: $(SERVER_DEBUG_BIN) $(CLIENT_DEBUG_BIN) $(INTERACTIVE_CLIENT_DEBUG_BIN)
+asan: $(SERVER_ASAN_BIN) $(CLIENT_ASAN_BIN) $(INTERACTIVE_CLIENT_ASAN_BIN) $(HEAP_TEST_ASAN_BIN)
+ubsan: $(SERVER_UBSAN_BIN) $(CLIENT_UBSAN_BIN) $(INTERACTIVE_CLIENT_UBSAN_BIN) $(HEAP_TEST_UBSAN_BIN)
+tsan: $(SERVER_TSAN_BIN) $(CLIENT_TSAN_BIN) $(INTERACTIVE_CLIENT_TSAN_BIN) $(HEAP_TEST_TSAN_BIN)
 
-
-# --- Build binaries (Standard) ---
+# ============================================================================
+# STANDARD BINARIES
+# ============================================================================
 $(SERVER_BIN): $(SERVER_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -156,15 +199,17 @@ $(CLIENT_BIN): $(CLIENT_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-# NEW: Build Interactive Client Binary (Standard)
 $(INTERACTIVE_CLIENT_BIN): $(INTERACTIVE_CLIENT_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
+$(HEAP_TEST_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-# --- Build binaries (Debug) ---
-# When 'make debug' is run, the global CFLAGS is set with the debug flags,
-# forcing the dependencies (objects) to be compiled with debugging.
+# ============================================================================
+# DEBUG BINARIES
+# ============================================================================
 $(SERVER_DEBUG_BIN): $(SERVER_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
@@ -175,24 +220,14 @@ $(CLIENT_DEBUG_BIN): $(CLIENT_OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@echo "Debug client built successfully."
 
-# NEW: Build Interactive Client Binary (Debug)
 $(INTERACTIVE_CLIENT_DEBUG_BIN): $(INTERACTIVE_CLIENT_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@echo "Debug interactive client built successfully."
 
-# --- Build Heap Test Binary (Standard) ---
-$(HEAP_TEST_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
-	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
-
-# ------------------------------------
-# --- Build binaries (Sanitized) ---
-# ------------------------------------
-
-asan: $(SERVER_ASAN_BIN) $(CLIENT_ASAN_BIN) $(INTERACTIVE_CLIENT_ASAN_BIN) $(HEAP_TEST_ASAN_BIN)
-
-# Standard ASAN rules (unchanged)
+# ============================================================================
+# ASAN BINARIES
+# ============================================================================
 $(SERVER_ASAN_BIN): CFLAGS := $(CFLAGS_ASAN)
 $(SERVER_ASAN_BIN): LDFLAGS := $(LDFLAGS_ASAN)
 $(SERVER_ASAN_BIN): $(SERVER_OBJ)
@@ -211,17 +246,15 @@ $(INTERACTIVE_CLIENT_ASAN_BIN): $(INTERACTIVE_CLIENT_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-# ASAN for Heap Test
 $(HEAP_TEST_ASAN_BIN): CFLAGS := $(CFLAGS_ASAN)
 $(HEAP_TEST_ASAN_BIN): LDFLAGS := $(LDFLAGS_ASAN)
 $(HEAP_TEST_ASAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-
-ubsan: $(SERVER_UBSAN_BIN) $(CLIENT_UBSAN_BIN) $(INTERACTIVE_CLIENT_UBSAN_BIN) $(HEAP_TEST_UBSAN_BIN)
-
-# Standard UBSAN rules (unchanged)
+# ============================================================================
+# UBSAN BINARIES
+# ============================================================================
 $(SERVER_UBSAN_BIN): CFLAGS := $(CFLAGS_UBSAN)
 $(SERVER_UBSAN_BIN): LDFLAGS := $(LDFLAGS_UBSAN)
 $(SERVER_UBSAN_BIN): $(SERVER_OBJ)
@@ -236,7 +269,6 @@ $(CLIENT_UBSAN_BIN): $(CLIENT_OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@chmod +x $@
 
-# NEW: UBSAN for Interactive Client
 $(INTERACTIVE_CLIENT_UBSAN_BIN): CFLAGS := $(CFLAGS_UBSAN)
 $(INTERACTIVE_CLIENT_UBSAN_BIN): LDFLAGS := $(LDFLAGS_UBSAN)
 $(INTERACTIVE_CLIENT_UBSAN_BIN): $(INTERACTIVE_CLIENT_OBJ)
@@ -244,7 +276,6 @@ $(INTERACTIVE_CLIENT_UBSAN_BIN): $(INTERACTIVE_CLIENT_OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@chmod +x $@
 
-# UBSAN for Heap Test
 $(HEAP_TEST_UBSAN_BIN): CFLAGS := $(CFLAGS_UBSAN)
 $(HEAP_TEST_UBSAN_BIN): LDFLAGS := $(LDFLAGS_UBSAN)
 $(HEAP_TEST_UBSAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
@@ -252,10 +283,9 @@ $(HEAP_TEST_UBSAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@chmod +x $@
 
-
-tsan: $(SERVER_TSAN_BIN) $(CLIENT_TSAN_BIN) $(INTERACTIVE_CLIENT_TSAN_BIN) $(HEAP_TEST_TSAN_BIN)
-
-# Standard TSAN rules (unchanged)
+# ============================================================================
+# TSAN BINARIES
+# ============================================================================
 $(SERVER_TSAN_BIN): CFLAGS := $(CFLAGS_TSAN)
 $(SERVER_TSAN_BIN): LDFLAGS := $(LDFLAGS_TSAN)
 $(SERVER_TSAN_BIN): $(SERVER_OBJ)
@@ -270,7 +300,6 @@ $(CLIENT_TSAN_BIN): $(CLIENT_OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@chmod +x $@
 
-# NEW: TSAN for Interactive Client
 $(INTERACTIVE_CLIENT_TSAN_BIN): CFLAGS := $(CFLAGS_TSAN)
 $(INTERACTIVE_CLIENT_TSAN_BIN): LDFLAGS := $(LDFLAGS_TSAN)
 $(INTERACTIVE_CLIENT_TSAN_BIN): $(INTERACTIVE_CLIENT_OBJ)
@@ -278,7 +307,6 @@ $(INTERACTIVE_CLIENT_TSAN_BIN): $(INTERACTIVE_CLIENT_OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@chmod +x $@
 
-# TSAN for Heap Test
 $(HEAP_TEST_TSAN_BIN): CFLAGS := $(CFLAGS_TSAN)
 $(HEAP_TEST_TSAN_BIN): LDFLAGS := $(LDFLAGS_TSAN)
 $(HEAP_TEST_TSAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
@@ -286,23 +314,22 @@ $(HEAP_TEST_TSAN_BIN): $(HEAP_TEST_OBJ_RUNNER) $(HEAP_TEST_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 	@chmod +x $@
 
-
-# --- Compile C to object files (General Rule) ---
-# Handles all files in the src/ directory (e.g., src/cache/heap.c -> build/obj/cache/heap.o)
-# This rule will use the global CFLAGS, which are conditionally set to include -DDEBUG_LOGGING
-# when 'make debug' is run.
+# ============================================================================
+# OBJECT FILE COMPILATION
+# ============================================================================
+# Compile C source files to object files (preserves directory structure)
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
-	
-# --- Compile C to object files (Specific Test Runner Rule) ---
-# Rule for the heap_test.c file which is outside of SRC_DIR
+
+# Compile test runner (outside of SRC_DIR)
 $(HEAP_TEST_OBJ_RUNNER): $(TEST_HEAP_SRC)
 	@mkdir -p $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-
-# --- Test Targets ---
+# ============================================================================
+# TEST TARGETS
+# ============================================================================
 TEST_SCRIPT = test/test_cmds_extra.py
 
 heap-test: $(HEAP_TEST_BIN)
@@ -339,8 +366,9 @@ test-tsan: $(SERVER_TSAN_BIN) $(CLIENT_TSAN_BIN) $(INTERACTIVE_CLIENT_TSAN_BIN) 
 	@echo "--- Running TSan E2E tests with $(CLIENT_TSAN_BIN) ---"
 	@CLIENT_BIN_NAME=client_tsan python3 $(TEST_SCRIPT)
 
+# ============================================================================
+# CLEAN TARGET
+# ============================================================================
 clean:
 	rm -rf build
 	rm -f $(BIN_DIR)/server_debug $(BIN_DIR)/client_debug $(BIN_DIR)/interactive_client_debug
-
-.PHONY: all clean analyze asan ubsan tsan test test-asan test-ubsan test-tsan heap-test debug test-debug

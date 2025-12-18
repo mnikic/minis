@@ -252,6 +252,7 @@ expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
 	  // Key is expired. Perform passive eviction.
 	  HNode *removed_node =
 	    hm_pop (&cache->db, &(*ent)->node, &hnode_same);
+	  (void) removed_node;
 	  assert (removed_node == &(*ent)->node);
 
 	  entry_del (cache, *ent, now_us);
@@ -571,6 +572,7 @@ do_get (Cache *cache, char *key_param, Buffer *out, uint64_t now_us)
 	{
 	  // Key is expired. Initiate passive eviction (the garbage collector role).
 	  HNode *removed_node = hm_pop (&cache->db, &ent->node, &hnode_same);
+	  (void) removed_node;
 	  assert (removed_node == &ent->node);
 
 	  entry_del (cache, ent, now_us);	// Handles heap removal and async cleanup
@@ -755,6 +757,7 @@ cache_evict (Cache *cache, uint64_t now_us)
       // Get the entry from the heap top's ref (which points to the Entry's heap_idx field)
       Entry *ent = fetch_entry_from_heap_ref (heap_top (&cache->heap)->ref);
       HNode *node = hm_pop (&cache->db, &ent->node, &hnode_same);
+      (void)node;
       assert (node == &ent->node);
       // entry_del handles heap removal (via entry_set_ttl) and cleanup
       entry_del (cache, ent, now_us);

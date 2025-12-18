@@ -10,7 +10,7 @@ SERVER_PORT = 1234  # Custom port for your server
 NUM_KEYS =  100  
 KEY_PREFIX = "benchkey_"
 VALUE_SIZE = 1024   # Size of the value in bytes (1KB)
-ITERATIONS = 10000    # How many times to repeat the MGET command for measurement
+ITERATIONS = 50000    # How many times to repeat the MGET command for measurement
 
 # Constants matching your server's protocol
 SER_NIL = 0
@@ -207,8 +207,7 @@ def benchmark_mget(sock, count, iterations):
     mget_command_request = length_prefix + raw_payload_bytes
     
     command_size_bytes = len(mget_command_request)
-    # Payload size for 3500 keys is approximately: 4 (L prefix) + 4 (N) + 8 (MGET L+D) + 3500 * (~16 per key) ≈ 56 KB
-    print(f"MGET request size (3500 keys): {command_size_bytes / 1024:.1f} KB")
+    print(f"MGET request size ({NUM_KEYS} keys): {command_size_bytes / 1024:.1f} KB")
     
     # 3. Start timing
     start_time = time.time()

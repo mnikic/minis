@@ -21,8 +21,7 @@ void dlist_init (DList * node);
 
 bool dlist_empty (DList * node);
 
-bool
-dlist_is_linked (DList * node);
+bool dlist_is_linked (DList * node);
 
 void dlist_detach (DList * node);
 

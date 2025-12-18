@@ -1,0 +1,128 @@
+/*
+ * connection.h
+ *
+ *  Created on: Jun 12, 2023
+ *      Author: loshmi
+ */
+#ifndef CONNECTION_H_
+#define CONNECTION_H_
+
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include "list.h"
+#include "common/common.h"
+
+typedef struct
+{
+  uint32_t actual_length;	// The total size of the response (Header + Payload)
+  uint32_t pending_ops;		// Count of sendmsg() operations waiting for completion
+  uint32_t sent;		// Bytes already passed to sendmsg() (may not be confirmed yet)
+  bool is_zerocopy;
+} ResponseSlot;
+
+typedef enum
+{
+  STATE_ACTIVE = 0,
+  STATE_FLUSH_CLOSE = 2,
+  STATE_CLOSE = 3,
+} ConnectionState;
+
+typedef struct
+{
+  int fd;
+  ConnectionState state;
+  uint32_t rbuf_size;
+  size_t read_offset;
+  uint8_t rbuf[4 + K_MAX_MSG + 1];	// Added 1 extra for ease of string in place 0 termination.
+
+  // Metadata for each response slot
+  ResponseSlot res_slots[K_SLOT_COUNT];
+
+  // Continuous memory for all response payloads (K_SLOT_COUNT * K_MAX_MSG)
+  // The size of the memory block is now K_SLOT_COUNT * K_MAX_MSG
+  uint8_t res_data[K_SLOT_COUNT * K_MAX_MSG];
+
+  // Read index: Points to the oldest response ready to be SENT
+  uint32_t read_idx;
+  size_t res_sent;		// Progress tracker: How many bytes of 
+  // res_slots[read_idx] have been sent.
+
+  // Write index: Points to the next free slot ready to be WRITTEN
+  uint32_t write_idx;
+
+  uint64_t idle_start;
+  uint32_t last_events;		// cache, to not EPOLL_CTL_MOD if there is no need
+  DList idle_list;
+} Conn;
+
+// Update slot's pending_ops count based on completions
+// Returns: true if the slot became fully complete (sent AND acked)
+// Corrected signature and body
+bool
+apply_zerocopy_completion (int file_desc, uint32_t slot_idx,
+			   ResponseSlot * slot, uint32_t completed_ops);
+
+// Check if a slot is completely done (sent AND acked for zerocopy)
+static inline bool
+is_slot_complete (ResponseSlot *slot)
+{
+  return slot->pending_ops == 0 &&
+    slot->sent == slot->actual_length && slot->actual_length > 0;
+}
+
+// Reset read buffer to initial state (fully consumed)
+static inline void
+reset_read_buffer (Conn *conn)
+{
+  conn->rbuf_size = 0;
+  conn->read_offset = 0;
+}
+
+// Check if read buffer is fully consumed
+static inline bool
+is_read_buffer_consumed (Conn *conn)
+{
+  return conn->read_offset > 0 && conn->read_offset == conn->rbuf_size;
+}
+
+// Check if there's unprocessed data in read buffer
+static inline bool
+has_unprocessed_data (Conn *conn)
+{
+  return conn->read_offset < conn->rbuf_size;
+}
+
+static inline uint8_t *
+get_slot_data_ptr (Conn *conn, uint32_t slot_idx)
+{
+  return &conn->res_data[(size_t) (slot_idx * K_MAX_MSG)];
+}
+
+static inline bool
+is_res_queue_full (Conn *conn)
+{
+  return ((conn->write_idx + 1) % K_SLOT_COUNT) == conn->read_idx;
+}
+
+// Check if a slot is fully sent (regardless of ACK status)
+static inline bool
+is_slot_fully_sent (ResponseSlot *slot)
+{
+  return slot->sent >= slot->actual_length;
+}
+
+// Check if a slot is empty/available
+static inline bool
+is_slot_empty (ResponseSlot *slot)
+{
+  return slot->actual_length == 0;
+}
+
+// Release completed slots from the ring buffer
+// Returns: number of slots released
+uint32_t release_completed_slots (Conn * conn);
+
+bool is_connection_idle (Conn * conn);
+
+#endif /* CONNECTION_H_ */

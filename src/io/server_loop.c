@@ -47,7 +47,7 @@
 
 #include "cache/cache.h"
 #include "connection_handler.h"
-#include "connections.h"
+#include "conn_pool.h"
 #include "common/common.h"
 #include "server_loop.h"
 #include "list.h"
@@ -154,7 +154,7 @@ accept_new_conn (int file_des, uint64_t now_us)
     }
 
   conn->fd = connfd;
-  conn->state = STATE_REQ;
+  conn->state = STATE_ACTIVE;
   conn->rbuf_size = 0;
   conn->write_idx = 0;
   conn->read_idx = 0;
@@ -279,19 +279,21 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 }
 
 static void
-connection_io (Cache *cache, Conn *conn, uint64_t now_us)
+connection_io (Cache *cache, Conn *conn, uint64_t now_us, uint32_t events)
 {
-  handle_connection_io (g_data.epfd, cache, conn, now_us);
+  handle_connection_io (g_data.epfd, cache, conn, now_us, events);
 
-  if (conn->state == STATE_END)
+  if (conn->state == STATE_CLOSE)
     {
       return;
     }
 
-  bool is_linked = dlist_is_linked (&conn->idle_list);
-  if (is_linked)
-    dlist_detach (&conn->idle_list);
-  if (conn->state == STATE_REQ)
+  if (dlist_is_linked (&conn->idle_list))
+    {
+      dlist_detach (&conn->idle_list);
+    }
+
+  if (is_connection_idle (conn))
     {
       conn->idle_start = now_us;
       dlist_insert_before (&g_data.idle_list, &conn->idle_list);
@@ -305,21 +307,10 @@ handle_connection_event (Cache *cache, struct epoll_event *event,
   Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
   if (!conn)
     return;
-
-  if (event->events & (EPOLLHUP | EPOLLRDHUP))
-    {
-      DBG_LOGF ("FD %d: Hangup/Error detected (0x%x). Closing.",
-		event->data.fd, event->events);
-      conn->state = STATE_END;
-      goto CLEANUP;
-    }
-
-  if (event->events & (EPOLLIN | EPOLLOUT | EPOLLERR))
-    TIME_STMT ("connection_io", connection_io (cache, conn, now_us));
-
-CLEANUP:
-  if (conn->state == STATE_END)
-    conn_done (conn);		// Free is here
+  TIME_STMT ("connection_io",
+	     connection_io (cache, conn, now_us, event->events));
+  if (conn->state == STATE_CLOSE)
+    conn_done (conn);
 }
 
 static void

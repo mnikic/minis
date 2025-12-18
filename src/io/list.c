@@ -22,7 +22,7 @@ dlist_empty (DList *node)
 }
 
 bool
-dlist_is_linked (DList *node) 
+dlist_is_linked (DList *node)
 {
   return node != NULL && node->next != node;
 }
@@ -32,10 +32,11 @@ dlist_detach (DList *node)
 {
   DList *prev = node->prev;
   DList *next = node->next;
-  
-  if (prev->next != node || next->prev != node) {
-    die ("List is corrupted");
-  }
+
+  if (prev->next != node || next->prev != node)
+    {
+      die ("List is corrupted");
+    }
 
   prev->next = next;
   next->prev = prev;
