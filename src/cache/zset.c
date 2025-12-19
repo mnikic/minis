@@ -11,8 +11,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include "zset.h"
+
+#include "common/macros.h"
 #include "common/common.h"
+#include "zset.h"
 
 #define EPSILON 1e-9
 

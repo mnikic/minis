@@ -48,12 +48,13 @@
 #include "cache/cache.h"
 #include "connection_handler.h"
 #include "conn_pool.h"
-#include "common/common.h"
 #include "server_loop.h"
+#include "common/common.h"
+#include "common/macros.h"
 #include "list.h"
+#include "zerocopy.h"
 
 #define MAX_EVENTS 10000
-#define MAX_CHUNKS 16
 #define K_IDLE_TIMEOUT_US 5000000
 
 static struct
@@ -65,7 +66,7 @@ static struct
 } g_data;
 
 // Signal handler function (async-signal-safe)
-static inline uint64_t
+static ALWAYS_INLINE uint64_t
 get_monotonic_usec (void)
 {
   struct timespec tvs = { 0, 0 };
@@ -92,19 +93,19 @@ setup_signal_handlers (void)
   sigaction (SIGQUIT, &sig_action, NULL);
 }
 
-static void
+static ALWAYS_INLINE void
 fd_set_nb (int file_des)
 {
   errno = 0;
   int flags = fcntl (file_des, F_GETFL, 0);
-  if (errno)
+  if (unlikely (errno))
     die ("fcntl error");
 
   flags |= O_NONBLOCK;
 
   errno = 0;
   (void) fcntl (file_des, F_SETFL, flags);
-  if (errno)
+  if (unlikely (errno))
     die ("fcntl error");
 }
 
@@ -130,9 +131,8 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 #endif
 
       // 2. Handle Accept Failures
-      if (connfd < 0)
+      if (unlikely (connfd < 0))
 	{
-	  // CRITICAL FIX: If errno is EAGAIN, we are done. Break the loop.
 	  if (errno == EAGAIN)
 	    break;
 
@@ -140,29 +140,25 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 	  break;		// Stop looping on fatal errors too
 	}
 
-      // 3. Setup Socket Options (Your existing logic)
       int sndbuf = 2 * 1024 * 1024;
       setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
 
       int val = 1;
-      if (setsockopt (connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof (val)))
+      if (unlikely
+	  (setsockopt (connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof (val))))
 	{
-	  // Optional: log warning
+	  msgf ("SO_ZEROCOPY not set. error: %s");
 	}
 
-      // 4. Get from Pool
       Conn *conn = connpool_get (g_data.fd2conn, connfd);
 
-      if (!conn)
+      if (unlikely (!conn))
 	{
-	  // CRITICAL FIX: We have a valid FD, but no pool space.
-	  // Close it to acknowledge the client, then CONTINUE to drain others.
 	  close (connfd);
 	  DBG_LOG ("Dropped connection: Pool full or OOM.");
 	  continue;
 	}
 
-      // 5. Success Path
       conn->idle_start = now_us;
       dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
@@ -170,7 +166,8 @@ handle_listener_event (int listen_fd, uint64_t now_us)
       event.data.fd = conn->fd;
       event.events = EPOLLIN | EPOLLET | EPOLLERR;
 
-      if (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1)
+      if (unlikely
+	  (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1))
 	{
 	  msgf ("epoll ctl: add failed: %s", strerror (errno));
 	  // If we fail to add to epoll, we must release/close immediately
@@ -181,13 +178,13 @@ handle_listener_event (int listen_fd, uint64_t now_us)
     }
 }
 
-static inline void
+static void
 conn_done (Conn *conn)
 {
   DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
 
   // Safety check
-  if (conn->fd == -1)
+  if (unlikely (conn->fd == -1))
     {
       return;
     }
@@ -200,10 +197,11 @@ conn_done (Conn *conn)
       dlist_detach (&conn->idle_list);
     }
 
-  drain_zerocopy_errors (file_desc);
+  zc_drain_errors (file_desc);
 
   // Remove from epoll interest list
-  if (epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, file_desc, NULL) == -1)
+  if (unlikely
+      (epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, file_desc, NULL) == -1))
     {
       msgf ("epoll_ctl del failed: %s", strerror (errno));
     }
@@ -214,7 +212,7 @@ conn_done (Conn *conn)
   // The Conn struct lives in the Slab and is recycled.
 }
 
-static inline bool
+static ALWAYS_INLINE bool
 conn_has_pending_write (const Conn *conn)
 {
   uint32_t idx = conn->read_idx;
@@ -278,7 +276,7 @@ process_timers (Cache *cache, uint64_t now_us)
   cache_evict (cache, now_us);
 }
 
-static void
+static HOT void
 connection_io (Cache *cache, Conn *conn, uint64_t now_us, uint32_t events)
 {
   handle_connection_io (g_data.epfd, cache, conn, now_us, events);
@@ -300,12 +298,12 @@ connection_io (Cache *cache, Conn *conn, uint64_t now_us, uint32_t events)
     }
 }
 
-static void
+static HOT void
 handle_connection_event (Cache *cache, struct epoll_event *event,
 			 uint64_t now_us)
 {
   Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
-  if (!conn)
+  if (unlikely (!conn))
     return;
   TIME_STMT ("connection_io",
 	     connection_io (cache, conn, now_us, event->events));
@@ -313,7 +311,7 @@ handle_connection_event (Cache *cache, struct epoll_event *event,
     conn_done (conn);
 }
 
-static void
+static ALWAYS_INLINE void
 process_active_events (Cache *cache, struct epoll_event *events, int count,
 		       int listen_fd, uint64_t now_us)
 {
@@ -326,7 +324,7 @@ process_active_events (Cache *cache, struct epoll_event *events, int count,
     }
 }
 
-static void
+static void COLD
 cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
 {
   msg ("\nServer shutting down gracefully. Cleaning up resources...");
@@ -349,7 +347,7 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
   msg ("Cleanup complete.");
 }
 
-static int
+static int COLD
 initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 {
   struct sockaddr_in addr = { 0 };
@@ -357,7 +355,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   struct epoll_event event;
 
   *listen_fd = socket (AF_INET, SOCK_STREAM, 0);
-  if (*listen_fd < 0)
+  if (unlikely (*listen_fd < 0))
     die ("socket()");
 
   setsockopt (*listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
@@ -367,14 +365,14 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   addr.sin_addr.s_addr = htonl (0);
 
   err = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
-  if (err)
+  if (unlikely (err))
     {
       close (*listen_fd);
       die ("bind()");
     }
 
   err = listen (*listen_fd, SOMAXCONN);
-  if (err)
+  if (unlikely (err))
     {
       close (*listen_fd);
       die ("listen()");
@@ -386,7 +384,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   fd_set_nb (*listen_fd);
 
   *epfd = epoll_create1 (0);
-  if (*epfd == -1)
+  if (unlikely (*epfd == -1))
     {
       close (*listen_fd);
       connpool_free (g_data.fd2conn);
@@ -398,7 +396,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   event.events = EPOLLIN | EPOLLET;
   event.data.fd = *listen_fd;
 
-  if (epoll_ctl (*epfd, EPOLL_CTL_ADD, *listen_fd, &event) == -1)
+  if (unlikely (epoll_ctl (*epfd, EPOLL_CTL_ADD, *listen_fd, &event) == -1))
     {
       close (*listen_fd);
       close (*epfd);
@@ -465,10 +463,10 @@ server_run (uint16_t port)
       int enfd_count = epoll_wait (epfd, events, MAX_EVENTS, timeout_ms);
       // We might have slept for quite a while!
       now_us = get_monotonic_usec ();
-      if (g_data.terminate_flag)
+      if (unlikely (g_data.terminate_flag))
 	break;
 
-      if (enfd_count < 0)
+      if (unlikely (enfd_count < 0))
 	{
 	  if (errno == EINTR)
 	    continue;

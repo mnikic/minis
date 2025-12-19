@@ -13,6 +13,8 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include "macros.h"
+
 #define ERR_UNKNOWN 1
 #define ERR_2BIG 2
 #define ERR_TYPE 3
@@ -44,15 +46,6 @@
 
 #define MAX_CONNECTIONS 20000
 
-#define container_of(ptr, type, member) __extension__ ({                     \
-    /* Type check: ensure 'ptr' is a pointer to the member's type */         \
-    __typeof__(((type *)0)->member) *__mptr = (ptr);                  \
-                                                                            \
-    /* Calculate the address of the containing structure. Using char* for */\
-    /* byte-level arithmetic is safe and avoids integer cast warnings. */    \
-    (type *)((char *)__mptr - offsetof(type, member));                      \
-})
-
 #ifdef DEBUG_LOGGING
     // If DEBUG_LOGGING is defined, the macros call the implementation functions.
 #define DBG_LOG(msg_str) msg (msg_str)
@@ -64,8 +57,8 @@
 #define DBG_LOGF(...) (void)0
 #endif
 
-void msgf (const char *fmt, ...);
-void msg (const char *msg);
+void COLD msgf (const char *fmt, ...);
+void COLD msg (const char *msg);
 
 #ifdef K_ENABLE_BENCHMARK
 #include <time.h>
@@ -150,11 +143,10 @@ dump_stats (void)
 uint64_t str_hash (const uint8_t * data, size_t len);
 
 __attribute__((noreturn))
-     void
-     die (const char *msg);
+void COLD die (const char *msg);
 
 uint16_t
-parse_port (int argc, char *argv[]);
+COLD parse_port (int argc, char *argv[]);
 uint64_t
 htoll (uint64_t number);
 uint64_t

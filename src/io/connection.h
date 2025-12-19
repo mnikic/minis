@@ -56,13 +56,6 @@ typedef struct Conn
   DList idle_list;
 } Conn;
 
-// Update slot's pending_ops count based on completions
-// Returns: true if the slot became fully complete (sent AND acked)
-// Corrected signature and body
-bool
-apply_zerocopy_completion (int file_desc, uint32_t slot_idx,
-			   ResponseSlot * slot, uint32_t completed_ops);
-
 // Check if a slot is completely done (sent AND acked for zerocopy)
 static inline bool
 is_slot_complete (ResponseSlot *slot)

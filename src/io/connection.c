@@ -3,50 +3,6 @@
 #include "common/common.h"
 #include "connection.h"
 
-// Update slot's pending_ops count based on completions
-// Returns: true if the slot became fully complete (sent AND acked)
-// Corrected signature and body
-bool
-apply_zerocopy_completion (int file_desc, uint32_t slot_idx,
-			   ResponseSlot *slot, uint32_t completed_ops)
-{
-  (void) file_desc, (void) slot_idx;	// Need the for logging, but GCC complains!
-  if (completed_ops == 0)
-    return false;
-
-  if (slot->pending_ops == 0)
-    {
-      DBG_LOGF
-	("FD %d: WARNING: Completion received for %u ops but slot %u has 0 pending.",
-	 file_desc, completed_ops, slot_idx);
-      return false;
-    }
-
-  uint32_t ops_before = slot->pending_ops;
-  (void) ops_before;		// make the compiler happy!
-  if (completed_ops > slot->pending_ops)
-    {
-      DBG_LOGF
-	("FD %d: WARNING: Completion overflow. Got %u ops, only %u pending. Setting pending to 0.",
-	 file_desc, completed_ops, slot->pending_ops);
-      slot->pending_ops = 0;
-    }
-  else
-    {
-      slot->pending_ops -= completed_ops;
-    }
-
-  // 4. Log the state change
-  DBG_LOGF
-    ("FD %d: Slot %u completion applied. Pending ops: %u -> %u. (%u ops acknowledged).",
-     file_desc, slot_idx, ops_before, slot->pending_ops, completed_ops);
-
-  // 5. Check for full completion
-  // This uses the logic from the `is_slot_complete` helper you defined earlier.
-  return (slot->pending_ops == 0 &&
-	  slot->sent == slot->actual_length && slot->actual_length > 0);
-}
-
 // Release completed slots from the ring buffer
 // Returns: number of slots released
 uint32_t

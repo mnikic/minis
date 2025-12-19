@@ -10,7 +10,9 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
+
 #include "io/connection.h"
+#include "common/macros.h"
 
 typedef struct
 {
@@ -28,7 +30,7 @@ typedef struct
 
 } ConnPool;
 
-ConnPool *connpool_new (uint32_t max_conns);
+COLD ConnPool *connpool_new (uint32_t max_conns);
 
 // Replaces malloc(sizeof(Conn)) + connpool_add
 Conn *connpool_get (ConnPool * pool, int file_desc);
@@ -37,11 +39,19 @@ Conn *connpool_get (ConnPool * pool, int file_desc);
 void connpool_release (ConnPool * pool, Conn * conn);
 
 // Fast lookup (unchanged interface, faster internals)
-Conn *connpool_lookup (ConnPool * pool, int file_desc);
+HOT static ALWAYS_INLINE Conn *
+connpool_lookup (ConnPool *pool, int file_desc)
+{
+  if (unlikely (file_desc < 0 || (size_t) file_desc >= pool->capacity))
+    return NULL;
 
-void connpool_iter (ConnPool * pool, Conn *** connections, size_t *count);
+  return pool->by_fd[file_desc];
+}
+
+COLD void connpool_iter (ConnPool * pool, Conn *** connections,
+			 size_t *count);
 
 // Destroy everything
-void connpool_free (ConnPool * pool);
+COLD void connpool_free (ConnPool * pool);
 
 #endif /* CONN_POOL_H_ */

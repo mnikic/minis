@@ -1,14 +1,14 @@
-#ifndef SERVER_INTERNAL_H
-#define SERVER_INTERNAL_H
+#ifndef CONNECTION_HANDLER_H
+#define  CONNECTION_HANDLER_H
 
 #include <stdint.h>
 
 #include "cache/cache.h"
+#include "common/macros.h"
 #include "io/connection.h"
 
-void
+HOT void
 handle_connection_io (int epfd, Cache * cache, Conn * conn, uint64_t now_us,
 		      uint32_t events);
-void drain_zerocopy_errors (int file_des);
 
-#endif //SERVER_INTERNAL_H
+#endif // CONNECTION_HANDLER_H
