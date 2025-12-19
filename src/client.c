@@ -60,7 +60,7 @@ send_req (int fd, char **cmd, size_t cmd_size)
   if (total_len > K_MAX_MSG)
     {
       fprintf (stderr,
-	       "Request size (%u bytes) exceeds client/server limit (%u bytes)\n",
+	       "Request size (%u bytes) exceeds client/server limit (%lu bytes)\n",
 	       total_len, K_MAX_MSG);
       return -1;
     }

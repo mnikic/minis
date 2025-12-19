@@ -4,226 +4,171 @@
  * Created on: Jun 12, 2023
  * Author: loshmi
  */
-#include <assert.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include "connection.h"
 #include "conn_pool.h"
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <stdio.h>
+
 #include "common/common.h"
 
-static void
-connpool_grow (ConnPool *pool, size_t new_capacity)
+// Helper: Ensure the sparse FD array is big enough
+static inline void
+ensure_fd_capacity (ConnPool *pool, int file_desc)
 {
-  if (new_capacity <= pool->capacity * 2)
-    {
-      new_capacity = pool->capacity * 2;
-    }
+  if ((size_t) file_desc < pool->capacity)
+    return;
 
-  // Grow active connections array
-  Conn **new_active = realloc (pool->active, sizeof (Conn *) * new_capacity);
-  if (!new_active)
-    {
-      die ("Out of memory growing active connections");
-    }
-  pool->active = new_active;
+  size_t new_cap = pool->capacity;
+  while (new_cap <= (size_t) file_desc)
+    new_cap *= 2;
 
-  // Grow fd lookup table
-  PoolEntry **new_by_fd =
-    realloc (pool->by_fd, sizeof (PoolEntry *) * new_capacity);
+  // Realloc the sparse array
+  Conn **new_by_fd = realloc (pool->by_fd, new_cap * sizeof (Conn *));
   if (!new_by_fd)
     {
-      die ("Out of memory growing fd table");
+      die ("OOM expanding FD table");
     }
+
   pool->by_fd = new_by_fd;
 
-  // Initialize new slots
-  for (size_t i = pool->capacity; i < new_capacity; i++)
-    {
-      pool->by_fd[i] = NULL;
-    }
+  // Initialize the new section to NULL
+  memset (pool->by_fd + pool->capacity, 0,
+	  (new_cap - pool->capacity) * sizeof (Conn *));
 
-  // Grow bitmap
-  size_t old_words = (pool->capacity / 32) + 1;
-  size_t new_words = (new_capacity / 32) + 1;
-  uint32_t *new_bitmap =
-    realloc (pool->fd_bitmap, sizeof (uint32_t) * new_words);
-  if (!new_bitmap)
-    {
-      die ("Out of memory growing fd bitmap");
-    }
-  pool->fd_bitmap = new_bitmap;
-
-  // Zero new bitmap words
-  for (size_t i = old_words; i < new_words; i++)
-    {
-      pool->fd_bitmap[i] = 0;
-    }
-
-  pool->capacity = new_capacity;
+  pool->capacity = new_cap;
 }
 
 ConnPool *
-connpool_new (uint32_t capacity)
+connpool_new (uint32_t max_conns)
 {
-  ConnPool *pool = malloc (sizeof (ConnPool));
+  ConnPool *pool = calloc (1, sizeof (ConnPool));
   if (!pool)
-    {
-      return NULL;
-    }
+    return NULL;
 
-  pool->capacity = capacity;
-  pool->active_count = 0;
-
-  pool->fd_bitmap = calloc ((capacity / 32) + 1, sizeof (uint32_t));
-  if (!pool->fd_bitmap)
+  pool->max_conns = max_conns;
+  pool->storage = calloc (max_conns, sizeof (Conn));
+  if (!pool->storage)
     {
       free (pool);
       return NULL;
     }
 
-  pool->active = calloc (capacity, sizeof (Conn *));
-  if (!pool->active)
+  // storage[0].next = 1, storage[1].next = 2, ...
+  for (uint32_t i = 0; i < max_conns - 1; i++)
     {
-      free (pool->fd_bitmap);
-      free (pool);
-      return NULL;
+      pool->storage[i].next_free_idx = i + 1;
     }
+  pool->storage[max_conns - 1].next_free_idx = UINT32_MAX;
+  pool->free_head = 0;
 
-  pool->by_fd = calloc (capacity, sizeof (PoolEntry *));
-  if (!pool->by_fd)
-    {
-      free (pool->fd_bitmap);
-      free (pool->active);
-      free (pool);
-      return NULL;
-    }
+  // Allocate Dense Active Array
+  pool->active = calloc (max_conns, sizeof (Conn *));
+
+  // Allocate Sparse FD Map (Start small)
+  pool->capacity = 1024;
+  pool->by_fd = calloc (pool->capacity, sizeof (Conn *));
 
   return pool;
 }
 
-void
-connpool_add (ConnPool *pool, Conn *connection)
+Conn *
+connpool_get (ConnPool *pool, int file_desc)
 {
-  if (!pool || !connection)
-    {
-      return;
-    }
-  assert (connection->fd >= 0);
+  // Check if pool is full
+  if (pool->free_head == UINT32_MAX)
+    return NULL;
 
-  if ((size_t) connection->fd >= pool->capacity)
+  ensure_fd_capacity (pool, file_desc);
+
+  // Pop from Slab Free List
+  uint32_t idx = pool->free_head;
+  Conn *conn = &pool->storage[idx];
+  pool->free_head = conn->next_free_idx;
+
+  // Initialize Identity
+  conn->fd = file_desc;
+  conn->next_free_idx = UINT32_MAX;	// Mark as in-use
+  conn->state = STATE_ACTIVE;
+  conn->last_events = 0;
+
+  // Reset Ring Buffer State
+  conn->read_idx = 0;
+  conn->write_idx = 0;
+  conn->rbuf_size = 0;
+  conn->read_offset = 0;
+  memset (conn->res_slots, 0, sizeof (conn->res_slots));
+  dlist_init (&conn->idle_list);
+
+  // LAZY ALLOCATION: "Split Brain"
+  // We allocate the heavy buffers here only if they are not there.
+  if (!conn->rbuf)
+    conn->rbuf = malloc (K_RBUF_SIZE);
+
+  if (!conn->res_data)
+    conn->res_data = malloc (K_WBUF_SIZE);
+
+  if (!conn->rbuf || !conn->res_data)
     {
-      connpool_grow (pool, (size_t) connection->fd + 1);
+      // OOM Recovery: Return to pool
+      if (conn->rbuf)
+	free (conn->rbuf);
+      if (conn->res_data)
+	free (conn->res_data);
+      conn->rbuf = NULL;
+      conn->res_data = NULL;
+
+      conn->next_free_idx = pool->free_head;
+      pool->free_head = idx;
+      return NULL;
     }
 
-  uint32_t word_idx = (uint32_t) connection->fd / 32;
-  uint32_t bit_idx = (uint32_t) connection->fd % 32;
+  // Add to Active Lists
+  conn->index_in_active = (uint32_t) pool->active_count;
+  pool->active[pool->active_count++] = conn;
+  pool->by_fd[file_desc] = conn;
 
-  if (pool->fd_bitmap[word_idx] & (1U << bit_idx))
-    {
-      // Already exists, update it
-      PoolEntry *entry = pool->by_fd[connection->fd];
-      entry->conn = connection;
-      pool->active[entry->index_in_active] = connection;
-    }
-  else
-    {
-      // New connection
-      PoolEntry *entry = malloc (sizeof (PoolEntry));
-      if (!entry)
-	{
-	  die ("Out of memory adding connection");
-	}
-      entry->conn = connection;
-      entry->index_in_active = (uint32_t) pool->active_count;
-
-      pool->by_fd[connection->fd] = entry;
-      pool->active[pool->active_count] = connection;
-      pool->active_count++;
-      pool->fd_bitmap[word_idx] |= (1U << bit_idx);
-    }
+  return conn;
 }
 
 void
-connpool_remove (ConnPool *pool, int file_desc)
+connpool_release (ConnPool *pool, Conn *conn)
 {
-  if (!pool || file_desc < 0 || (size_t) file_desc >= pool->capacity)
-    {
-      return;
-    }
+  if (!conn)
+    return;
+  int file_desc = conn->fd;
 
-  uint32_t word_idx = (uint32_t) file_desc / 32;
-  uint32_t bit_idx = (uint32_t) file_desc % 32;
+  size_t idx = conn->index_in_active;
+  size_t last_idx = pool->active_count - 1;
 
-  if (!(pool->fd_bitmap[word_idx] & (1U << bit_idx)))
+  if (idx != last_idx)
     {
-      return;
+      Conn *moved = pool->active[last_idx];
+      pool->active[idx] = moved;
+      moved->index_in_active = (uint32_t) idx;
     }
-  PoolEntry *entry = pool->by_fd[file_desc];
-  size_t removed_index = entry->index_in_active;
-  if (pool->active_count == 0 || removed_index >= pool->active_count)
-    {
-      // This case should be caught by the bitmap check, but is a safe guard.
-      return;
-    }
-  size_t last_index = pool->active_count - 1;
-  if (removed_index != last_index)
-    {
-      Conn *moved_conn = pool->active[last_index];
-      pool->active[removed_index] = moved_conn;
-
-      PoolEntry *moved_entry = pool->by_fd[moved_conn->fd];
-      moved_entry->index_in_active = (uint32_t) removed_index;
-    }
-
-  pool->active[last_index] = NULL;
+  pool->active[last_idx] = NULL;
   pool->active_count--;
 
-  pool->fd_bitmap[word_idx] &= ~(1U << bit_idx);
-  free (entry);
-  pool->by_fd[file_desc] = NULL;
+  if ((size_t) file_desc < pool->capacity)
+    {
+      pool->by_fd[file_desc] = NULL;
+    }
+
+  uint32_t storage_idx = (uint32_t) (conn - pool->storage);
+  conn->next_free_idx = pool->free_head;
+  pool->free_head = storage_idx;
+
+  conn->fd = -1;
 }
 
 Conn *
-connpool_lookup (ConnPool *pool, int file_des)
+connpool_lookup (ConnPool *pool, int file_desc)
 {
-  if (!pool || file_des < 0 || (size_t) file_des >= pool->capacity)
-    {
-      return NULL;
-    }
-
-  uint32_t word_idx = (uint32_t) file_des / 32;
-  uint32_t bit_idx = (uint32_t) file_des % 32;
-
-  if (!(pool->fd_bitmap[word_idx] & (1U << bit_idx)))
-    {
-      return NULL;
-    }
-
-  return pool->by_fd[file_des]->conn;
-}
-
-void
-connpool_free (ConnPool *pool)
-{
-  if (!pool)
-    {
-      return;
-    }
-
-  // Free all pool entries
-  for (size_t i = 0; i < pool->capacity; i++)
-    {
-      if (pool->by_fd[i])
-	{
-	  free (pool->by_fd[i]);
-	}
-    }
-
-  free (pool->active);
-  free (pool->by_fd);
-  free (pool->fd_bitmap);
-  free (pool);
+  if (file_desc < 0 || (size_t) file_desc >= pool->capacity)
+    return NULL;
+  return pool->by_fd[file_desc];
 }
 
 void
@@ -231,8 +176,35 @@ connpool_iter (ConnPool *pool, Conn ***connections, size_t *count)
 {
   if (!pool)
     {
+      *connections = NULL;
+      *count = 0;
       return;
     }
-  *count = pool->active_count;
+
+  // Return the raw pointer to the dense array.
+  // Warning: The caller must iterate backwards if they plan to modify/remove 
+  // connections during iteration!
   *connections = pool->active;
+  *count = pool->active_count;
+}
+
+void
+connpool_free (ConnPool *pool)
+{
+  if (!pool)
+    return;
+
+  // Free buffers for all connections in storage
+  for (uint32_t i = 0; i < pool->max_conns; i++)
+    {
+      if (pool->storage[i].rbuf)
+	free (pool->storage[i].rbuf);
+      if (pool->storage[i].res_data)
+	free (pool->storage[i].res_data);
+    }
+
+  free (pool->storage);
+  free (pool->active);
+  free (pool->by_fd);
+  free (pool);
 }

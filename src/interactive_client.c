@@ -241,7 +241,7 @@ send_req_from_input (int fd, const char *input)
   if (total_payload_len > K_MAX_MSG)
     {
       fprintf (stderr,
-	       "Error: Request size (%u bytes) exceeds client/server limit (%u bytes)\n",
+	       "Error: Request size (%u bytes) exceeds client/server limit (%lu bytes)\n",
 	       total_payload_len, K_MAX_MSG);
       return -1;
     }
@@ -437,7 +437,7 @@ read_res (int fd)
 
   if (len_host > K_MAX_MSG)
     {
-      fprintf (stderr, "Error: Response too long (%u > %u). Discarding.\n",
+      fprintf (stderr, "Error: Response too long (%u > %lu). Discarding.\n",
 	       len_host, K_MAX_MSG);
       return -1;
     }

@@ -30,15 +30,19 @@
 
 // Max size of a single request message (payload data after the 4-byte length prefix).
 // This must be consistent between the client and the server's read buffer capacity.
-#define K_MAX_MSG (200 * 1024)
+#define K_MAX_MSG (200 * 1024UL)
 // Number of slots in the ring buffer
-#define K_SLOT_COUNT    4
+#define K_SLOT_COUNT    4UL
 
-#define K_ZEROCPY_THEASHOLD (100 * 1024) // when to use MSG_ZEROCOPY
+#define K_ZEROCPY_THEASHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
 
 #define K_MAX_ARGS 2048
 #define K_MAX_KEY 42
 #define K_MAX_VAL (1024 * 7)
+#define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
+#define K_WBUF_SIZE (K_SLOT_COUNT * K_MAX_MSG)
+
+#define MAX_CONNECTIONS 20000
 
 #define container_of(ptr, type, member) __extension__ ({                     \
     /* Type check: ensure 'ptr' is a pointer to the member's type */         \

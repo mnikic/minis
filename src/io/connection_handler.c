@@ -359,7 +359,7 @@ try_fill_buffer (Conn *conn)
 
   while (true)
     {
-      size_t cap = sizeof (conn->rbuf) - conn->rbuf_size;
+      size_t cap = K_RBUF_SIZE - conn->rbuf_size;
       if (cap == 0)
 	break;
 

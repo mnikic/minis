@@ -108,87 +108,110 @@ fd_set_nb (int file_des)
     die ("fcntl error");
 }
 
-static Conn *
-accept_new_conn (int file_des, uint64_t now_us)
+static void
+handle_listener_event (int listen_fd, uint64_t now_us)
 {
-  struct sockaddr_in client_addr = { 0 };
-  socklen_t socklen = sizeof (client_addr);
-  int connfd;
+  int epfd = g_data.epfd;
+
+  while (true)
+    {
+      // 1. Accept Loop Logic
+      struct sockaddr_in client_addr = { 0 };
+      socklen_t socklen = sizeof (client_addr);
+      int connfd;
 
 #if defined(__linux__) && defined(__GLIBC__) && (__GLIBC__ >= 2) && (__GLIBC_MINOR__ >= 10)
-  connfd = accept4 (file_des, (struct sockaddr *) &client_addr, &socklen,
-		    SOCK_NONBLOCK);
+      connfd = accept4 (listen_fd, (struct sockaddr *) &client_addr, &socklen,
+			SOCK_NONBLOCK);
 #else
-  connfd = accept (file_des, (struct sockaddr *) &client_addr, &socklen);
-  if (connfd >= 0)
-    fd_set_nb (connfd);
+      connfd = accept (listen_fd, (struct sockaddr *) &client_addr, &socklen);
+      if (connfd >= 0)
+	fd_set_nb (connfd);
 #endif
 
-  if (connfd < 0)
-    {
-      if (errno == EAGAIN)
+      // 2. Handle Accept Failures
+      if (connfd < 0)
 	{
-	  DBG_LOG ("No more connections to accept (EAGAIN).");
-	  return NULL;
+	  // CRITICAL FIX: If errno is EAGAIN, we are done. Break the loop.
+	  if (errno == EAGAIN)
+	    break;
+
+	  msgf ("accept() error: %s", strerror (errno));
+	  break;		// Stop looping on fatal errors too
 	}
-      msgf ("accept() error: %s", strerror (errno));
-      return NULL;
+
+      // 3. Setup Socket Options (Your existing logic)
+      int sndbuf = 2 * 1024 * 1024;
+      setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
+
+      int val = 1;
+      if (setsockopt (connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof (val)))
+	{
+	  // Optional: log warning
+	}
+
+      // 4. Get from Pool
+      Conn *conn = connpool_get (g_data.fd2conn, connfd);
+
+      if (!conn)
+	{
+	  // CRITICAL FIX: We have a valid FD, but no pool space.
+	  // Close it to acknowledge the client, then CONTINUE to drain others.
+	  close (connfd);
+	  DBG_LOG ("Dropped connection: Pool full or OOM.");
+	  continue;
+	}
+
+      // 5. Success Path
+      conn->idle_start = now_us;
+      dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+
+      struct epoll_event event;
+      event.data.fd = conn->fd;
+      event.events = EPOLLIN | EPOLLET | EPOLLERR;
+
+      if (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1)
+	{
+	  msgf ("epoll ctl: add failed: %s", strerror (errno));
+	  // If we fail to add to epoll, we must release/close immediately
+	  // or we leak the connection.
+	  connpool_release (g_data.fd2conn, conn);
+	  close (connfd);
+	}
     }
-
-  int sndbuf = 2 * 1024 * 1024;
-  setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
-
-  int val = 1;
-  if (setsockopt (connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof (val)))
-    {
-      msgf
-	("setsockopt(SO_ZEROCOPY) failed: %s. Zero-Copy path disabled for this connection, only standard copy (write) will be used.",
-	 strerror (errno));
-    }
-
-  Conn *conn = calloc (1, sizeof (Conn));
-  if (!conn)
-    {
-      close (connfd);
-      die ("Out of memory for connection");
-    }
-
-  conn->fd = connfd;
-  conn->state = STATE_ACTIVE;
-  conn->rbuf_size = 0;
-  conn->write_idx = 0;
-  conn->read_idx = 0;
-  conn->last_events = 0;
-  conn->idle_start = now_us;
-  dlist_init (&conn->idle_list);
-  dlist_insert_before (&g_data.idle_list, &conn->idle_list);
-
-  connpool_add (g_data.fd2conn, conn);
-  DBG_LOGF ("Accepted new connection: FD %d", connfd);
-
-  return conn;
 }
 
 static inline void
 conn_done (Conn *conn)
 {
   DBG_LOGF ("Cleaning up and closing connection: FD %d", conn->fd);
+
+  // Safety check
   if (conn->fd == -1)
     {
       return;
     }
-  connpool_remove (g_data.fd2conn, conn->fd);
-  Conn *lookup = connpool_lookup (g_data.fd2conn, conn->fd);
-  if (lookup != NULL)
-    die ("removed conn shouldn't be lookupabale any more.");
-  dlist_detach (&conn->idle_list);
-  drain_zerocopy_errors (conn->fd);
-  (void) epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, conn->fd, NULL);
-  close (conn->fd);
-  conn->idle_list.prev = NULL;
-  conn->idle_list.next = NULL;
-  conn->fd = -1;
-  free (conn);
+
+  int file_desc = conn->fd;	// Save FD for operations
+
+  // Remove from the idle list so the timer doesn't touch it
+  if (dlist_is_linked (&conn->idle_list))
+    {
+      dlist_detach (&conn->idle_list);
+    }
+
+  drain_zerocopy_errors (file_desc);
+
+  // Remove from epoll interest list
+  if (epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, file_desc, NULL) == -1)
+    {
+      msgf ("epoll_ctl del failed: %s", strerror (errno));
+    }
+
+  close (file_desc);
+
+  connpool_release (g_data.fd2conn, conn);
+  // The Conn struct lives in the Slab and is recycled.
 }
 
 static inline bool
@@ -253,29 +276,6 @@ process_timers (Cache *cache, uint64_t now_us)
     }
 
   cache_evict (cache, now_us);
-}
-
-static void
-handle_listener_event (int listen_fd, uint64_t now_us)
-{
-  int epfd = g_data.epfd;
-
-  while (true)
-    {
-      Conn *conn = accept_new_conn (listen_fd, now_us);
-      if (!conn)
-	break;
-      struct epoll_event event;
-      event.data.fd = conn->fd;
-      event.events = EPOLLIN | EPOLLET | EPOLLERR;
-
-      if (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1)
-	{
-	  msgf ("epoll ctl: new conn registration failed: %s",
-		strerror (errno));
-	  conn_done (conn);
-	}
-    }
 }
 
 static void
@@ -382,7 +382,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 
   msgf ("The server is listening on port %i.", port);
 
-  g_data.fd2conn = connpool_new (10);
+  g_data.fd2conn = connpool_new (MAX_CONNECTIONS);
   fd_set_nb (*listen_fd);
 
   *epfd = epoll_create1 (0);

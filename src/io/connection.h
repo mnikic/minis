@@ -28,31 +28,31 @@ typedef enum
   STATE_CLOSE = 3,
 } ConnectionState;
 
-typedef struct
+typedef struct Conn
 {
   int fd;
   ConnectionState state;
-  uint32_t rbuf_size;
-  size_t read_offset;
-  uint8_t rbuf[4 + K_MAX_MSG + 1];	// Added 1 extra for ease of string in place 0 termination.
+  uint32_t last_events;		// To avoid redundant epoll_ctl
 
-  // Metadata for each response slot
+  // Ring Buffer Metadata
+  uint32_t read_idx;		// Oldest slot to SEND
+  uint32_t write_idx;		// Next slot to WRITE
   ResponseSlot res_slots[K_SLOT_COUNT];
 
-  // Continuous memory for all response payloads (K_SLOT_COUNT * K_MAX_MSG)
-  // The size of the memory block is now K_SLOT_COUNT * K_MAX_MSG
-  uint8_t res_data[K_SLOT_COUNT * K_MAX_MSG];
+  // Buffer Pointers (The "Split Brain")
+  // These point to the heavy heap memory.
+  uint8_t *rbuf;		// Points to malloc'd Read Buffer
+  size_t rbuf_size;		// Current usage
+  size_t read_offset;		// Parsing offset
 
-  // Read index: Points to the oldest response ready to be SENT
-  uint32_t read_idx;
-  size_t res_sent;		// Progress tracker: How many bytes of 
-  // res_slots[read_idx] have been sent.
+  uint8_t *res_data;		// Points to malloc'd Write Buffer Block
 
-  // Write index: Points to the next free slot ready to be WRITTEN
-  uint32_t write_idx;
+  // Pool Management
+  uint32_t index_in_active;	// For O(1) removal from active list
+  uint32_t next_free_idx;	// For the Slab's free list
 
+  // Idle Management
   uint64_t idle_start;
-  uint32_t last_events;		// cache, to not EPOLL_CTL_MOD if there is no need
   DList idle_list;
 } Conn;
 
