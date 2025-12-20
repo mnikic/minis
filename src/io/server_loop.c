@@ -55,7 +55,7 @@
 #include "zerocopy.h"
 
 #define MAX_EVENTS 10000
-#define K_IDLE_TIMEOUT_US 5000000
+#define K_IDLE_TIMEOUT_SEC 300UL // in seconds
 
 static struct
 {
@@ -65,7 +65,6 @@ static struct
   volatile sig_atomic_t terminate_flag;
 } g_data;
 
-// Signal handler function (async-signal-safe)
 static ALWAYS_INLINE uint64_t
 get_monotonic_usec (void)
 {
@@ -82,6 +81,7 @@ sigint_handler (int sig)
   g_data.terminate_flag = 1;
 }
 
+// Signal handler function (async-signal-safe)
 static void
 setup_signal_handlers (void)
 {
@@ -253,7 +253,7 @@ process_timers (Cache *cache, uint64_t now_us)
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
 #pragma GCC diagnostic pop
 
-      uint64_t next_us = next->idle_start + K_IDLE_TIMEOUT_US;
+      uint64_t next_us = next->idle_start + (K_IDLE_TIMEOUT_SEC * 1000000);
 
       if (next_us > now_us)
 	break;
@@ -418,7 +418,7 @@ next_timer_ms (Cache *cache, uint64_t now_us)
 #pragma GCC diagnostic ignored "-Wcast-align"
       Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
 #pragma GCC diagnostic pop
-      next_us = next->idle_start + K_IDLE_TIMEOUT_US;
+      next_us = next->idle_start + (K_IDLE_TIMEOUT_SEC * 1000000);
     }
 
   uint64_t from_cache = cache_next_expiry (cache);
