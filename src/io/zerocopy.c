@@ -111,19 +111,15 @@ zc_process_completions (Conn *conn)
   if (!current_slot->is_zerocopy)
     return false;
 
-  // 1. Read notification from Kernel
   uint32_t completed_ops = read_one_notification (conn->fd);
 
   if (completed_ops == 0)
     return false;
 
-  // 2. Update Application State (Delegated to connection logic)
-  // This helper should verify if the completed_ops match the current slot
   bool slot_complete =
     apply_zerocopy_completion (conn->fd, conn->read_idx, current_slot,
 			       completed_ops);
 
-  // 3. Cleanup
   if (slot_complete)
     {
       release_completed_slots (conn);

@@ -2,6 +2,7 @@
 #define TRANSPORT_H
 
 #include <sys/types.h>
+
 #include "connection.h"
 
 typedef enum

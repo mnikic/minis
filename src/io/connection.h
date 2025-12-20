@@ -10,6 +10,8 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
+
+#include "common/macros.h"
 #include "list.h"
 #include "common/common.h"
 
@@ -18,7 +20,7 @@ typedef struct
   uint32_t actual_length;	// The total size of the response (Header + Payload)
   uint32_t pending_ops;		// Count of sendmsg() operations waiting for completion
   uint32_t sent;		// Bytes already passed to sendmsg() (may not be confirmed yet)
-  bool is_zerocopy;
+  bool is_zerocopy;		// Whether MSG_ZEROCOPY should be used for this slot
 } ResponseSlot;
 
 typedef enum
@@ -57,7 +59,7 @@ typedef struct Conn
 } Conn;
 
 // Check if a slot is completely done (sent AND acked for zerocopy)
-static inline bool
+static ALWAYS_INLINE bool
 is_slot_complete (ResponseSlot *slot)
 {
   return slot->pending_ops == 0 &&
@@ -65,7 +67,7 @@ is_slot_complete (ResponseSlot *slot)
 }
 
 // Reset read buffer to initial state (fully consumed)
-static inline void
+static ALWAYS_INLINE void
 reset_read_buffer (Conn *conn)
 {
   conn->rbuf_size = 0;
@@ -73,40 +75,40 @@ reset_read_buffer (Conn *conn)
 }
 
 // Check if read buffer is fully consumed
-static inline bool
+static ALWAYS_INLINE bool
 is_read_buffer_consumed (Conn *conn)
 {
   return conn->read_offset > 0 && conn->read_offset == conn->rbuf_size;
 }
 
 // Check if there's unprocessed data in read buffer
-static inline bool
+static ALWAYS_INLINE bool
 has_unprocessed_data (Conn *conn)
 {
   return conn->read_offset < conn->rbuf_size;
 }
 
-static inline uint8_t *
+static ALWAYS_INLINE uint8_t *
 get_slot_data_ptr (Conn *conn, uint32_t slot_idx)
 {
   return &conn->res_data[(size_t) (slot_idx * K_MAX_MSG)];
 }
 
-static inline bool
+static ALWAYS_INLINE bool
 is_res_queue_full (Conn *conn)
 {
   return ((conn->write_idx + 1) % K_SLOT_COUNT) == conn->read_idx;
 }
 
 // Check if a slot is fully sent (regardless of ACK status)
-static inline bool
+static ALWAYS_INLINE bool
 is_slot_fully_sent (ResponseSlot *slot)
 {
   return slot->sent >= slot->actual_length;
 }
 
 // Check if a slot is empty/available
-static inline bool
+static ALWAYS_INLINE bool
 is_slot_empty (ResponseSlot *slot)
 {
   return slot->actual_length == 0;

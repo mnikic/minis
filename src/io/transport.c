@@ -2,7 +2,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/socket.h>
-#include "common/common.h"	// For msgf, DBG_LOGF
+
+#include "common/common.h"
 
 IOStatus
 transport_read_buffer (Conn *conn)
@@ -46,15 +47,14 @@ transport_send_slot (Conn *conn, uint32_t slot_idx)
 {
   ResponseSlot *slot = &conn->res_slots[slot_idx];
 
-  // Logic extracted from send_current_slot...
   uint8_t *data_ptr = get_slot_data_ptr (conn, slot_idx);
   size_t remain = slot->actual_length - slot->sent;
   ssize_t sent;
 
   if (slot->is_zerocopy)
     {
-      struct iovec iov = {.iov_base = data_ptr + slot->sent,.iov_len =
-	  remain };
+      struct iovec iov = {.iov_base = data_ptr + slot->sent,.iov_len = remain
+      };
       struct msghdr msg = {.msg_iov = &iov,.msg_iovlen = 1 };
       sent =
 	sendmsg (conn->fd, &msg, MSG_DONTWAIT | MSG_ZEROCOPY | MSG_NOSIGNAL);

@@ -1,6 +1,6 @@
 /*
  *============================================================================
- * Name             : event_state_machine.c
+ * Name             : connection_handler.c 
  * Author           : Milos
  * Description      : Core networking state machine - epoll event loop.
  *============================================================================
@@ -91,7 +91,7 @@ handle_validation_error (int epfd, Conn *conn, ValidationResult result)
     default:
       return;
     }
-    dump_error_and_close (epfd, conn, ERR_MALFORMED, err_msg);
+  dump_error_and_close (epfd, conn, ERR_MALFORMED, err_msg);
 }
 
 // Convert parse result to error message and send error response
@@ -114,7 +114,7 @@ handle_parse_error (int epfd, Conn *conn, ParseResult result)
     default:
       return;
     }
-    dump_error_and_close (epfd, conn, ERR_MALFORMED, err_msg);
+  dump_error_and_close (epfd, conn, ERR_MALFORMED, err_msg);
 }
 
 // Returns true on success, false on failure.
@@ -320,7 +320,6 @@ handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 	  continue;
 	}
 
-      // 2. MECHANISM: Move bytes
       IOStatus status = transport_send_slot (conn, conn->read_idx);
 
       if (status == IO_ERROR)
@@ -339,6 +338,7 @@ handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 
   if (conn->state == STATE_FLUSH_CLOSE)
     {
+      // We flushed, lets close!
       conn->state = STATE_CLOSE;
       return;
     }
