@@ -15,9 +15,21 @@ COMMON_FLAGS = -std=gnu11 -pthread \
 	-Wfloat-equal -Wcast-qual -Wstrict-overflow=2
 #  -DK_ENABLE_BENCHMARK
 
-# GCC-specific warnings
-ifeq ($(CC),gcc)
-	COMMON_FLAGS += -Wjump-misses-init -Wlogical-op
+COMPILER_VERSION := $(shell $(CC) --version)
+
+# 2. Logic to detect GCC vs Clang
+# Note: Clang will explicitly say "clang" in its version string.
+#       GCC will say "gcc" or "GCC".
+ifneq ($(findstring clang,$(COMPILER_VERSION)),)
+    # It is Clang (even if it was called via "gcc" command)
+    COMMON_FLAGS += -Wno-unknown-warning-option
+    # Clang specific flags can go here
+else ifneq ($(findstring gcc,$(COMPILER_VERSION)),)
+    # It is GCC
+    COMMON_FLAGS += -Wjump-misses-init -Wlogical-op
+else ifneq ($(findstring GCC,$(COMPILER_VERSION)),)
+    # It is GCC (Upper case catch)
+    COMMON_FLAGS += -Wjump-misses-init -Wlogical-op
 endif
 
 # ============================================================================
