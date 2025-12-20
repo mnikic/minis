@@ -75,49 +75,46 @@ dump_error_and_close (int epfd, Conn *conn, const int code, const char *str)
 COLD static void
 handle_validation_error (int epfd, Conn *conn, ValidationResult result)
 {
+  const char *err_msg = NULL;
   switch (result)
     {
     case VALIDATE_TOO_SHORT:
-      dump_error_and_close (epfd, conn, ERR_MALFORMED,
-			    "Request too short for argument count");
+      err_msg = "Request too short for argument count";
       break;
     case VALIDATE_TOO_MANY_ARGS:
-      dump_error_and_close (epfd, conn, ERR_MALFORMED, "Too many arguments.");
+      err_msg = "Too many arguments.";
       break;
     case VALIDATE_TOO_FEW_ARGS:
-      dump_error_and_close (epfd, conn, ERR_MALFORMED,
-			    "Must have at least one argument (the command)");
+      err_msg = "Must have at least one argument (the command)";
       break;
-    case VALIDATE_OK:		// Not an error, nothing to do
-      // Fallthrough
+    case VALIDATE_OK:
     default:
-      break;
+      return;
     }
+    dump_error_and_close (epfd, conn, ERR_MALFORMED, err_msg);
 }
 
 // Convert parse result to error message and send error response
 COLD static ALWAYS_INLINE void
 handle_parse_error (int epfd, Conn *conn, ParseResult result)
 {
+  const char *err_msg = NULL;
   switch (result)
     {
     case PARSE_MISSING_LENGTH:
-      dump_error_and_close (epfd, conn, ERR_MALFORMED,
-			    "Argument count mismatch: missing length header");
+      err_msg = "Argument count mismatch: missing length header";
       break;
     case PARSE_LENGTH_OVERFLOW:
-      dump_error_and_close (epfd, conn, ERR_MALFORMED,
-			    "Argument count mismatch: data length exceeds packet size");
+      err_msg = "Argument count mismatch: data length exceeds packet size";
       break;
     case PARSE_TRAILING_DATA:
-      dump_error_and_close (epfd, conn, ERR_MALFORMED,
-			    "Trailing garbage in request");
+      err_msg = "Trailing garbage in request";
       break;
-    case PARSE_OK:		// Not an error, so nothing to do.
-      // Fallsthrough
+    case PARSE_OK:
     default:
-      break;
+      return;
     }
+    dump_error_and_close (epfd, conn, ERR_MALFORMED, err_msg);
 }
 
 // Returns true on success, false on failure.
