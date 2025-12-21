@@ -53,6 +53,7 @@ conn_reset (Conn *conn, int file_desc)
   conn->fd = file_desc;
   conn->state = STATE_ACTIVE;
   conn->last_events = 0;
+  conn->pending_events = 0;
 
   // Reset Ring Buffer State
   conn->read_idx = 0;

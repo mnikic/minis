@@ -165,7 +165,7 @@ handle_listener_event (int listen_fd, uint64_t now_us)
       struct epoll_event event;
       event.data.fd = conn->fd;
       event.events = EPOLLIN | EPOLLET | EPOLLERR;
-
+      conn->last_events = event.events;
       if (unlikely
 	  (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1))
 	{
@@ -198,16 +198,7 @@ conn_done (Conn *conn)
     }
 
   zc_drain_errors (file_desc);
-
-  // Remove from epoll interest list
-  if (unlikely
-      (epoll_ctl (g_data.epfd, EPOLL_CTL_DEL, file_desc, NULL) == -1))
-    {
-      msgf ("epoll_ctl del failed: %s", strerror (errno));
-    }
-
   close (file_desc);
-
   connpool_release (g_data.fd2conn, conn);
   // The Conn struct lives in the Slab and is recycled.
 }
@@ -347,7 +338,7 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
   msg ("Cleanup complete.");
 }
 
-static int COLD
+static bool COLD
 initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
 {
   struct sockaddr_in addr = { 0 };
@@ -404,7 +395,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
       die ("epoll ctl: listen_sock!");
     }
 
-  return 0;
+  return true;
 }
 
 static uint32_t
@@ -451,7 +442,7 @@ server_run (uint16_t port)
   dlist_init (&g_data.idle_list);
   Cache *cache = cache_init ();
 
-  if (initialize_server_core (port, &listen_fd, &epfd) != 0)
+  if (!initialize_server_core (port, &listen_fd, &epfd) != 0)
     return -1;
 
   while (!g_data.terminate_flag)

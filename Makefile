@@ -63,6 +63,11 @@ DEBUG_CFLAGS = $(COMMON_FLAGS) \
 
 DEBUG_LDFLAGS = -pthread -g
 
+# Benchmarking Configuration
+BENCH_DIR   = benchmarks
+BENCH_SRC   = $(BENCH_DIR)/bench_conn_pool.c src/io/conn_pool.c src/io/connection.c src/common/common.c src/io/list.c
+BENCH_FLAGS = -O3 -march=native -D_GNU_SOURCE -Isrc -Wall -Wextra
+
 # ============================================================================
 # SANITIZER BUILDS (Bug detection)
 # ============================================================================
@@ -177,7 +182,7 @@ HEAP_TEST_TSAN_BIN = $(BIN_DIR)/heap_test_tsan
 # ============================================================================
 # PHONY TARGETS
 # ============================================================================
-.PHONY: all clean analyze asan ubsan tsan test test-asan test-ubsan test-tsan heap-test debug test-debug
+.PHONY: all clean analyze asan ubsan tsan test test-asan test-ubsan test-tsan heap-test debug test-debug bench
 
 # ============================================================================
 # DEFAULT TARGET
@@ -378,6 +383,12 @@ test-tsan: $(SERVER_TSAN_BIN) $(CLIENT_TSAN_BIN) $(INTERACTIVE_CLIENT_TSAN_BIN) 
 	@echo "--- Running TSan E2E tests with $(CLIENT_TSAN_BIN) ---"
 	@CLIENT_BIN_NAME=client_tsan python3 $(TEST_SCRIPT)
 
+bench:
+	@echo "Compiling Benchmark..."
+	@$(CC) $(BENCH_FLAGS) -o $(BENCH_DIR)/runner $(BENCH_SRC) -lm
+	@echo "Running Benchmark..."
+	@./$(BENCH_DIR)/runner
+	@rm $(BENCH_DIR)/runner
 # ============================================================================
 # CLEAN TARGET
 # ============================================================================

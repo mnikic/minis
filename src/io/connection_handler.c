@@ -8,9 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>		// memcpy, strerror
-#include <errno.h>		// errno, ENOENT
 #include <arpa/inet.h>		// htonl, ntohl
-#include <sys/epoll.h>		// epoll_event, epoll_ctl
 
 #include "connection_handler.h"
 #include "connection.h"
@@ -22,25 +20,6 @@
 #include "transport.h"
 #include "proto_parser.h"
 #include "zerocopy.h"
-
-static ALWAYS_INLINE void
-conn_set_epoll_events (int epfd, Conn *conn, uint32_t events)
-{
-  if (conn->state == STATE_CLOSE || conn->last_events == events)
-    return;
-
-  struct epoll_event event;
-  event.data.fd = conn->fd;
-  event.events = events | EPOLLET;
-
-  if (epoll_ctl (epfd, EPOLL_CTL_MOD, conn->fd, &event) == -1)
-    {
-      if (errno == ENOENT)
-	return;
-      msgf ("epoll ctl: MOD failed: %s", strerror (errno));
-    }
-  conn->last_events = events;
-}
 
 // Sends an error response and marks the connection to close after sending.
 // WARNING: This discards any pending responses in the write buffers.
@@ -68,7 +47,7 @@ dump_error_and_close (int epfd, Conn *conn, const int code, const char *str)
   conn->res_slots[w_idx].actual_length = 4 + (uint32_t) err_payload_len;
   conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
   conn->state = STATE_FLUSH_CLOSE;
-  conn_set_epoll_events (epfd, conn, EPOLLIN | EPOLLOUT);
+  conn_set_events (epfd, conn, IO_EVENT_READ | IO_EVENT_WRITE);
 }
 
 // Convert validation result to error message and send error response
@@ -261,7 +240,7 @@ process_received_data (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 static void
 handle_in_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 {
-  DBG_LOGF ("FD %d: Handling EPOLLIN event", conn->fd);
+  DBG_LOGF ("FD %d: Handling IO_EVENT_READ event", conn->fd);
   IOStatus status = transport_read_buffer (conn);
 
   if (status == IO_ERROR || status == IO_EOF)
@@ -278,23 +257,22 @@ handle_in_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 
   if (conn->state == STATE_CLOSE)
     return;
+ 
+  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
 
-  // Update epoll interests
-  uint32_t events = EPOLLIN | EPOLLERR;
-
-  // If we have responses queued, request EPOLLOUT
+  // If we have responses queued, request IO_EVENT_WRITE
   if (!is_slot_empty (&conn->res_slots[conn->read_idx]))
     {
-      events |= EPOLLOUT;
+      events |= IO_EVENT_WRITE;
     }
 
-  conn_set_epoll_events (epfd, conn, events);
+  conn_set_events (epfd, conn, events);
 }
 
 static void
 handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 {
-  DBG_LOGF ("FD %d: Handling EPOLLOUT event", conn->fd);
+  DBG_LOGF ("FD %d: Handling  IO_EVENT_WRITE event", conn->fd);
 
   while (zc_process_completions (conn))
     {
@@ -311,8 +289,8 @@ handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 	  if (slot->is_zerocopy && slot->pending_ops > 0)
 	    {
 	      // POLICY: We are blocked on kernel ACKs, not socket buffer space.
-	      // We need EPOLLERR, not EPOLLOUT.
-	      conn_set_epoll_events (epfd, conn, EPOLLIN | EPOLLERR);
+	      // We need IO_EVENT_ERR, not IO_EVENT_WRITE.
+	      conn_set_events (epfd, conn, IO_EVENT_READ | IO_EVENT_ERR);
 	      return;
 	    }
 	  // Slot done, rotate and continue
@@ -331,7 +309,7 @@ handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
       if (status == IO_WAIT)
 	{
 	  // POLICY: Socket is full, ask Epoll for more writing time
-	  conn_set_epoll_events (epfd, conn, EPOLLIN | EPOLLOUT | EPOLLERR);
+	  conn_set_events (epfd, conn, IO_EVENT_READ |  IO_EVENT_WRITE| IO_EVENT_ERR);
 	  return;
 	}
     }
@@ -351,7 +329,7 @@ handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
       return;
     }
 
-  conn_set_epoll_events (epfd, conn, EPOLLIN | EPOLLERR);
+  conn_set_events (epfd, conn, IO_EVENT_READ | IO_EVENT_ERR);
 }
 
 static void
@@ -375,25 +353,25 @@ HOT void
 handle_connection_io (int epfd, Cache *cache, Conn *conn, uint64_t now_us,
 		      uint32_t events)
 {
-  if (events & (EPOLLHUP | EPOLLRDHUP))
+  if (events & (IO_EVENT_HUP | IO_EVENT_RDHUP))
     {
       conn->state = STATE_CLOSE;
     }
 
   // Error completions (always try to reclaim memory)
-  if (conn->state != STATE_CLOSE && (events & EPOLLERR))
+  if (conn->state != STATE_CLOSE && (events & IO_EVENT_ERR))
     {
       handle_err_event (epfd, cache, conn, now_us);
     }
 
   // Incoming data (only if healthy)
-  if (conn->state == STATE_ACTIVE && (events & EPOLLIN))
+  if (conn->state == STATE_ACTIVE && (events & IO_EVENT_READ))
     {
       handle_in_event (epfd, cache, conn, now_us);
     }
 
   // Outgoing data (if active OR finishing an error response)
-  if (conn->state != STATE_CLOSE && (events & EPOLLOUT))
+  if (conn->state != STATE_CLOSE && (events & IO_EVENT_WRITE))
     {
       handle_out_event (epfd, cache, conn, now_us);
     }
