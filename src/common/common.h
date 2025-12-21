@@ -46,6 +46,21 @@
 
 #define MAX_CONNECTIONS 20000
 
+// Android/Bionic often misses these flags despite Kernel support (4.14+).
+// We manually define them to the stable Linux ABI values.
+
+#ifndef MSG_ZEROCOPY
+#define MSG_ZEROCOPY    0x4000000
+#endif
+
+#ifndef SO_ZEROCOPY
+#define SO_ZEROCOPY     60
+#endif
+
+#ifndef SO_EE_ORIGIN_ZEROCOPY
+#define SO_EE_ORIGIN_ZEROCOPY  5
+#endif
+
 #ifdef DEBUG_LOGGING
     // If DEBUG_LOGGING is defined, the macros call the implementation functions.
 #define DBG_LOG(msg_str) msg (msg_str)
