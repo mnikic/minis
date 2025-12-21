@@ -55,7 +55,7 @@
 #include "zerocopy.h"
 
 #define MAX_EVENTS 10000
-#define K_IDLE_TIMEOUT_SEC 300UL // in seconds
+#define K_IDLE_TIMEOUT_SEC 300UL	// in seconds
 
 static struct
 {

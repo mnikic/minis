@@ -79,9 +79,9 @@ connpool_new (uint32_t max_conns)
   size_t total_size = max_conns * sizeof (ConnSlot);
 
   // Allocate aligned memory (Linux/C11 standard)
-  void *mem = aligned_alloc (64, total_size);
-
-  if (unlikely (!mem))
+  void *mem = NULL;
+  int err = posix_memalign (&mem, 64, total_size);
+  if (unlikely (err != 0 || !mem))
     {
       free (pool);
       return NULL;
@@ -137,7 +137,7 @@ connpool_get (ConnPool *pool, int file_desc)
   /*
    * Casting via (void*) suppresses -Wcast-align by resetting type assumptions.
    */
-  ConnSlot *slots = (ConnSlot *) ((void *)pool->storage);
+  ConnSlot *slots = (ConnSlot *) ((void *) pool->storage);
   ConnSlot *slot = &slots[idx];
   Conn *conn = &slot->data;
 
@@ -221,8 +221,8 @@ connpool_release (ConnPool *pool, Conn *conn)
 
   // STRIDE MAGIC: Reverse calculation
   // We use pointer subtraction on ConnSlot* to get the correct index
-  ConnSlot *base = (ConnSlot *) (void*) pool->storage;
-  ConnSlot *target = (ConnSlot *) (void*) conn;	// Safe cast via offset 0
+  ConnSlot *base = (ConnSlot *) (void *) pool->storage;
+  ConnSlot *target = (ConnSlot *) (void *) conn;	// Safe cast via offset 0
   uint32_t storage_idx = (uint32_t) (target - base);
 
   conn->next_free_idx = pool->free_head;
@@ -251,7 +251,7 @@ connpool_free (ConnPool *pool)
   if (!pool)
     return;
 
-  ConnSlot *slots = (ConnSlot *) (void*) pool->storage;
+  ConnSlot *slots = (ConnSlot *) (void *) pool->storage;
   for (uint32_t i = 0; i < pool->max_conns; i++)
     {
       if (slots[i].data.rbuf)
