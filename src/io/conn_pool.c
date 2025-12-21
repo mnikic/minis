@@ -3,6 +3,7 @@
  *
  * Created on: Jun 12, 2023
  * Author: loshmi
+ *
  */
 #include "conn_pool.h"
 #include <stdint.h>
@@ -14,30 +15,6 @@
 
 #include "common/common.h"
 #include "common/macros.h"
-
-/*
- * We use this internal union to force the physical memory layout
- * of the pool to be aligned to 64-byte cache lines.
- *
- * The 'padding' member automatically calculates the gap needed
- * so that sizeof(ConnSlot) is a perfect multiple of 64.
- *
- * This ensures that when we iterate like slots[i], the address
- * jumps exactly 64, 128, 192, etc., preventing AVX alignment crashes.
- */
-typedef union __attribute__((aligned (64))) ConnSlot
-{
-  Conn data;
-  // Round up sizeof(Conn) to next multiple of 64
-  char padding[((sizeof (Conn) + 63) / 64) * 64];
-}
-
-ConnSlot;
-
-// Sanity Check: Ensure Conn is at offset 0 (Crucial for pointer casting)
-_Static_assert (offsetof (ConnSlot, data) == 0,
-		"Conn must be at start of ConnSlot");
-
 
 // Helper: Ensure the sparse FD array is big enough
 static inline void
@@ -75,32 +52,25 @@ connpool_new (uint32_t max_conns)
 
   pool->max_conns = max_conns;
 
-  // Calculate total size using the ALIGNED slot size (192 bytes, not 152)
-  size_t total_size = max_conns * sizeof (ConnSlot);
-
-  // Allocate aligned memory (Linux/C11 standard)
+  size_t total_size = max_conns * sizeof (Conn);
   void *mem = NULL;
   int err = posix_memalign (&mem, 64, total_size);
+
   if (unlikely (err != 0 || !mem))
     {
       free (pool);
       return NULL;
     }
-
-  // Cast void* to our public type. Safe because offset is 0.
   pool->storage = (Conn *) mem;
   memset (pool->storage, 0, total_size);
 
-  // Initialize the Free List using correct stride logic
-  ConnSlot *slots = (ConnSlot *) mem;
   for (uint32_t i = 0; i < max_conns - 1; i++)
     {
-      slots[i].data.next_free_idx = i + 1;
+      pool->storage[i].next_free_idx = i + 1;
     }
-  slots[max_conns - 1].data.next_free_idx = UINT32_MAX;
+  pool->storage[max_conns - 1].next_free_idx = UINT32_MAX;
   pool->free_head = 0;
 
-  // Allocate Dense Active Array (Pointers do not need special alignment)
   pool->active = calloc (max_conns, sizeof (Conn *));
   if (unlikely (!pool->active))
     {
@@ -109,7 +79,6 @@ connpool_new (uint32_t max_conns)
       return NULL;
     }
 
-  // Allocate Sparse FD Map
   pool->capacity = 1024;
   pool->by_fd = calloc (pool->capacity, sizeof (Conn *));
   if (unlikely (!pool->by_fd))
@@ -126,40 +95,16 @@ connpool_new (uint32_t max_conns)
 Conn *
 connpool_get (ConnPool *pool, int file_desc)
 {
-  // Check if pool is full
   if (pool->free_head == UINT32_MAX)
     return NULL;
-
   ensure_fd_capacity (pool, file_desc);
-
-  // Pop from Slab Free List
   uint32_t idx = pool->free_head;
-  /*
-   * Casting via (void*) suppresses -Wcast-align by resetting type assumptions.
-   */
-  ConnSlot *slots = (ConnSlot *) ((void *) pool->storage);
-  ConnSlot *slot = &slots[idx];
-  Conn *conn = &slot->data;
-
+  Conn *conn = &pool->storage[idx];
   pool->free_head = conn->next_free_idx;
 
-  // Initialize Identity
   conn->fd = file_desc;
-  conn->next_free_idx = UINT32_MAX;	// Mark as in-use
-  conn->state = STATE_ACTIVE;
-  conn->last_events = 0;
+  conn->next_free_idx = UINT32_MAX;
 
-  // Reset Ring Buffer State
-  conn->read_idx = 0;
-  conn->write_idx = 0;
-  conn->rbuf_size = 0;
-  conn->read_offset = 0;
-  memset (conn->res_slots, 0, sizeof (conn->res_slots));
-  dlist_init (&conn->idle_list);
-
-  // LAZY ALLOCATION (Persistent): 
-  // We allocate the heavy buffers only if they are NULL (first use).
-  // If this slot was used before, we REUSE the existing buffers.
   if (!conn->rbuf)
     conn->rbuf = malloc (K_RBUF_SIZE);
 
@@ -185,7 +130,7 @@ connpool_get (ConnPool *pool, int file_desc)
       return NULL;
     }
 
-  // Add to Active Lists
+  conn_reset (conn, file_desc);
   conn->index_in_active = (uint32_t) pool->active_count;
   pool->active[pool->active_count++] = conn;
   pool->by_fd[file_desc] = conn;
@@ -193,7 +138,7 @@ connpool_get (ConnPool *pool, int file_desc)
   return conn;
 }
 
-void
+COLD void
 connpool_release (ConnPool *pool, Conn *conn)
 {
   if (!conn)
@@ -219,11 +164,9 @@ connpool_release (ConnPool *pool, Conn *conn)
       pool->by_fd[file_desc] = NULL;
     }
 
-  // STRIDE MAGIC: Reverse calculation
-  // We use pointer subtraction on ConnSlot* to get the correct index
-  ConnSlot *base = (ConnSlot *) (void *) pool->storage;
-  ConnSlot *target = (ConnSlot *) (void *) conn;	// Safe cast via offset 0
-  uint32_t storage_idx = (uint32_t) (target - base);
+  // STANDARD MATH:
+  // Pointer subtraction automatically divides by sizeof(Conn).
+  uint32_t storage_idx = (uint32_t) (conn - pool->storage);
 
   conn->next_free_idx = pool->free_head;
   pool->free_head = storage_idx;
@@ -240,7 +183,6 @@ connpool_iter (ConnPool *pool, Conn ***connections, size_t *count)
       return;
     }
 
-  // Return the raw pointer to the dense array.
   *connections = pool->active;
   *count = pool->active_count;
 }
@@ -251,13 +193,12 @@ connpool_free (ConnPool *pool)
   if (!pool)
     return;
 
-  ConnSlot *slots = (ConnSlot *) (void *) pool->storage;
   for (uint32_t i = 0; i < pool->max_conns; i++)
     {
-      if (slots[i].data.rbuf)
-	free (slots[i].data.rbuf);
-      if (slots[i].data.res_data)
-	free (slots[i].data.res_data);
+      if (pool->storage[i].rbuf)
+	free (pool->storage[i].rbuf);
+      if (pool->storage[i].res_data)
+	free (pool->storage[i].res_data);
     }
 
   free (pool->storage);

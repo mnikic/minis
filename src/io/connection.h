@@ -30,7 +30,7 @@ typedef enum
   STATE_CLOSE = 3,
 } ConnectionState;
 
-typedef struct Conn
+typedef struct __attribute__((aligned (64))) Conn
 {
   int fd;
   ConnectionState state;
@@ -57,6 +57,9 @@ typedef struct Conn
   uint64_t idle_start;
   DList idle_list;
 } Conn;
+
+_Static_assert (sizeof (Conn) % 64 == 0,
+		"Conn struct must be cache-line aligned");
 
 // Check if a slot is completely done (sent AND acked for zerocopy)
 static ALWAYS_INLINE bool
@@ -119,5 +122,7 @@ is_slot_empty (ResponseSlot *slot)
 uint32_t release_completed_slots (Conn * conn);
 
 bool is_connection_idle (Conn * conn);
+
+void conn_reset (Conn * conn, int file_desc);
 
 #endif /* CONNECTION_H_ */

@@ -46,3 +46,22 @@ is_connection_idle (Conn *conn)
 
   return no_pending_responses && no_unprocessed_reqs;
 }
+
+void
+conn_reset (Conn *conn, int file_desc)
+{
+  conn->fd = file_desc;
+  conn->state = STATE_ACTIVE;
+  conn->last_events = 0;
+
+  // Reset Ring Buffer State
+  conn->read_idx = 0;
+  conn->write_idx = 0;
+  conn->rbuf_size = 0;
+  conn->read_offset = 0;
+
+  memset (conn->res_slots, 0, sizeof (conn->res_slots));
+
+  conn->idle_start = 0;		// Will be set externally
+  dlist_init (&conn->idle_list);
+}
