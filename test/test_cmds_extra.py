@@ -427,6 +427,28 @@ $ {CLIENT_EXECUTABLE_REL_PATH} zquery delquery 0 "" 0 10
 (arr) end
 $ {CLIENT_EXECUTABLE_REL_PATH} del delquery
 (int) 1
+
+# Test mset, mget
+$ {CLIENT_EXECUTABLE_REL_PATH} mset a 1 b 2 c 3
+(nil)
+$ {CLIENT_EXECUTABLE_REL_PATH} mget a b c
+(arr) len=3
+(str) 1
+(str) 2
+(str) 3
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} get a
+(str) 1
+$ {CLIENT_EXECUTABLE_REL_PATH} get b
+(str) 2
+$ {CLIENT_EXECUTABLE_REL_PATH} get c
+(str) 3
+$ {CLIENT_EXECUTABLE_REL_PATH} del a
+(int) 1
+$ {CLIENT_EXECUTABLE_REL_PATH} del b
+(int) 1
+$ {CLIENT_EXECUTABLE_REL_PATH} del c
+(int) 1
 '''
 
 

@@ -132,6 +132,21 @@ entry_del (Cache *cache, Entry *ent, uint64_t now_us)
     }
 }
 
+// Safely remove an entry from the DB and destroy it (sync or async)
+static void
+entry_dispose_atomic (Cache *cache, Entry *ent)
+{
+  HNode *removed = hm_pop (&cache->db, &ent->node, &hnode_same);
+  if (!removed)
+    return;
+
+  assert (removed == &ent->node);
+
+  // We pass -1 or 0 for timestamp because we are destroying it immediately, 
+  // so heap position updates don't matter much (it's being removed).
+  entry_del (cache, ent, (uint64_t) - 1);
+}
+
 // Converts an HNode pointer (from the hash map) back to its parent Entry structure.
 static Entry *
 fetch_entry (HNode *node_to_fetch)
@@ -188,7 +203,7 @@ typedef struct
   Buffer *out;
   uint32_t count;
   uint64_t now_us;
-  const char * pattern;
+  const char *pattern;
 } ScanContext;
 
 static void
@@ -203,7 +218,7 @@ cb_scan (HNode *node, void *arg)
 	  return;
 	}
     }
-  if (!glob_match(ctx->pattern, ent->key))
+  if (!glob_match (ctx->pattern, ent->key))
     return;
   // NOTE: out_str returns true on success. If it fails, we should abort, but we cannot. out_arr_end will fail and report
   if (out_str (ctx->out, fetch_entry (node)->key))
@@ -255,15 +270,8 @@ expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
     {
       if ((*ent)->expire_at_us < now_us)
 	{
-	  // Key is expired. Perform passive eviction.
-	  HNode *removed_node =
-	    hm_pop (&cache->db, &(*ent)->node, &hnode_same);
-	  (void) removed_node;
-	  assert (removed_node == &(*ent)->node);
-
-	  entry_del (cache, *ent, now_us);
+	  entry_dispose_atomic (cache, *ent);
 	  *ent = NULL;
-
 	  return out_nil (out);
 	}
     }
@@ -465,7 +473,7 @@ do_keys (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
   size_t idx = out_arr_begin (out);
   if (idx == 0)
     return false;
-  ScanContext ctx = {.out = out,.count = 0, .pattern = cmd[1] };
+  ScanContext ctx = {.out = out,.count = 0,.pattern = cmd[1] };
   ctx.now_us = now_us;
 
   // We cannot stop the scan if a write fails, but the subsequent calls will
@@ -493,59 +501,78 @@ do_del (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
   return out_int (out, node ? 1 : 0);
 }
 
-static bool
-do_set (Cache *cache, char **cmd, Buffer *out)
+static void
+entry_set (Cache *cache, char *key, const char *val)
 {
-  Entry key;
-  key.key = cmd[1];
-  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
+  Entry entry_key;
+  entry_key.key = key;
+  entry_key.node.hcode =
+    str_hash ((uint8_t *) entry_key.key, strlen (entry_key.key));
 
-  HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
+  HNode *node = hm_lookup (&cache->db, &entry_key.node, &entry_eq);
   if (node)
     {
       Entry *ent = fetch_entry (node);
       if (ent->type != T_STR)
 	{
-	  return out_err (out, ERR_TYPE, "key exists with different type");
+	  entry_dispose_atomic (cache, ent);
+	  goto INSERT_NEW;
 	}
       if (ent->val)
 	{
 	  free (ent->val);
 	}
-      ent->val = calloc (strlen (cmd[2]) + 1, sizeof (char));
+      ent->val = calloc (strlen (val) + 1, sizeof (char));
       if (!ent->val)
 	die ("Out of memory");
-      strcpy (ent->val, cmd[2]);
+      strcpy (ent->val, val);
+      return;
     }
-  else
+  Entry *ent;
+INSERT_NEW:
+  ent = malloc (sizeof (Entry));
+  if (!ent)
+    die ("Out of memory in do_set");
+
+  ent->key = calloc (strlen (key) + 1, sizeof (char));
+  if (!ent->key)
     {
-      Entry *ent = malloc (sizeof (Entry));
-      if (!ent)
-	die ("Out of memory in do_set");
-
-      ent->key = calloc (strlen (cmd[1]) + 1, sizeof (char));
-      if (!ent->key)
-	{
-	  free (ent);
-	  die ("Out of memory");
-	}
-      strcpy (ent->key, cmd[1]);
-
-      ent->val = calloc (strlen (cmd[2]) + 1, sizeof (char));
-      if (!ent->val)
-	{
-	  free (ent->key);
-	  free (ent);
-	  die ("Out of memory");
-	}
-      strcpy (ent->val, cmd[2]);
-
-      ent->node.hcode = key.node.hcode;
-      ent->heap_idx = (size_t) -1;
-      ent->expire_at_us = 0;
-      ent->type = T_STR;
-      hm_insert (&cache->db, &ent->node, &entry_eq);
+      free (ent);
+      die ("Out of memory");
     }
+  strcpy (ent->key, key);
+
+  ent->val = calloc (strlen (val) + 1, sizeof (char));
+  if (!ent->val)
+    {
+      free (ent->key);
+      free (ent);
+      die ("Out of memory");
+    }
+  strcpy (ent->val, val);
+
+  ent->node.hcode = entry_key.node.hcode;
+  ent->heap_idx = (size_t) -1;
+  ent->expire_at_us = 0;
+  ent->type = T_STR;
+  hm_insert (&cache->db, &ent->node, &entry_eq);
+}
+
+static bool
+do_set (Cache *cache, char **cmd, Buffer *out)
+{
+  entry_set (cache, cmd[1], cmd[2]);
+  return out_nil (out);
+}
+
+static bool
+do_mset (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
+{
+  for (size_t i = 0; i < nkeys; i = i + 2)
+    {
+      entry_set (cache, cmd[i + 1], cmd[i + 2]);
+    }
+
   return out_nil (out);
 }
 
@@ -573,12 +600,7 @@ do_get (Cache *cache, char *key_param, Buffer *out, uint64_t now_us)
     {
       if (ent->expire_at_us < now_us)
 	{
-	  // Key is expired. Initiate passive eviction (the garbage collector role).
-	  HNode *removed_node = hm_pop (&cache->db, &ent->node, &hnode_same);
-	  (void) removed_node;
-	  assert (removed_node == &ent->node);
-
-	  entry_del (cache, ent, now_us);	// Handles heap removal and async cleanup
+	  entry_dispose_atomic (cache, ent);
 	  return out_nil (out);	// Key is deleted, return NIL.
 	}
     }
@@ -692,6 +714,10 @@ cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out,
     {
       return do_keys (cache, cmd, out, now_us);
     }
+  if (size > 2 && size % 2 == 1 && cmd_is (cmd[0], "mset"))
+    {
+      return do_mset (cache, cmd, size - 1, out);
+    }
   if (size == 2 && cmd_is (cmd[0], "get"))
     {
       return do_get (cache, cmd[1], out, now_us);
@@ -759,11 +785,7 @@ cache_evict (Cache *cache, uint64_t now_us)
     {
       // Get the entry from the heap top's ref (which points to the Entry's heap_idx field)
       Entry *ent = fetch_entry_from_heap_ref (heap_top (&cache->heap)->ref);
-      HNode *node = hm_pop (&cache->db, &ent->node, &hnode_same);
-      (void)node;
-      assert (node == &ent->node);
-      // entry_del handles heap removal (via entry_set_ttl) and cleanup
-      entry_del (cache, ent, now_us);
+      entry_dispose_atomic (cache, ent);
       if (nworks++ >= k_max_works)
 	{
 	  // don't stall the server if too many keys are expiring at once
