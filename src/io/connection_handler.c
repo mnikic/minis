@@ -2,7 +2,7 @@
  *============================================================================
  * Name             : connection_handler.c 
  * Author           : Milos
- * Description      : Core networking state machine - epoll event loop.
+ * Description      : Core networking state machine - an opportunistic one.
  *============================================================================
  */
 #include <stdbool.h>
