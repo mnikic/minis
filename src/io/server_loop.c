@@ -266,6 +266,7 @@ process_timers (Cache *cache, uint64_t now_us)
 
   cache_evict (cache, now_us);
 }
+
 static size_t sys_calls = 0;
 
 // Helper: Commit state changes to Kernel (Batch MOD)
@@ -281,7 +282,8 @@ flush_dirty_conns (int epfd, Conn **conns, int count)
       event.events = conn->pending_events;
       sys_calls++;
       (void) sys_calls;
-      DBG_LOGF("Calling CTL_MOD on fd: %i for event: %u, call number: %llu", conn->fd, conn->pending_events, sys_calls);
+      DBG_LOGF ("Calling CTL_MOD on fd: %i for event: %u, call number: %llu",
+		conn->fd, conn->pending_events, sys_calls);
       epoll_ctl (epfd, EPOLL_CTL_MOD, conn->fd, &event);
       conn->last_events = conn->pending_events;
     }
@@ -307,8 +309,8 @@ update_idle_state (Conn *conn, uint64_t now_us)
       dlist_detach (&conn->idle_list);
     }
 
-  // 2. If it's effectively waiting for a new request, mark it idle.
-  if (is_connection_idle (conn))
+  // If it's effectively waiting for a new request, mark it idle.
+  if (conn_is_idle (conn))
     {
       conn->idle_start = now_us;
       dlist_insert_before (&g_data.idle_list, &conn->idle_list);

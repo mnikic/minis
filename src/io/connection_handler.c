@@ -106,7 +106,7 @@ handle_parse_error (Conn *conn, ParseResult result)
 // On failure, dump_error_and_close has already been called.
 static bool
 do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
-        Buffer *out_buf, uint64_t now_us)
+	    Buffer *out_buf, uint64_t now_us)
 {
   uint32_t arg_count = 0;
   ValidationResult val_result =
@@ -119,14 +119,14 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
     }
 
   char *cmd[K_MAX_ARGS];
-  RestoreState restore; 
+  RestoreState restore;
 
   ProtoRequest proto_req = {
     .req = req,
     .reqlen = reqlen,
     .arg_count = arg_count,
     .cmd = cmd,
-    .restore = &restore // Pass uninitialized memory, getting filled state back
+    .restore = &restore		// Pass uninitialized memory, getting filled state back
   };
 
   ParseResult parse_result = parse_arguments (&proto_req);
@@ -134,19 +134,21 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
   // Even if parsing failed, we must restore whatever partial bytes were touched
   if (parse_result != PARSE_OK)
     {
-      restore_all_bytes (&restore); 
+      restore_all_bytes (&restore);
       handle_parse_error (conn, parse_result);
       return false;
     }
 
-  DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd, proto_req.cmd_size);
+  DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd,
+	    proto_req.cmd_size);
 
   bool success = TIME_EXPR ("cache_execute",
-                 cache_execute (cache, cmd, proto_req.cmd_size, out_buf,
-                        now_us));
-  
+			    cache_execute (cache, cmd, proto_req.cmd_size,
+					   out_buf,
+					   now_us));
+
   restore_all_bytes (&restore);
-  
+
   if (!success)
     {
       msg ("cache couldn't write message, no space.");
@@ -160,7 +162,7 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
 HOT static bool
 try_one_request (Cache *cache, uint64_t now_us, Conn *conn)
 {
-  if (is_res_queue_full (conn))
+  if (conn_is_res_queue_full (conn))
     {
       DBG_LOGF ("FD %d: Response queue full, pausing parsing", conn->fd);
       return false;
@@ -231,7 +233,7 @@ process_received_data (Cache *cache, Conn *conn, uint64_t now_us)
   uint_fast8_t budget = K_MAX_REQ_PER_TICK;
   while (budget > 0)
     {
-      if (is_res_queue_full (conn))
+      if (conn_is_res_queue_full (conn))
 	break;
 
       if (!try_one_request (cache, now_us, conn))
@@ -245,11 +247,11 @@ process_received_data (Cache *cache, Conn *conn, uint64_t now_us)
   if (budget == 0)
     return false;
   // Reset buffer if fully consumed
-  if (is_read_buffer_consumed (conn))
+  if (conn_is_rbuff_consumed (conn))
     {
       DBG_LOGF ("FD %d: RBuf fully consumed (%zu bytes). Resetting.",
 		conn->fd, conn->rbuf_size);
-      reset_read_buffer (conn);
+      conn_reset_rbuff (conn);
     }
   return true;
 }
@@ -272,13 +274,13 @@ flush_write_queue (Conn *conn)
   // Loop through pending slots
   while (true)
     {
-      ResponseSlot *slot = conn_get_head_slot(conn);
+      ResponseSlot *slot = conn_get_head_slot (conn);
 
-      if (is_slot_empty (slot))
+      if (conn_is_slot_empty (slot))
 	return IO_OK;
 
       // Check if we are just waiting for ZC ACKs
-      if (is_slot_fully_sent (slot))
+      if (conn_is_slot_fully_sent (slot))
 	{
 	  if (slot->is_zerocopy && slot->pending_ops > 0)
 	    {
@@ -289,7 +291,7 @@ flush_write_queue (Conn *conn)
 	    }
 
 	  // Slot done, rotate and continue
-	  release_completed_slots (conn);
+	  conn_release_comp_slots (conn);
 	  continue;
 	}
 
@@ -333,7 +335,7 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
     return;
 
   // Lets try OPTIMISTIC WRITE
-  if (!is_slot_empty (conn_get_head_slot(conn)))
+  if (!conn_is_slot_empty (conn_get_head_slot (conn)))
     {
       flush_write_queue (conn);
       if (conn->state == STATE_CLOSE)
@@ -341,7 +343,7 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
       if (conn->state == STATE_FLUSH_CLOSE)
 	{
 	  // If we successfully flushed everything, close now!
-          if (is_slot_empty (conn_get_head_slot(conn)))
+	  if (conn_is_slot_empty (conn_get_head_slot (conn)))
 	    {
 	      conn->state = STATE_CLOSE;
 	      return;
@@ -351,7 +353,7 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
 
   // Determine Events
   IOEvent events = IO_EVENT_READ | IO_EVENT_ERR;
-  ResponseSlot *head = conn_get_head_slot(conn);
+  ResponseSlot *head = conn_get_head_slot (conn);
 
   // The "Bully" Check.
   if (!finished)
@@ -359,11 +361,11 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
       events |= IO_EVENT_WRITE;
     }
   // Backpressure (The "Socket Full" Check)
-  else if (!is_slot_empty (head))
+  else if (!conn_is_slot_empty (head))
     {
       // We have data pending. Do we need to push it, or just wait for ACKs?
       bool waiting_for_acks = (head->is_zerocopy
-			       && is_slot_fully_sent (head)
+			       && conn_is_slot_fully_sent (head)
 			       && head->pending_ops > 0);
 
       if (!waiting_for_acks)
@@ -385,7 +387,7 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
   if (conn->state == STATE_FLUSH_CLOSE)
     {
       // If queue is empty, we are done. Close it.
-      if (is_slot_empty ( conn_get_head_slot(conn)))
+      if (conn_is_slot_empty (conn_get_head_slot (conn)))
 	{
 	  conn->state = STATE_CLOSE;
 	  return;
@@ -393,7 +395,7 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
     }
 
   // Pipelining: If we cleared space, maybe we can process more requests?
-  if (status == IO_OK && has_unprocessed_data (conn))
+  if (status == IO_OK && conn_has_unprocessed_data (conn))
     {
       DBG_LOGF ("FD %d: Processing pipelined requests (%u bytes)",
 		conn->fd, conn->rbuf_size - conn->read_offset);
@@ -403,13 +405,13 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
     }
 
   IOEvent events = IO_EVENT_READ | IO_EVENT_ERR;
-  ResponseSlot *head = conn_get_head_slot(conn);
+  ResponseSlot *head = conn_get_head_slot (conn);
 
-  if (!is_slot_empty (head))
+  if (!conn_is_slot_empty (head))
     {
       // We have data pending. Do we need to push it, or just wait for ACKs?
       bool waiting_for_acks = (head->is_zerocopy
-			       && is_slot_fully_sent (head)
+			       && conn_is_slot_fully_sent (head)
 			       && head->pending_ops > 0);
       if (!waiting_for_acks)
 	{
@@ -431,7 +433,7 @@ handle_err_event (Cache *cache, Conn *conn, uint64_t now_us)
     }
 
   // If we freed up space, maybe we can process more requests?
-  if (progress && has_unprocessed_data (conn))
+  if (progress && conn_has_unprocessed_data (conn))
     {
       handle_in_event (cache, conn, now_us);
     }

@@ -122,7 +122,7 @@ zc_process_completions (Conn *conn)
 
   if (slot_complete)
     {
-      release_completed_slots (conn);
+      conn_release_comp_slots (conn);
     }
 
   return true;

@@ -76,7 +76,7 @@ _Static_assert (sizeof (Conn) % 64 == 0,
 
 // Check if a slot is completely done (sent AND acked for zerocopy)
 static ALWAYS_INLINE bool
-is_slot_complete (ResponseSlot *slot)
+conn_is_slot_complete (ResponseSlot *slot)
 {
   return slot->pending_ops == 0 &&
     slot->sent == slot->actual_length && slot->actual_length > 0;
@@ -84,7 +84,7 @@ is_slot_complete (ResponseSlot *slot)
 
 // Reset read buffer to initial state (fully consumed)
 static ALWAYS_INLINE void
-reset_read_buffer (Conn *conn)
+conn_reset_rbuff (Conn *conn)
 {
   conn->rbuf_size = 0;
   conn->read_offset = 0;
@@ -92,14 +92,14 @@ reset_read_buffer (Conn *conn)
 
 // Check if read buffer is fully consumed
 static ALWAYS_INLINE bool
-is_read_buffer_consumed (Conn *conn)
+conn_is_rbuff_consumed (Conn *conn)
 {
   return conn->read_offset > 0 && conn->read_offset == conn->rbuf_size;
 }
 
 // Check if there's unprocessed data in read buffer
 static ALWAYS_INLINE bool
-has_unprocessed_data (Conn *conn)
+conn_has_unprocessed_data (Conn *conn)
 {
   return conn->read_offset < conn->rbuf_size;
 }
@@ -111,21 +111,21 @@ get_slot_data_ptr (Conn *conn, uint32_t slot_idx)
 }
 
 static ALWAYS_INLINE bool
-is_res_queue_full (Conn *conn)
+conn_is_res_queue_full (Conn *conn)
 {
   return ((conn->write_idx + 1) % K_SLOT_COUNT) == conn->read_idx;
 }
 
 // Check if a slot is fully sent (regardless of ACK status)
 static ALWAYS_INLINE bool
-is_slot_fully_sent (ResponseSlot *slot)
+conn_is_slot_fully_sent (ResponseSlot *slot)
 {
   return slot->sent >= slot->actual_length;
 }
 
 // Check if a slot is empty/available
 static ALWAYS_INLINE bool
-is_slot_empty (ResponseSlot *slot)
+conn_is_slot_empty (ResponseSlot *slot)
 {
   return slot->actual_length == 0;
 }
@@ -133,24 +133,25 @@ is_slot_empty (ResponseSlot *slot)
 static ALWAYS_INLINE void
 conn_set_events (Conn *conn, IOEvent events)
 {
-  DBG_LOGF ("About to set events %u on the %i, old events are %u", events, conn->fd, conn->last_events);
+  DBG_LOGF ("About to set events %u on the %i, old events are %u", events,
+	    conn->fd, conn->last_events);
   conn->pending_events = (uint32_t) events | EPOLLET;
   DBG_LOGF ("Set events %u on the %i", conn->pending_events, conn->fd);
 }
 
 // Returns the current response slot being sent (the Head of the queue).
 // This is the slot at read_idx.
-static ALWAYS_INLINE ResponseSlot*
+static ALWAYS_INLINE ResponseSlot *
 conn_get_head_slot (Conn *conn)
 {
-    return &conn->res_slots[conn->read_idx];
+  return &conn->res_slots[conn->read_idx];
 }
 
 // Release completed slots from the ring buffer
 // Returns: number of slots released
-uint32_t release_completed_slots (Conn * conn);
+uint32_t conn_release_comp_slots (Conn * conn);
 
-bool is_connection_idle (Conn * conn);
+bool conn_is_idle (Conn * conn);
 
 void conn_reset (Conn * conn, int file_desc);
 

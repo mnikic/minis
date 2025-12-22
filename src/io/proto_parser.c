@@ -56,21 +56,21 @@ save_and_nullterm (RestoreState *state, uint8_t *location,
 
 // Parse arguments from request buffer into cmd array
 // Uses in-place null-termination with automatic restoration tracking
-ParseResult 
+ParseResult
 parse_arguments (ProtoRequest *proto_request)
 {
-  restore_state_init(proto_request->restore);
+  restore_state_init (proto_request->restore);
   size_t pos = 4;
   size_t cmd_size = 0;
-  
+
   // Cache the pointer locally for speed/readability
-  uint8_t* req = proto_request->req; 
+  uint8_t *req = proto_request->req;
 
   for (uint32_t i = 0; i < proto_request->arg_count; i++)
     {
       // Check for length header
       if (pos + 4 > proto_request->reqlen)
-        return PARSE_MISSING_LENGTH;
+	return PARSE_MISSING_LENGTH;
 
       // Read argument length
       uint32_t arg_len = 0;
@@ -79,14 +79,15 @@ parse_arguments (ProtoRequest *proto_request)
 
       // Check if argument data fits
       if (pos + 4 + arg_len > proto_request->reqlen)
-        return PARSE_LENGTH_OVERFLOW;
+	return PARSE_LENGTH_OVERFLOW;
 
       // Get pointer to null-termination location.
       uint8_t *null_term_loc = &req[pos + 4 + arg_len];
       uint8_t original_char = *null_term_loc;
 
       // Save and null-terminate
-      save_and_nullterm (proto_request->restore, null_term_loc, original_char);
+      save_and_nullterm (proto_request->restore, null_term_loc,
+			 original_char);
 
       // Store pointer to argument string
       proto_request->cmd[cmd_size++] = (char *) &req[pos + 4];

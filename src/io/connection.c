@@ -6,7 +6,7 @@
 // Release completed slots from the ring buffer
 // Returns: number of slots released
 uint32_t
-release_completed_slots (Conn *conn)
+conn_release_comp_slots (Conn *conn)
 {
   uint32_t released_count = 0;
 
@@ -15,7 +15,7 @@ release_completed_slots (Conn *conn)
       ResponseSlot *slot = &conn->res_slots[conn->read_idx];
 
       // Check if this slot is fully complete
-      if (!is_slot_complete (slot))	// Using helper!
+      if (!conn_is_slot_complete (slot))	// Using helper!
 	break;
 
       // Release this slot
@@ -33,7 +33,7 @@ release_completed_slots (Conn *conn)
 }
 
 bool
-is_connection_idle (Conn *conn)
+conn_is_idle (Conn *conn)
 {
   if (conn->state != STATE_ACTIVE)
     {
@@ -41,8 +41,8 @@ is_connection_idle (Conn *conn)
     }
 
   bool no_pending_responses =
-    is_slot_empty (&conn->res_slots[conn->read_idx]);
-  bool no_unprocessed_reqs = !has_unprocessed_data (conn);
+    conn_is_slot_empty (&conn->res_slots[conn->read_idx]);
+  bool no_unprocessed_reqs = !conn_has_unprocessed_data (conn);
 
   return no_pending_responses && no_unprocessed_reqs;
 }
