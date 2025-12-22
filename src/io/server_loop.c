@@ -266,6 +266,7 @@ process_timers (Cache *cache, uint64_t now_us)
 
   cache_evict (cache, now_us);
 }
+static size_t sys_calls = 0;
 
 // Helper: Commit state changes to Kernel (Batch MOD)
 static NOINLINE void
@@ -278,7 +279,9 @@ flush_dirty_conns (int epfd, Conn **conns, int count)
 
       event.data.fd = conn->fd;
       event.events = conn->pending_events;
-      DBG_LOGF("Calling CTL_MOD on fd: %i for event: %u", conn->fd, conn->pending_events);
+      sys_calls++;
+      (void) sys_calls;
+      DBG_LOGF("Calling CTL_MOD on fd: %i for event: %u, call number: %llu", conn->fd, conn->pending_events, sys_calls);
       epoll_ctl (epfd, EPOLL_CTL_MOD, conn->fd, &event);
       conn->last_events = conn->pending_events;
     }
@@ -379,7 +382,7 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
   cache_free (cache);
   close (listen_fd);
   close (epfd);
-  msg ("Cleanup complete.");
+  msgf ("Cleanup complete. %llu calls to epoll_ctl", sys_calls);
 }
 
 static bool COLD

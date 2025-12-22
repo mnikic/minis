@@ -138,6 +138,14 @@ conn_set_events (Conn *conn, IOEvent events)
   DBG_LOGF ("Set events %u on the %i", conn->pending_events, conn->fd);
 }
 
+// Returns the current response slot being sent (the Head of the queue).
+// This is the slot at read_idx.
+static ALWAYS_INLINE ResponseSlot*
+conn_get_head_slot (Conn *conn)
+{
+    return &conn->res_slots[conn->read_idx];
+}
+
 // Release completed slots from the ring buffer
 // Returns: number of slots released
 uint32_t release_completed_slots (Conn * conn);

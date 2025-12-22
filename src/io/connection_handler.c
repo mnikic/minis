@@ -7,8 +7,8 @@
  */
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>        // memcpy, strerror
-#include <arpa/inet.h>     // htonl, ntohl
+#include <string.h>		// memcpy, strerror
+#include <arpa/inet.h>		// htonl, ntohl
 
 #include "connection_handler.h"
 #include "connection.h"
@@ -21,15 +21,7 @@
 #include "proto_parser.h"
 #include "zerocopy.h"
 
-// -----------------------------------------------------------------------------
-// Forward Declarations
-// -----------------------------------------------------------------------------
-static void handle_in_event (Cache *cache, Conn *conn, uint64_t now_us);
-
-
-// -----------------------------------------------------------------------------
-// Error Handling
-// -----------------------------------------------------------------------------
+#define K_MAX_REQ_PER_TICK  64
 
 // Sends an error response and marks the connection to close after sending.
 // WARNING: This discards any pending responses in the write buffers.
@@ -56,10 +48,10 @@ dump_error_and_close (Conn *conn, const int code, const char *str)
 
   conn->res_slots[w_idx].actual_length = 4 + (uint32_t) err_payload_len;
   conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
-  
+
   // Mark as flushing so we close after write
   conn->state = STATE_FLUSH_CLOSE;
-  
+
   // We force WRITE interest here because we definitely have data
   conn_set_events (conn, IO_EVENT_READ | IO_EVENT_WRITE);
 }
@@ -110,16 +102,11 @@ handle_parse_error (Conn *conn, ParseResult result)
   dump_error_and_close (conn, ERR_MALFORMED, err_msg);
 }
 
-
-// -----------------------------------------------------------------------------
-// Request Processing
-// -----------------------------------------------------------------------------
-
 // Returns true on success, false on failure.
 // On failure, dump_error_and_close has already been called.
 static bool
 do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
-        Buffer *out_buf, uint64_t now_us)
+	    Buffer *out_buf, uint64_t now_us)
 {
   uint32_t arg_count = 0;
   ValidationResult val_result =
@@ -138,7 +125,7 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
   restore_state_init (&restore);
 
   ParseResult parse_result = parse_arguments (req, reqlen, arg_count,
-                          cmd, &cmd_size, &restore);
+					      cmd, &cmd_size, &restore);
 
   if (parse_result != PARSE_OK)
     {
@@ -148,11 +135,11 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
     }
 
   DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd,
-        cmd_size);
+	    cmd_size);
 
   bool success = TIME_EXPR ("cache_execute",
-                 cache_execute (cache, cmd, cmd_size, out_buf,
-                        now_us));
+			    cache_execute (cache, cmd, cmd_size, out_buf,
+					   now_us));
   restore_all_bytes (&restore);
   if (!success)
     {
@@ -183,7 +170,7 @@ try_one_request (Cache *cache, uint64_t now_us, Conn *conn)
   len = ntohl (len);
 
   DBG_LOGF ("FD %d: Parsing request at offset %u with length %u.",
-        conn->fd, conn->read_offset, len);
+	    conn->fd, conn->read_offset, len);
 
   // Validate request size
   if (len > K_MAX_MSG)
@@ -196,7 +183,7 @@ try_one_request (Cache *cache, uint64_t now_us, Conn *conn)
 
   size_t total_req_len = 4 + len;
   if (total_req_len > bytes_remain)
-    return false;        // Incomplete request
+    return false;		// Incomplete request
 
   // Prepare output buffer
   uint32_t w_idx = conn->write_idx;
@@ -205,8 +192,8 @@ try_one_request (Cache *cache, uint64_t now_us, Conn *conn)
 
   // Execute request
   bool success = do_request (cache, conn,
-                 &conn->rbuf[conn->read_offset + 4],
-                 len, &out_buf, now_us);
+			     &conn->rbuf[conn->read_offset + 4],
+			     len, &out_buf, now_us);
 
   if (!success)
     return false;
@@ -226,41 +213,44 @@ try_one_request (Cache *cache, uint64_t now_us, Conn *conn)
   conn->read_offset += total_req_len;
 
   DBG_LOGF ("FD %d: Request processed. Response mode: %s (len: %u)",
-        conn->fd, slot->is_zerocopy ? "ZEROCOPY" : "VANILLA",
-        slot->actual_length);
+	    conn->fd, slot->is_zerocopy ? "ZEROCOPY" : "VANILLA",
+	    slot->actual_length);
 
   return true;
 }
 
-HOT static void
+HOT static bool
 process_received_data (Cache *cache, Conn *conn, uint64_t now_us)
 {
-  while (true)
+  uint_fast8_t budget = K_MAX_REQ_PER_TICK;
+  while (budget > 0)
     {
       if (is_res_queue_full (conn))
-        break;
+	break;
 
       if (!try_one_request (cache, now_us, conn))
-        break;
+	break;
 
       if (conn->state == STATE_CLOSE)
-        break;
+	break;
+      budget--;
     }
-
+  // Bully defense!
+  if (budget == 0)
+    return false;
   // Reset buffer if fully consumed
   if (is_read_buffer_consumed (conn))
     {
       DBG_LOGF ("FD %d: RBuf fully consumed (%zu bytes). Resetting.",
-        conn->fd, conn->rbuf_size);
+		conn->fd, conn->rbuf_size);
       reset_read_buffer (conn);
     }
+  return true;
 }
 
 
-// -----------------------------------------------------------------------------
 // Write Logic (Optimistic)
-// -----------------------------------------------------------------------------
-
+//
 // Tries to empty the write queue. 
 // Returns IO_OK if everything was sent.
 // Returns IO_WAIT if socket blocked.
@@ -268,55 +258,51 @@ process_received_data (Cache *cache, Conn *conn, uint64_t now_us)
 HOT static IOStatus
 flush_write_queue (Conn *conn)
 {
-  // 1. Process any pending ZeroCopy completions first
+  // Process any pending ZeroCopy completions first
   while (zc_process_completions (conn))
     {
     }
 
-  // 2. Loop through pending slots
+  // Loop through pending slots
   while (true)
     {
-      ResponseSlot *slot = &conn->res_slots[conn->read_idx];
-      
+      ResponseSlot *slot = conn_get_head_slot(conn);
+
       if (is_slot_empty (slot))
-        return IO_OK; // Queue is empty!
+	return IO_OK;
 
       // Check if we are just waiting for ZC ACKs
       if (is_slot_fully_sent (slot))
-        {
-          if (slot->is_zerocopy && slot->pending_ops > 0)
-            {
-              // Blocked on kernel ACKs, not socket buffer space.
-              // We return OK here because we can't write anymore, 
-              // but the caller must handle the event registration (needs ERR).
-              return IO_OK; 
-            }
-          
-          // Slot done, rotate and continue
-          release_completed_slots (conn);
-          continue;
-        }
+	{
+	  if (slot->is_zerocopy && slot->pending_ops > 0)
+	    {
+	      // Blocked on kernel ACKs, not socket buffer space.
+	      // We return OK here because we can't write anymore, 
+	      // but the caller must handle the event registration (needs ERR).
+	      return IO_OK;
+	    }
+
+	  // Slot done, rotate and continue
+	  release_completed_slots (conn);
+	  continue;
+	}
 
       // Try to send data
       IOStatus status = transport_send_slot (conn, conn->read_idx);
 
       if (status == IO_ERROR)
-        {
-          conn->state = STATE_CLOSE;
-          return IO_ERROR;
-        }
+	{
+	  conn->state = STATE_CLOSE;
+	  return IO_ERROR;
+	}
 
       if (status == IO_WAIT)
-        {
-          // Socket is full. Stop here.
-          return IO_WAIT;
-        }
+	{
+	  // Socket is full. Stop here.
+	  return IO_WAIT;
+	}
     }
 }
-
-// -----------------------------------------------------------------------------
-// Event Handlers
-// -----------------------------------------------------------------------------
 
 static void
 handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
@@ -330,53 +316,55 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
       return;
     }
 
-  // 1. Process data if we have it
+  bool finished = true;
+  // Process data if we have it
   if (conn->rbuf_size > conn->read_offset)
     {
-      process_received_data (cache, conn, now_us);
+      finished = process_received_data (cache, conn, now_us);
     }
 
   if (conn->state == STATE_CLOSE)
     return;
 
-  // 2. OPTIMISTIC WRITE
-  if (!is_slot_empty (&conn->res_slots[conn->read_idx]))
+  // Lets try OPTIMISTIC WRITE
+  if (!is_slot_empty (conn_get_head_slot(conn)))
     {
-      flush_write_queue(conn);
-      
-      // FIX START: Check for FLUSH_CLOSE after optimistic write
-      if (conn->state == STATE_CLOSE) return;
-
+      flush_write_queue (conn);
+      if (conn->state == STATE_CLOSE)
+	return;
       if (conn->state == STATE_FLUSH_CLOSE)
-        {
-          // If we successfully flushed everything, close now!
-          if (is_slot_empty(&conn->res_slots[conn->read_idx])) {
-              conn->state = STATE_CLOSE;
-              return;
-          }
-        }
-      // FIX END
+	{
+	  // If we successfully flushed everything, close now!
+          if (is_slot_empty (conn_get_head_slot(conn)))
+	    {
+	      conn->state = STATE_CLOSE;
+	      return;
+	    }
+	}
     }
 
-  // 3. Determine Events
+  // Determine Events
   IOEvent events = IO_EVENT_READ | IO_EVENT_ERR;
-  ResponseSlot *head = &conn->res_slots[conn->read_idx];
+  ResponseSlot *head = conn_get_head_slot(conn);
 
-  if (!is_slot_empty (head))
+  // The "Bully" Check.
+  if (!finished)
     {
-      if (head->is_zerocopy && is_slot_fully_sent(head) && head->pending_ops > 0)
-        {
-           // Waiting for ACKs
-        }
-      else
-        {
-           // Waiting for Socket Buffer OR Partial Flush-Close
-           events |= IO_EVENT_WRITE;
-        }
+      events |= IO_EVENT_WRITE;
     }
-  // If we are FLUSH_CLOSE but failed to flush above (socket full), 
-  // the logic above correctly adds IO_EVENT_WRITE, so we will come back later.
+  // Backpressure (The "Socket Full" Check)
+  else if (!is_slot_empty (head))
+    {
+      // We have data pending. Do we need to push it, or just wait for ACKs?
+      bool waiting_for_acks = (head->is_zerocopy
+			       && is_slot_fully_sent (head)
+			       && head->pending_ops > 0);
 
+      if (!waiting_for_acks)
+	{
+	  events |= IO_EVENT_WRITE;
+	}
+    }
   conn_set_events (conn, events);
 }
 
@@ -385,47 +373,42 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
   DBG_LOGF ("FD %d: Handling IO_EVENT_WRITE event", conn->fd);
 
-  // 1. Flush the queue
-  IOStatus status = flush_write_queue(conn);
-
-  if (conn->state == STATE_CLOSE) return;
-
-  // 2. Handle Flush-Close State
+  IOStatus status = flush_write_queue (conn);
+  if (conn->state == STATE_CLOSE)
+    return;
   if (conn->state == STATE_FLUSH_CLOSE)
     {
       // If queue is empty, we are done. Close it.
-      if (is_slot_empty(&conn->res_slots[conn->read_idx])) {
-          conn->state = STATE_CLOSE;
-          return;
-      }
+      if (is_slot_empty ( conn_get_head_slot(conn)))
+	{
+	  conn->state = STATE_CLOSE;
+	  return;
+	}
     }
 
-  // 3. Pipelining: If we cleared space, maybe we can process more requests?
+  // Pipelining: If we cleared space, maybe we can process more requests?
   if (status == IO_OK && has_unprocessed_data (conn))
     {
       DBG_LOGF ("FD %d: Processing pipelined requests (%u bytes)",
-        conn->fd, conn->rbuf_size - conn->read_offset);
-      // We recurse into IN event. 
-      // Note: handle_in_event will do its own event setting.
+		conn->fd, conn->rbuf_size - conn->read_offset);
+      // We go into IN event. 
       handle_in_event (cache, conn, now_us);
       return;
     }
 
-  // 4. Determine Events (Same logic as handle_in_event)
   IOEvent events = IO_EVENT_READ | IO_EVENT_ERR;
-  ResponseSlot *head = &conn->res_slots[conn->read_idx];
+  ResponseSlot *head = conn_get_head_slot(conn);
 
   if (!is_slot_empty (head))
     {
-      if (head->is_zerocopy && is_slot_fully_sent(head) && head->pending_ops > 0)
-        {
-           // Waiting for ACKs
-        }
-      else
-        {
-           // Waiting for Socket Buffer OR Partial Flush-Close
-           events |= IO_EVENT_WRITE;
-        }
+      // We have data pending. Do we need to push it, or just wait for ACKs?
+      bool waiting_for_acks = (head->is_zerocopy
+			       && is_slot_fully_sent (head)
+			       && head->pending_ops > 0);
+      if (!waiting_for_acks)
+	{
+	  events |= IO_EVENT_WRITE;
+	}
     }
 
   conn_set_events (conn, events);
@@ -450,7 +433,7 @@ handle_err_event (Cache *cache, Conn *conn, uint64_t now_us)
 
 HOT void
 handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
-              IOEvent events)
+		      IOEvent events)
 {
   if (events & (IO_EVENT_HUP | IO_EVENT_RDHUP))
     {
