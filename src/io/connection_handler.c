@@ -106,7 +106,7 @@ handle_parse_error (Conn *conn, ParseResult result)
 // On failure, dump_error_and_close has already been called.
 static bool
 do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
-	    Buffer *out_buf, uint64_t now_us)
+        Buffer *out_buf, uint64_t now_us)
 {
   uint32_t arg_count = 0;
   ValidationResult val_result =
@@ -118,29 +118,35 @@ do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
       return false;
     }
 
-  // Parse arguments with in-place null-termination
   char *cmd[K_MAX_ARGS];
-  size_t cmd_size = 0;
-  RestoreState restore;
-  restore_state_init (&restore);
+  RestoreState restore; 
 
-  ParseResult parse_result = parse_arguments (req, reqlen, arg_count,
-					      cmd, &cmd_size, &restore);
+  ProtoRequest proto_req = {
+    .req = req,
+    .reqlen = reqlen,
+    .arg_count = arg_count,
+    .cmd = cmd,
+    .restore = &restore // Pass uninitialized memory, getting filled state back
+  };
 
+  ParseResult parse_result = parse_arguments (&proto_req);
+
+  // Even if parsing failed, we must restore whatever partial bytes were touched
   if (parse_result != PARSE_OK)
     {
-      restore_all_bytes (&restore);
+      restore_all_bytes (&restore); 
       handle_parse_error (conn, parse_result);
       return false;
     }
 
-  DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd,
-	    cmd_size);
+  DBG_LOGF ("FD %d: Executing command with %zu arguments", conn->fd, proto_req.cmd_size);
 
   bool success = TIME_EXPR ("cache_execute",
-			    cache_execute (cache, cmd, cmd_size, out_buf,
-					   now_us));
+                 cache_execute (cache, cmd, proto_req.cmd_size, out_buf,
+                        now_us));
+  
   restore_all_bytes (&restore);
+  
   if (!success)
     {
       msg ("cache couldn't write message, no space.");

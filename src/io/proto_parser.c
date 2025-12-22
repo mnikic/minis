@@ -56,18 +56,21 @@ save_and_nullterm (RestoreState *state, uint8_t *location,
 
 // Parse arguments from request buffer into cmd array
 // Uses in-place null-termination with automatic restoration tracking
-ParseResult
-parse_arguments (uint8_t *req, uint32_t reqlen, uint32_t arg_count,
-		 char **cmd, size_t *out_cmd_size, RestoreState *restore)
+ParseResult 
+parse_arguments (ProtoRequest *proto_request)
 {
+  restore_state_init(proto_request->restore);
   size_t pos = 4;
   size_t cmd_size = 0;
+  
+  // Cache the pointer locally for speed/readability
+  uint8_t* req = proto_request->req; 
 
-  for (uint32_t i = 0; i < arg_count; i++)
+  for (uint32_t i = 0; i < proto_request->arg_count; i++)
     {
       // Check for length header
-      if (pos + 4 > reqlen)
-	return PARSE_MISSING_LENGTH;
+      if (pos + 4 > proto_request->reqlen)
+        return PARSE_MISSING_LENGTH;
 
       // Read argument length
       uint32_t arg_len = 0;
@@ -75,32 +78,27 @@ parse_arguments (uint8_t *req, uint32_t reqlen, uint32_t arg_count,
       arg_len = ntohl (arg_len);
 
       // Check if argument data fits
-      // Note: We check (pos + 4 + arg_len) which is the END of the string.
-      if (pos + 4 + arg_len > reqlen)
-	return PARSE_LENGTH_OVERFLOW;
+      if (pos + 4 + arg_len > proto_request->reqlen)
+        return PARSE_LENGTH_OVERFLOW;
 
       // Get pointer to null-termination location.
-      // TRICK: This points to the byte *after* the current string.
-      // Usually this is the start of the NEXT argument's length header,
-      // or the end of the packet. We overwrite it with \0.
       uint8_t *null_term_loc = &req[pos + 4 + arg_len];
       uint8_t original_char = *null_term_loc;
 
       // Save and null-terminate
-      save_and_nullterm (restore, null_term_loc, original_char);
+      save_and_nullterm (proto_request->restore, null_term_loc, original_char);
 
-      // Store pointer to argument string (skipping the 4-byte length)
-      cmd[cmd_size++] = (char *) &req[pos + 4];
+      // Store pointer to argument string
+      proto_request->cmd[cmd_size++] = (char *) &req[pos + 4];
 
       // Advance position
       pos += 4 + arg_len;
     }
 
   // Verify no trailing data
-  // Strict check: if bytes remain after the last argument, it's garbage.
-  if (pos != reqlen)
+  if (pos != proto_request->reqlen)
     return PARSE_TRAILING_DATA;
 
-  *out_cmd_size = cmd_size;
+  proto_request->cmd_size = cmd_size;
   return PARSE_OK;
 }

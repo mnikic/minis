@@ -51,6 +51,20 @@ typedef struct
   size_t restore_count;
 } RestoreState;
 
+typedef struct
+{
+  // Inputs
+  uint8_t  *req;
+  uint32_t  reqlen;
+  uint32_t  arg_count;
+
+  char     **cmd;         // Array of pointers to fill
+  size_t    cmd_size;
+  
+  // State Tracking
+  RestoreState *restore;
+} ProtoRequest;
+
 // Initialize restoration state
 static ALWAYS_INLINE void
 restore_state_init (RestoreState *state)
@@ -79,8 +93,6 @@ validate_request_header (const uint8_t * req, uint32_t reqlen,
 
 // Parse arguments from request buffer into cmd array
 // Uses in-place null-termination with automatic restoration tracking
-ParseResult
-parse_arguments (uint8_t * req, uint32_t reqlen, uint32_t arg_count,
-		 char **cmd, size_t *out_cmd_size, RestoreState * restore);
+ParseResult parse_arguments (ProtoRequest *proto_request);
 
 #endif // PROTO_PARSER_H
