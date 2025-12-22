@@ -24,7 +24,7 @@
 // Sends an error response and marks the connection to close after sending.
 // WARNING: This discards any pending responses in the write buffers.
 COLD static void
-dump_error_and_close (int epfd, Conn *conn, const int code, const char *str)
+dump_error_and_close (Conn *conn, const int code, const char *str)
 {
   DBG_LOGF ("FD %d: Sending error %d and closing: %s", conn->fd, code, str);
 
@@ -47,12 +47,12 @@ dump_error_and_close (int epfd, Conn *conn, const int code, const char *str)
   conn->res_slots[w_idx].actual_length = 4 + (uint32_t) err_payload_len;
   conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
   conn->state = STATE_FLUSH_CLOSE;
-  conn_set_events (epfd, conn, IO_EVENT_READ | IO_EVENT_WRITE);
+  conn_set_events (conn, IO_EVENT_READ | IO_EVENT_WRITE);
 }
 
 // Convert validation result to error message and send error response
 COLD static void
-handle_validation_error (int epfd, Conn *conn, ValidationResult result)
+handle_validation_error (Conn *conn, ValidationResult result)
 {
   const char *err_msg = NULL;
   switch (result)
@@ -70,12 +70,12 @@ handle_validation_error (int epfd, Conn *conn, ValidationResult result)
     default:
       return;
     }
-  dump_error_and_close (epfd, conn, ERR_MALFORMED, err_msg);
+  dump_error_and_close (conn, ERR_MALFORMED, err_msg);
 }
 
 // Convert parse result to error message and send error response
 COLD static ALWAYS_INLINE void
-handle_parse_error (int epfd, Conn *conn, ParseResult result)
+handle_parse_error (Conn *conn, ParseResult result)
 {
   const char *err_msg = NULL;
   switch (result)
@@ -93,13 +93,13 @@ handle_parse_error (int epfd, Conn *conn, ParseResult result)
     default:
       return;
     }
-  dump_error_and_close (epfd, conn, ERR_MALFORMED, err_msg);
+  dump_error_and_close (conn, ERR_MALFORMED, err_msg);
 }
 
 // Returns true on success, false on failure.
 // On failure, dump_error_and_close has already been called.
 static bool
-do_request (int epfd, Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
+do_request (Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
 	    Buffer *out_buf, uint64_t now_us)
 {
   uint32_t arg_count = 0;
@@ -108,7 +108,7 @@ do_request (int epfd, Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
 
   if (val_result != VALIDATE_OK)
     {
-      handle_validation_error (epfd, conn, val_result);
+      handle_validation_error (conn, val_result);
       return false;
     }
 
@@ -124,7 +124,7 @@ do_request (int epfd, Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
   if (parse_result != PARSE_OK)
     {
       restore_all_bytes (&restore);
-      handle_parse_error (epfd, conn, parse_result);
+      handle_parse_error (conn, parse_result);
       return false;
     }
 
@@ -138,7 +138,7 @@ do_request (int epfd, Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
   if (!success)
     {
       msg ("cache couldn't write message, no space.");
-      dump_error_and_close (epfd, conn, ERR_UNKNOWN, "response too large");
+      dump_error_and_close (conn, ERR_UNKNOWN, "response too large");
       return false;
     }
 
@@ -146,7 +146,7 @@ do_request (int epfd, Cache *cache, Conn *conn, uint8_t *req, uint32_t reqlen,
 }
 
 HOT static bool
-try_one_request (int epfd, Cache *cache, uint64_t now_us, Conn *conn)
+try_one_request (Cache *cache, uint64_t now_us, Conn *conn)
 {
   if (is_res_queue_full (conn))
     {
@@ -170,7 +170,7 @@ try_one_request (int epfd, Cache *cache, uint64_t now_us, Conn *conn)
   if (len > K_MAX_MSG)
     {
       msgf ("request too long %u", len);
-      dump_error_and_close (epfd, conn, ERR_2BIG, "request too large");
+      dump_error_and_close (conn, ERR_2BIG, "request too large");
       conn->read_offset = conn->rbuf_size;
       return false;
     }
@@ -185,7 +185,7 @@ try_one_request (int epfd, Cache *cache, uint64_t now_us, Conn *conn)
   Buffer out_buf = buf_init (slot_mem + 4, K_MAX_MSG - 4);
 
   // Execute request
-  bool success = do_request (epfd, cache, conn,
+  bool success = do_request (cache, conn,
 			     &conn->rbuf[conn->read_offset + 4],
 			     len, &out_buf, now_us);
 
@@ -214,14 +214,14 @@ try_one_request (int epfd, Cache *cache, uint64_t now_us, Conn *conn)
 }
 
 HOT static void
-process_received_data (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
+process_received_data (Cache *cache, Conn *conn, uint64_t now_us)
 {
   while (true)
     {
       if (is_res_queue_full (conn))
 	break;
 
-      if (!try_one_request (epfd, cache, now_us, conn))
+      if (!try_one_request (cache, now_us, conn))
 	break;
 
       if (conn->state == STATE_CLOSE)
@@ -238,7 +238,7 @@ process_received_data (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 }
 
 static void
-handle_in_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
+handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
   DBG_LOGF ("FD %d: Handling IO_EVENT_READ event", conn->fd);
   IOStatus status = transport_read_buffer (conn);
@@ -252,13 +252,13 @@ handle_in_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
   // 2. POLICY: Process data if we have it
   if (conn->rbuf_size > conn->read_offset)
     {
-      process_received_data (epfd, cache, conn, now_us);
+      process_received_data (cache, conn, now_us);
     }
 
   if (conn->state == STATE_CLOSE)
     return;
- 
-  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
+
+  IOEvent events = IO_EVENT_READ | IO_EVENT_ERR;
 
   // If we have responses queued, request IO_EVENT_WRITE
   if (!is_slot_empty (&conn->res_slots[conn->read_idx]))
@@ -266,11 +266,11 @@ handle_in_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
       events |= IO_EVENT_WRITE;
     }
 
-  conn_set_events (epfd, conn, events);
+  conn_set_events (conn, events);
 }
 
 static void
-handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
+handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
   DBG_LOGF ("FD %d: Handling  IO_EVENT_WRITE event", conn->fd);
 
@@ -290,7 +290,7 @@ handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
 	    {
 	      // POLICY: We are blocked on kernel ACKs, not socket buffer space.
 	      // We need IO_EVENT_ERR, not IO_EVENT_WRITE.
-	      conn_set_events (epfd, conn, IO_EVENT_READ | IO_EVENT_ERR);
+	      conn_set_events (conn, IO_EVENT_READ | IO_EVENT_ERR);
 	      return;
 	    }
 	  // Slot done, rotate and continue
@@ -309,7 +309,8 @@ handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
       if (status == IO_WAIT)
 	{
 	  // POLICY: Socket is full, ask Epoll for more writing time
-	  conn_set_events (epfd, conn, IO_EVENT_READ |  IO_EVENT_WRITE| IO_EVENT_ERR);
+	  conn_set_events (conn,
+			   IO_EVENT_READ | IO_EVENT_WRITE | IO_EVENT_ERR);
 	  return;
 	}
     }
@@ -325,15 +326,15 @@ handle_out_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
     {
       DBG_LOGF ("FD %d: Processing pipelined requests (%u bytes)",
 		conn->fd, conn->rbuf_size - conn->read_offset);
-      handle_in_event (epfd, cache, conn, now_us);
+      handle_in_event (cache, conn, now_us);
       return;
     }
 
-  conn_set_events (epfd, conn, IO_EVENT_READ | IO_EVENT_ERR);
+  conn_set_events (conn, IO_EVENT_READ | IO_EVENT_ERR);
 }
 
 static void
-handle_err_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
+handle_err_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
   // "Hey ZC module, do your thing."
   bool progress = false;
@@ -345,13 +346,13 @@ handle_err_event (int epfd, Cache *cache, Conn *conn, uint64_t now_us)
   // If we freed up space, maybe we can process more requests?
   if (progress && has_unprocessed_data (conn))
     {
-      handle_in_event (epfd, cache, conn, now_us);
+      handle_in_event (cache, conn, now_us);
     }
 }
 
 HOT void
-handle_connection_io (int epfd, Cache *cache, Conn *conn, uint64_t now_us,
-		      uint32_t events)
+handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
+		      IOEvent events)
 {
   if (events & (IO_EVENT_HUP | IO_EVENT_RDHUP))
     {
@@ -361,18 +362,18 @@ handle_connection_io (int epfd, Cache *cache, Conn *conn, uint64_t now_us,
   // Error completions (always try to reclaim memory)
   if (conn->state != STATE_CLOSE && (events & IO_EVENT_ERR))
     {
-      handle_err_event (epfd, cache, conn, now_us);
+      handle_err_event (cache, conn, now_us);
     }
 
   // Incoming data (only if healthy)
   if (conn->state == STATE_ACTIVE && (events & IO_EVENT_READ))
     {
-      handle_in_event (epfd, cache, conn, now_us);
+      handle_in_event (cache, conn, now_us);
     }
 
   // Outgoing data (if active OR finishing an error response)
   if (conn->state != STATE_CLOSE && (events & IO_EVENT_WRITE))
     {
-      handle_out_event (epfd, cache, conn, now_us);
+      handle_out_event (cache, conn, now_us);
     }
 }

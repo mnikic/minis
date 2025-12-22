@@ -7,7 +7,6 @@
 #ifndef CONNECTION_H_
 #define CONNECTION_H_
 
-#include <errno.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -18,13 +17,14 @@
 #include "list.h"
 #include "common/common.h"
 
-typedef enum {
-    IO_EVENT_READ  = EPOLLIN,
-    IO_EVENT_WRITE = EPOLLOUT,
-    IO_EVENT_ERR   = EPOLLERR,
-    // EPOLLET is handled internally by the setter
-    IO_EVENT_HUP    = EPOLLHUP,    // Connection completely dead
-    IO_EVENT_RDHUP  = EPOLLRDHUP   // Peer closed their side (Half-close)
+typedef enum
+{
+  IO_EVENT_READ = EPOLLIN,
+  IO_EVENT_WRITE = EPOLLOUT,
+  IO_EVENT_ERR = EPOLLERR,
+  // EPOLLET is handled internally by the setter
+  IO_EVENT_HUP = EPOLLHUP,	// Connection completely dead
+  IO_EVENT_RDHUP = EPOLLRDHUP	// Peer closed their side (Half-close)
 } IOEvent;
 
 typedef struct
@@ -47,7 +47,7 @@ typedef struct __attribute__((aligned (64))) Conn
   int fd;
   ConnectionState state;
   uint32_t last_events;		// To avoid redundant epoll_ctl
-  uint32_t pending_events;	// Events that need to be applied	
+  uint32_t pending_events;	// Events that need to be applied       
   //
   // Ring Buffer Metadata
   uint32_t read_idx;		// Oldest slot to SEND
@@ -131,23 +131,11 @@ is_slot_empty (ResponseSlot *slot)
 }
 
 static ALWAYS_INLINE void
-conn_set_events (int epfd, Conn *conn, uint32_t events)
+conn_set_events (Conn *conn, IOEvent events)
 {
-  uint32_t new_events = events | EPOLLET;
-  if (conn->state == STATE_CLOSE || conn->last_events == new_events)
-    return;
-
-  struct epoll_event event;
-  event.data.fd = conn->fd;
-  event.events = new_events;
-
-  if (epoll_ctl (epfd, EPOLL_CTL_MOD, conn->fd, &event) == -1)
-    {
-      if (errno == ENOENT)
-	return;
-      msgf ("epoll ctl: MOD failed: %s", strerror (errno));
-    }
-  conn->pending_events = new_events;
+  DBG_LOGF ("About to set events %u on the %i", events, conn->fd);
+  conn->pending_events = (uint32_t) events | EPOLLET;
+  DBG_LOGF ("Set events %u on the %i", conn->pending_events, conn->fd);
 }
 
 // Release completed slots from the ring buffer

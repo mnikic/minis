@@ -54,7 +54,7 @@
 #include "list.h"
 #include "zerocopy.h"
 
-#define MAX_EVENTS 10000
+#define MAX_EVENTS 256
 #define K_IDLE_TIMEOUT_SEC 300UL	// in seconds
 
 static struct
@@ -267,21 +267,44 @@ process_timers (Cache *cache, uint64_t now_us)
   cache_evict (cache, now_us);
 }
 
-static HOT void
-connection_io (Cache *cache, Conn *conn, uint64_t now_us, uint32_t events)
+// Helper: Commit state changes to Kernel (Batch MOD)
+static NOINLINE void
+flush_dirty_conns (int epfd, Conn **conns, int count)
 {
-  handle_connection_io (g_data.epfd, cache, conn, now_us, events);
-
-  if (conn->state == STATE_CLOSE)
+  for (int i = 0; i < count; i++)
     {
-      return;
-    }
+      Conn *conn = conns[i];
+      struct epoll_event event;
 
+      event.data.fd = conn->fd;
+      event.events = conn->pending_events;
+
+      epoll_ctl (epfd, EPOLL_CTL_MOD, conn->fd, &event);
+      conn->last_events = conn->pending_events;
+    }
+}
+
+// Helper: Cleanup dead connections (Batch DELETE)
+static NOINLINE void
+flush_dead_conns (Conn **conns, int count)
+{
+  for (int i = 0; i < count; i++)
+    {
+      conn_done (conns[i]);
+    }
+}
+
+// Helper: Manage Idle List State
+static ALWAYS_INLINE void
+update_idle_state (Conn *conn, uint64_t now_us)
+{
+  // 1. If we touched it, it's active. Remove from idle list.
   if (dlist_is_linked (&conn->idle_list))
     {
       dlist_detach (&conn->idle_list);
     }
 
+  // 2. If it's effectively waiting for a new request, mark it idle.
   if (is_connection_idle (conn))
     {
       conn->idle_start = now_us;
@@ -289,30 +312,51 @@ connection_io (Cache *cache, Conn *conn, uint64_t now_us, uint32_t events)
     }
 }
 
-static HOT void
-handle_connection_event (Cache *cache, struct epoll_event *event,
-			 uint64_t now_us)
-{
-  Conn *conn = connpool_lookup (g_data.fd2conn, event->data.fd);
-  if (unlikely (!conn))
-    return;
-  TIME_STMT ("connection_io",
-	     connection_io (cache, conn, now_us, event->events));
-  if (conn->state == STATE_CLOSE)
-    conn_done (conn);
-}
 
-static ALWAYS_INLINE void
+static HOT ALWAYS_INLINE void
 process_active_events (Cache *cache, struct epoll_event *events, int count,
 		       int listen_fd, uint64_t now_us)
 {
+  Conn *dirty_conns[MAX_EVENTS];
+  int dirty_count = 0;
+
+  Conn *dead_conns[MAX_EVENTS];
+  int dead_count = 0;
+
   for (int i = 0; i < count; ++i)
     {
-      if (events[i].data.fd == listen_fd)
-	handle_listener_event (listen_fd, now_us);
+      int file_desc = events[i].data.fd;
+      if (file_desc == listen_fd)
+	{
+	  handle_listener_event (listen_fd, now_us);
+	  continue;
+	}
+      Conn *conn = connpool_lookup (g_data.fd2conn, file_desc);
+      if (unlikely (!conn))
+	continue;
+
+      TIME_STMT ("connection_io",
+		 handle_connection_io (cache, conn, now_us,
+				       events[i].events));
+      if (unlikely (conn->state == STATE_CLOSE))
+	{
+	  dead_conns[dead_count++] = conn;
+	}
       else
-	handle_connection_event (cache, &events[i], now_us);
+	{
+	  update_idle_state (conn, now_us);
+	  if (conn->pending_events != conn->last_events)
+	    {
+	      dirty_conns[dirty_count++] = conn;
+	    }
+	}
     }
+
+  if (dirty_count > 0)
+    flush_dirty_conns (g_data.epfd, dirty_conns, dirty_count);
+
+  if (unlikely (dead_count > 0))
+    flush_dead_conns (dead_conns, dead_count);
 }
 
 static void COLD

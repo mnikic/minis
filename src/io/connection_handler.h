@@ -8,7 +8,7 @@
 #include "io/connection.h"
 
 HOT void
-handle_connection_io (int epfd, Cache * cache, Conn * conn, uint64_t now_us,
-		      uint32_t events);
+handle_connection_io (Cache * cache, Conn * conn, uint64_t now_us,
+		      IOEvent events);
 
 #endif // CONNECTION_HANDLER_H
