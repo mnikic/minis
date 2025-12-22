@@ -278,7 +278,7 @@ flush_dirty_conns (int epfd, Conn **conns, int count)
 
       event.data.fd = conn->fd;
       event.events = conn->pending_events;
-
+      DBG_LOGF("Calling CTL_MOD on fd: %i for event: %u", conn->fd, conn->pending_events);
       epoll_ctl (epfd, EPOLL_CTL_MOD, conn->fd, &event);
       conn->last_events = conn->pending_events;
     }

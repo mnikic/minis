@@ -133,7 +133,7 @@ is_slot_empty (ResponseSlot *slot)
 static ALWAYS_INLINE void
 conn_set_events (Conn *conn, IOEvent events)
 {
-  DBG_LOGF ("About to set events %u on the %i", events, conn->fd);
+  DBG_LOGF ("About to set events %u on the %i, old events are %u", events, conn->fd, conn->last_events);
   conn->pending_events = (uint32_t) events | EPOLLET;
   DBG_LOGF ("Set events %u on the %i", conn->pending_events, conn->fd);
 }
