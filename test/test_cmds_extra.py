@@ -118,10 +118,46 @@ $ {CLIENT_EXECUTABLE_REL_PATH} set b 2
 (nil)
 $ {CLIENT_EXECUTABLE_REL_PATH} set c 3
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} keys
+$ {CLIENT_EXECUTABLE_REL_PATH} keys \*
 (arr) len=3
 (str) c
 (str) a
+(str) b
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} keys d
+(arr) len=0
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} keys c
+(arr) len=1
+(str) c
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} keys c?
+(arr) len=0
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} set ca 4
+(nil)
+$ {CLIENT_EXECUTABLE_REL_PATH} keys c
+(arr) len=1
+(str) c
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} keys c
+(arr) len=1
+(str) c
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} keys c?
+(arr) len=1
+(str) ca
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} keys c\*
+(arr) len=2
+(str) c
+(str) ca
+(arr) end
+$ {CLIENT_EXECUTABLE_REL_PATH} keys \*
+(arr) len=4
+(str) c
+(str) a
+(str) ca
 (str) b
 (arr) end
 $ {CLIENT_EXECUTABLE_REL_PATH} del a
@@ -129,6 +165,8 @@ $ {CLIENT_EXECUTABLE_REL_PATH} del a
 $ {CLIENT_EXECUTABLE_REL_PATH} del b
 (int) 1
 $ {CLIENT_EXECUTABLE_REL_PATH} del c
+(int) 1
+$ {CLIENT_EXECUTABLE_REL_PATH} del ca
 (int) 1
 
 # Test pexpire and pttl

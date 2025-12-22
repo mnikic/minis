@@ -13,6 +13,7 @@
 #include "zset.h"
 #include "io/out.h"
 #include "common/common.h"
+#include "common/glob.h"
 #include "common/macros.h"
 
 // the structure for the key
@@ -187,6 +188,7 @@ typedef struct
   Buffer *out;
   uint32_t count;
   uint64_t now_us;
+  const char * pattern;
 } ScanContext;
 
 static void
@@ -201,6 +203,8 @@ cb_scan (HNode *node, void *arg)
 	  return;
 	}
     }
+  if (!glob_match(ctx->pattern, ent->key))
+    return;
   // NOTE: out_str returns true on success. If it fails, we should abort, but we cannot. out_arr_end will fail and report
   if (out_str (ctx->out, fetch_entry (node)->key))
     {
@@ -457,14 +461,11 @@ do_zquery (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 static bool
 do_keys (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 {
-  (void) cmd;
-
   // Start the array response (writes a placeholder for the count)
   size_t idx = out_arr_begin (out);
   if (idx == 0)
     return false;
-
-  ScanContext ctx = {.out = out,.count = 0 };
+  ScanContext ctx = {.out = out,.count = 0, .pattern = cmd[1] };
   ctx.now_us = now_us;
 
   // We cannot stop the scan if a write fails, but the subsequent calls will
@@ -687,7 +688,7 @@ bool
 cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out,
 	       uint64_t now_us)
 {
-  if (size == 1 && cmd_is (cmd[0], "keys"))
+  if (size == 2 && cmd_is (cmd[0], "keys"))
     {
       return do_keys (cache, cmd, out, now_us);
     }
