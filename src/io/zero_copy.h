@@ -1,9 +1,9 @@
-#ifndef ZEROCOPY_H
-#define ZEROCOPY_H
+#ifndef ZERO_COPY_H
+#define ZERO_COPY_H
 
 /*
  *============================================================================
- * Name             : zerocopy.h
+ * Name             : zero_copy.h
  * Author           : Milos
  * Description      : Handling of Linux MSG_ZEROCOPY notifications.
  *
@@ -35,4 +35,4 @@ bool zc_process_completions (Conn * conn);
  */
 COLD void zc_drain_errors (int file_desc);
 
-#endif // ZEROCOPY_H
+#endif // ZERO_COPY_H

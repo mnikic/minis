@@ -51,7 +51,7 @@ transport_send_slot (Conn *conn, uint32_t slot_idx)
   size_t remain = slot->actual_length - slot->sent;
   ssize_t sent;
 
-  if (slot->is_zerocopy)
+  if (slot->is_zero_copy)
     {
       struct iovec iov = {.iov_base = data_ptr + slot->sent,.iov_len = remain
       };
@@ -77,7 +77,7 @@ transport_send_slot (Conn *conn, uint32_t slot_idx)
   slot->sent += (uint32_t) sent;
 
   // ZeroCopy accounting
-  if (slot->is_zerocopy)
+  if (slot->is_zero_copy)
     {
       slot->pending_ops++;
     }

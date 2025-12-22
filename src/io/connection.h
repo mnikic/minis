@@ -32,7 +32,7 @@ typedef struct
   uint32_t actual_length;	// The total size of the response (Header + Payload)
   uint32_t pending_ops;		// Count of sendmsg() operations waiting for completion
   uint32_t sent;		// Bytes already passed to sendmsg() (may not be confirmed yet)
-  bool is_zerocopy;		// Whether MSG_ZEROCOPY should be used for this slot
+  bool is_zero_copy;		// Whether MSG_ZEROCOPY should be used for this slot
 } ResponseSlot;
 
 typedef enum
@@ -74,7 +74,7 @@ typedef struct __attribute__((aligned (64))) Conn
 _Static_assert (sizeof (Conn) % 64 == 0,
 		"Conn struct must be cache-line aligned");
 
-// Check if a slot is completely done (sent AND acked for zerocopy)
+// Check if a slot is completely done (sent AND acked for zero_copy)
 static ALWAYS_INLINE bool
 conn_is_slot_complete (ResponseSlot *slot)
 {

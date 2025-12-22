@@ -19,7 +19,7 @@
 #include "out.h"
 #include "transport.h"
 #include "proto_parser.h"
-#include "zerocopy.h"
+#include "zero_copy.h"
 
 #define K_MAX_REQ_PER_TICK  64
 
@@ -215,13 +215,13 @@ try_one_request (Cache *cache, uint64_t now_us, Conn *conn)
   slot->actual_length = 4 + (uint32_t) reslen;
   slot->sent = 0;
   slot->pending_ops = 0;
-  slot->is_zerocopy = (reslen > (size_t) K_ZEROCPY_THEASHOLD);
+  slot->is_zero_copy = (reslen > (size_t) K_ZEROCPY_THRESHOLD);
 
   conn->write_idx = (w_idx + 1) % K_SLOT_COUNT;
   conn->read_offset += total_req_len;
 
   DBG_LOGF ("FD %d: Request processed. Response mode: %s (len: %u)",
-	    conn->fd, slot->is_zerocopy ? "ZEROCOPY" : "VANILLA",
+	    conn->fd, slot->is_zero_copy ? "ZEROCOPY" : "VANILLA",
 	    slot->actual_length);
 
   return true;
@@ -282,7 +282,7 @@ flush_write_queue (Conn *conn)
       // Check if we are just waiting for ZC ACKs
       if (conn_is_slot_fully_sent (slot))
 	{
-	  if (slot->is_zerocopy && slot->pending_ops > 0)
+	  if (slot->is_zero_copy && slot->pending_ops > 0)
 	    {
 	      // Blocked on kernel ACKs, not socket buffer space.
 	      // We return OK here because we can't write anymore, 
@@ -364,7 +364,7 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
   else if (!conn_is_slot_empty (head))
     {
       // We have data pending. Do we need to push it, or just wait for ACKs?
-      bool waiting_for_acks = (head->is_zerocopy
+      bool waiting_for_acks = (head->is_zero_copy
 			       && conn_is_slot_fully_sent (head)
 			       && head->pending_ops > 0);
 
@@ -410,7 +410,7 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
   if (!conn_is_slot_empty (head))
     {
       // We have data pending. Do we need to push it, or just wait for ACKs?
-      bool waiting_for_acks = (head->is_zerocopy
+      bool waiting_for_acks = (head->is_zero_copy
 			       && conn_is_slot_fully_sent (head)
 			       && head->pending_ops > 0);
       if (!waiting_for_acks)

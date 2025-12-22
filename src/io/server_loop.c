@@ -52,7 +52,7 @@
 #include "common/common.h"
 #include "common/macros.h"
 #include "list.h"
-#include "zerocopy.h"
+#include "zero_copy.h"
 
 #define MAX_EVENTS 256
 #define K_IDLE_TIMEOUT_SEC 300UL	// in seconds
@@ -221,7 +221,7 @@ conn_has_pending_write (const Conn *conn)
 	}
 
       // Check for any Zero-Copy operation waiting for kernel ACK
-      if (slot->is_zerocopy && slot->pending_ops > 0)
+      if (slot->is_zero_copy && slot->pending_ops > 0)
 	{
 	  // Found a Zero-Copy buffer the kernel still owns
 	  return true;

@@ -1,12 +1,12 @@
 /*
  *============================================================================
- * Name             : zerocopy.c
+ * Name             : zero_copy.c
  * Author           : Milos
  * Description      : Linux MSG_ZEROCOPY implementation.
  *============================================================================
  */
 
-#include "zerocopy.h"
+#include "zero_copy.h"
 
 #include <errno.h>
 #include <string.h>
@@ -23,8 +23,8 @@
 
 // Returns true if the slot is now fully complete (sent + acked)
 static bool
-apply_zerocopy_completion (int file_desc, uint32_t slot_idx,
-			   ResponseSlot *slot, uint32_t completed_ops)
+apply_zero_copy_completion (int file_desc, uint32_t slot_idx,
+			    ResponseSlot *slot, uint32_t completed_ops)
 {
   if (unlikely (completed_ops > slot->pending_ops))
     {
@@ -108,7 +108,7 @@ zc_process_completions (Conn *conn)
 {
   // Optimization: Don't check queue if we aren't expecting ZC logic
   ResponseSlot *current_slot = &conn->res_slots[conn->read_idx];
-  if (!current_slot->is_zerocopy)
+  if (!current_slot->is_zero_copy)
     return false;
 
   uint32_t completed_ops = read_one_notification (conn->fd);
@@ -117,8 +117,8 @@ zc_process_completions (Conn *conn)
     return false;
 
   bool slot_complete =
-    apply_zerocopy_completion (conn->fd, conn->read_idx, current_slot,
-			       completed_ops);
+    apply_zero_copy_completion (conn->fd, conn->read_idx, current_slot,
+				completed_ops);
 
   if (slot_complete)
     {

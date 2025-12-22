@@ -36,7 +36,7 @@
 // Number of slots in the ring buffer
 #define K_SLOT_COUNT    4UL
 
-#define K_ZEROCPY_THEASHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
+#define K_ZEROCPY_THRESHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
 
 #define K_MAX_ARGS 2048
 #define K_MAX_KEY 42
