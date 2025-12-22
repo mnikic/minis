@@ -1,0 +1,5 @@
+# Protocol keywords or magic numbers
+header_len="\x00\x00\x00\x04"
+header_len2="\x00\x00\x00\x10"
+arg_1="\x00\x00\x00\x01"
+arg_2="\x00\x00\x00\x02"
