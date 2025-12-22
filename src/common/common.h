@@ -158,10 +158,12 @@ dump_stats (void)
 uint64_t str_hash (const uint8_t * data, size_t len);
 
 __attribute__((noreturn))
-     void COLD
+     void
+       COLD
      die (const char *msg);
 
-uint16_t COLD parse_port (int argc, char *argv[]);
+     uint16_t COLD
+     parse_port (int argc, char *argv[]);
 uint64_t
 htoll (uint64_t number);
 uint64_t

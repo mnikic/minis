@@ -484,21 +484,39 @@ do_keys (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
   return out_arr_end (out, idx, ctx.count);
 }
 
-static bool
-do_del (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
+static int
+del (Cache *cache, char *key)
 {
-  Entry key;
-  key.key = cmd[1];
-  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
+  Entry entry_key;
+  entry_key.key = key;
+  entry_key.node.hcode =
+    str_hash ((uint8_t *) entry_key.key, strlen (entry_key.key));
 
-  HNode *node = hm_pop (&cache->db, &key.node, &entry_eq);
+  HNode *node = hm_pop (&cache->db, &entry_key.node, &entry_eq);
   if (node)
     {
       Entry *entry = fetch_entry (node);
-      // entry_del handles heap removal and asynchronous destruction
-      entry_del (cache, entry, now_us);
+      entry_del (cache, entry, (uint64_t)-1);
+      return 1;
     }
-  return out_int (out, node ? 1 : 0);
+  return 0;
+}
+
+static bool
+do_del (Cache *cache, char **cmd, Buffer *out)
+{
+  return out_int (out, del (cache, cmd[1]));
+}
+
+static bool
+do_mdel (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
+{
+  int64_t num = 0;
+  for (size_t i = 0; i < nkeys; ++i)
+    {
+      num += del (cache, cmd[i + 1]);
+    }
+  return out_int(out, num);
 }
 
 static void
@@ -732,8 +750,12 @@ cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out,
     }
   if (size == 2 && cmd_is (cmd[0], "del"))
     {
-      return do_del (cache, cmd, out, now_us);
+      return do_del (cache, cmd, out);
     }
+  if (cmd_is (cmd[0], "mdel") && size > 1)
+  {
+    return do_mdel (cache, cmd, size - 1, out);
+  }
   if (size == 3 && cmd_is (cmd[0], "pexpire"))
     {
       return do_expire (cache, cmd, out, now_us);

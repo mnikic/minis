@@ -58,7 +58,7 @@ thread_pool_init (ThreadPool *thp, size_t num_threads)
   assert (ret_val == 0);
   ret_val = pthread_cond_init (&thp->not_empty, NULL);
   assert (ret_val == 0);
-  (void)ret_val;
+  (void) ret_val;
 
   thp->threads = calloc (num_threads, sizeof (pthread_t));
   if (!thp->threads)

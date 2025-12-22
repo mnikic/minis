@@ -428,7 +428,7 @@ $ {CLIENT_EXECUTABLE_REL_PATH} zquery delquery 0 "" 0 10
 $ {CLIENT_EXECUTABLE_REL_PATH} del delquery
 (int) 1
 
-# Test mset, mget
+# Test mset, mget, mdel
 $ {CLIENT_EXECUTABLE_REL_PATH} mset a 1 b 2 c 3
 (nil)
 $ {CLIENT_EXECUTABLE_REL_PATH} mget a b c
@@ -443,12 +443,14 @@ $ {CLIENT_EXECUTABLE_REL_PATH} get b
 (str) 2
 $ {CLIENT_EXECUTABLE_REL_PATH} get c
 (str) 3
+$ {CLIENT_EXECUTABLE_REL_PATH} mdel a b c
+(int) 3
 $ {CLIENT_EXECUTABLE_REL_PATH} del a
-(int) 1
+(int) 0
 $ {CLIENT_EXECUTABLE_REL_PATH} del b
-(int) 1
+(int) 0
 $ {CLIENT_EXECUTABLE_REL_PATH} del c
-(int) 1
+(int) 0
 '''
 
 
