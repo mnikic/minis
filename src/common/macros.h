@@ -17,6 +17,7 @@
 #define UNUSED __attribute__((unused))
 #define ALWAYS_INLINE __attribute__((always_inline)) inline
 #define NOINLINE __attribute__((noinline))
+#define NORETURN __attribute__((noreturn))
 
 #define container_of(ptr, type, member) __extension__ ({                     \
     /* Type check: ensure 'ptr' is a pointer to the member's type */         \

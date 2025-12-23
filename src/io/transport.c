@@ -1,8 +1,10 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 
 #include "common/common.h"
+#include "connection.h"
 #include "transport.h"
 
 IOStatus
@@ -42,44 +44,97 @@ transport_read_buffer (Conn *conn)
     }
 }
 
+// --------------------------------------------------------------------------
+// V3 UPDATE: Send using IOVEC (Scatter/Gather)
+// --------------------------------------------------------------------------
 IOStatus
-transport_send_slot (Conn *conn, uint32_t slot_idx)
+transport_send_head_slot (Conn *conn)
 {
-  ResponseSlot *slot = &conn->res_slots[slot_idx];
+  ResponseSlot *slot = conn_get_head_slot (conn);
 
-  uint8_t *data_ptr = get_slot_data_ptr (conn, slot_idx);
-  size_t remain = slot->actual_length - slot->sent;
-  ssize_t sent;
+  // Safety: If slot is empty or fully sent, nothing to do.
+  if (slot->iov_cnt == 0 || slot->total_len == 0
+      || slot->sent >= slot->total_len)
+    {
+      return IO_OK;
+    }
 
+  // 1. Prepare msghdr
+  // We use the slot's internal IOV array directly.
+  struct msghdr msg = {
+    .msg_name = NULL,
+    .msg_namelen = 0,
+    .msg_iov = slot->iov,
+    .msg_iovlen = (size_t) slot->iov_cnt,
+    .msg_control = NULL,
+    .msg_controllen = 0,
+    .msg_flags = 0
+  };
+
+  // 2. Set Flags
+  int flags = MSG_DONTWAIT | MSG_NOSIGNAL;
   if (slot->is_zero_copy)
     {
-      struct iovec iov = {.iov_base = data_ptr + slot->sent,.iov_len = remain
-      };
-      struct msghdr msg = {.msg_iov = &iov,.msg_iovlen = 1 };
-      sent =
-	sendmsg (conn->fd, &msg, MSG_DONTWAIT | MSG_ZEROCOPY | MSG_NOSIGNAL);
-    }
-  else
-    {
-      sent =
-	send (conn->fd, data_ptr + slot->sent, remain,
-	      MSG_NOSIGNAL | MSG_DONTWAIT);
+      flags |= MSG_ZEROCOPY;
     }
 
+  // 3. Syscall
+  ssize_t sent;
+  do
+    {
+      sent = sendmsg (conn->fd, &msg, flags);
+    }
+  while (sent < 0 && errno == EINTR);
+
+  // 4. Handle Errors
   if (sent < 0)
     {
       if (errno == EAGAIN)
-	return IO_WAIT;
-      msgf ("transport: send error FD %d: %s", conn->fd, strerror (errno));
+	{
+	  return IO_WAIT;
+	}
+      msgf ("transport: sendmsg error FD %d: %s", conn->fd, strerror (errno));
       return IO_ERROR;
     }
 
+  // 5. Update State
   slot->sent += (uint32_t) sent;
 
-  // ZeroCopy accounting
   if (slot->is_zero_copy)
     {
       slot->pending_ops++;
+    }
+
+  // 6. Handle Partial Writes (Crucial for IOVEC!)
+  // If we didn't send everything, we must update the iovec pointers
+  // so the NEXT call to sendmsg() starts where we left off.
+  if (slot->sent < slot->total_len)
+    {
+      size_t bytes_to_advance = (size_t) sent;
+
+      for (int i = 0; i < slot->iov_cnt; i++)
+	{
+	  struct iovec *iov = &slot->iov[i];
+
+	  if (iov->iov_len == 0)
+	    continue;		// Already exhausted this chunk
+
+	  if (bytes_to_advance >= iov->iov_len)
+	    {
+	      // We fully consumed this chunk
+	      bytes_to_advance -= iov->iov_len;
+	      iov->iov_len = 0;
+	      // We don't null base, just set len to 0. sendmsg skips 0-len iovs.
+	    }
+	  else
+	    {
+	      // We partially consumed this chunk
+	      iov->iov_base = (uint8_t *) iov->iov_base + bytes_to_advance;
+	      iov->iov_len -= bytes_to_advance;
+	      bytes_to_advance = 0;
+	      break;		// Done advancing
+	    }
+	}
     }
 
   return IO_OK;

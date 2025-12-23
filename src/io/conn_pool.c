@@ -106,12 +106,15 @@ connpool_get (ConnPool *pool, int file_desc)
   conn->next_free_idx = UINT32_MAX;
 
   if (!conn->rbuf)
-    conn->rbuf = malloc (K_RBUF_SIZE);
+    {
+      conn->rbuf = malloc (K_RBUF_SIZE);
+      conn->wbuf_size = K_WBUF_SIZE;
+    }
 
-  if (!conn->res_data)
-    conn->res_data = malloc (K_WBUF_SIZE);
+  if (!conn->wbuf)
+    conn->wbuf = malloc (K_WBUF_SIZE);
 
-  if (unlikely (!conn->rbuf || !conn->res_data))
+  if (unlikely (!conn->rbuf || !conn->wbuf))
     {
       // OOM Recovery: Return to pool
       if (conn->rbuf)
@@ -119,10 +122,10 @@ connpool_get (ConnPool *pool, int file_desc)
 	  free (conn->rbuf);
 	  conn->rbuf = NULL;
 	}
-      if (conn->res_data)
+      if (conn->wbuf)
 	{
-	  free (conn->res_data);
-	  conn->res_data = NULL;
+	  free (conn->wbuf);
+	  conn->wbuf = NULL;
 	}
 
       conn->next_free_idx = pool->free_head;
@@ -197,8 +200,8 @@ connpool_free (ConnPool *pool)
     {
       if (pool->storage[i].rbuf)
 	free (pool->storage[i].rbuf);
-      if (pool->storage[i].res_data)
-	free (pool->storage[i].res_data);
+      if (pool->storage[i].wbuf)
+	free (pool->storage[i].wbuf);
     }
 
   free (pool->storage);

@@ -548,7 +548,7 @@ def test_pipelining_failure_suite():
         #    Response C is buffered but not yet fully sent.
         send_only(s, 'DEL', 'key_s')
         
-        # E. GET 'key_s'. Will definitely be rejected.
+        # E. GET 'key_s'. 
         send_only(s, 'GET', 'key_s')
         
         print("\nAll 5 requests sent in one batch. Waiting for responses...")
@@ -567,22 +567,18 @@ def test_pipelining_failure_suite():
         result = read_response_only(s, "GET 'key_l'")
         print(f"Result C: {result[0]} ({len(result[1]):,} bytes)")
 
-        # 4. Read Response D (DEL 'key_s'): 
-        #    *** EXPECTED FAILURE: C_ERR_UNKNOWN (write buffer full) ***
-        #    NOTE: The server code uses ERR_UNKNOWN for "response too large" from cache_execute,
-        #    which is what the "write buffer full" path calls.
         result = read_response_only(s, "DEL 'key_s'")
         print(f"Result D: {result}")
         if result:
-            print("✓ SUCCESS: Pipelined request rejected with 'write buffer full' error.")
+            print("✓ SUCCESS: resut acquired")
         else:
             print(f"✗ FAILURE: Expected 'write buffer full' error, got code {code} msg '{msg}'.")
 
-        # 5. Read Response E (GET 'key_s'): Will likely be EOF
+        # 5. Read Response E (GET 'key_s'):
         result = read_response_only(s, "GET 'key_s'")
         print(f"Result E: {result}")
         if result:
-            print("✓ SUCCESS: Pipelined request rejected with 'write buffer full' error.")
+            print("✓ SUCCESS: result acquired")
         else:
             print(f"✗ FAILURE: Expected 'write buffer full' error, got code {code} msg '{msg}'.")
 

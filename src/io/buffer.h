@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "io/proto_defs.h"
+#include "common/macros.h"
 /**
  * @brief Fixed-capacity Buffer structure.
  * * This buffer uses externally owned memory (data) and capacity. 
@@ -16,7 +18,15 @@ typedef struct
   uint8_t *data;		// externally owned memory
   size_t capacity;		// total available bytes
   size_t length;		// current usage (where the next write starts)
+  ProtoType proto;
 } Buffer;
+
+void buf_set_proto (Buffer * buf, ProtoType proto);
+
+bool buf_append_fmt (Buffer * buf, const char *fmt, ...);
+
+bool
+buf_append_int_as_string (Buffer *buf, int64_t value);
 
 /**
  * @brief Returns true is this buffer can accomodate enough additional bytes.
@@ -38,9 +48,9 @@ Buffer buf_init (uint8_t * external, size_t capacity);
 void buf_clear (Buffer * buf);
 
 // Append functions that return false if capacity is exceeded.
-bool buf_append_bytes (Buffer * buf, const void *data, size_t len);
+HOT bool buf_append_bytes (Buffer * buf, const void *data, size_t len);
 bool buf_append_cstr (Buffer * buf, const char *str);
-bool buf_append_byte (Buffer * buf, uint8_t byte);
+HOT bool buf_append_byte (Buffer * buf, uint8_t byte);
 bool buf_append_u32 (Buffer * buf, uint32_t value);
 bool buf_append_i64 (Buffer * buf, int64_t value);
 bool buf_append_double (Buffer * buf, double value);

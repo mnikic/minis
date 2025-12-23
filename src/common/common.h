@@ -34,7 +34,7 @@
 // This must be consistent between the client and the server's read buffer capacity.
 #define K_MAX_MSG (200 * 1024UL)
 // Number of slots in the ring buffer
-#define K_SLOT_COUNT    4UL
+#define K_SLOT_COUNT 512UL
 
 #define K_ZEROCPY_THRESHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
 
@@ -42,7 +42,7 @@
 #define K_MAX_KEY 42
 #define K_MAX_VAL (1024 * 7)
 #define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
-#define K_WBUF_SIZE (K_SLOT_COUNT * K_MAX_MSG)
+#define K_WBUF_SIZE (512UL * 1024UL)
 
 #define MAX_CONNECTIONS 20000
 
@@ -157,23 +157,16 @@ dump_stats (void)
 #endif // K_ENABLE_BENCHMARK
 uint64_t str_hash (const uint8_t * data, size_t len);
 
-__attribute__((noreturn))
-     void
-       COLD
-     die (const char *msg);
+NORETURN COLD void die (const char *msg);
 
-     uint16_t COLD
-     parse_port (int argc, char *argv[]);
-uint64_t
-htoll (uint64_t number);
-uint64_t
-ntohll (uint64_t number);
+COLD uint16_t parse_port (int argc, char *argv[]);
+
+uint64_t htoll (uint64_t number);
+uint64_t ntohll (uint64_t number);
 
 // Portable implementation of Host to Network 32-bit (htonl)
-uint32_t
-hton_u32 (uint32_t host_val);
+uint32_t hton_u32 (uint32_t host_val);
 // Portable implementation of Host to Network 64-bit
-uint64_t
-hton_u64 (uint64_t host_val);
+uint64_t hton_u64 (uint64_t host_val);
 
 #endif /* COMMON_H_ */

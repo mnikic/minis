@@ -2,17 +2,17 @@ import socket
 import struct
 import time
 import sys
-import random
 
 # --- Configuration ---
 SERVER_HOST = '127.0.0.1'
-SERVER_PORT = 1234  # Custom port for your server
-NUM_KEYS =  100  
+SERVER_PORT = 1234
+NUM_KEYS = 100
 KEY_PREFIX = "benchkey_"
-VALUE_SIZE = 1024   # Size of the value in bytes (1KB)
-ITERATIONS = 50000    # How many times to repeat the MGET command for measurement
+VALUE_SIZE = 1024       # 1KB values
+ITERATIONS = 50000      # Total requests to simulate
+PIPELINE_DEPTH = 50     # How many MGETs to batch per network write
 
-# Constants matching your server's protocol
+# --- Protocol Constants ---
 SER_NIL = 0
 SER_ERR = 1
 SER_STR = 2
@@ -20,249 +20,172 @@ SER_INT = 3
 SER_DBL = 4
 SER_ARR = 5
 
-# --- Protocol Reading Utilities (From your provided code) ---
+# --- Protocol Reading Utilities ---
 
 def _parse_element(payload, offset):
-    """Recursively parses a single serialized element (T, L, V...) starting from offset."""
     if offset >= len(payload):
-        raise ValueError("Payload exhausted while trying to read element type.")
+        raise ValueError("Payload exhausted.")
 
     response_type = payload[offset]
     offset += 1
 
     if response_type == SER_NIL:
-        return ("Success (NIL)", offset)
+        return ("(nil)", offset)
     elif response_type == SER_ERR:
-        if offset + 8 > len(payload): raise ValueError("Payload exhausted while reading error code/string length.")
         err_code_host = struct.unpack('!I', payload[offset:offset + 4])[0]
         offset += 4
         str_len_host = struct.unpack('!I', payload[offset:offset + 4])[0]
         offset += 4
-        if offset + str_len_host > len(payload): raise ValueError("Payload exhausted while reading error message data.")
         data = payload[offset:offset + str_len_host].decode('utf-8', errors='ignore').strip()
-        offset += 4
-        return (f"Error Code {err_code_host}: {data}", offset)
+        offset += str_len_host
+        return (f"Error {err_code_host}: {data}", offset)
     elif response_type == SER_STR:
-        if offset + 4 > len(payload): raise ValueError("Payload exhausted while reading string length.")
         str_len_host = struct.unpack('!I', payload[offset:offset + 4])[0]
         offset += 4
-        if offset + str_len_host > len(payload): raise ValueError("Payload exhausted while reading string data.")
-        data = payload[offset:offset + str_len_host].decode('utf-8', errors='ignore')
+        # Optimization: Don't decode huge strings for benchmarks, just skip
+        # data = payload[offset:offset + str_len_host].decode('utf-8')
         offset += str_len_host
-        return (data, offset)
+        return ("(string data hidden)", offset)
     elif response_type == SER_INT:
-        int64_size = 8
-        if offset + int64_size > len(payload): raise ValueError("Payload exhausted while reading 64-bit integer.")
-        data = struct.unpack('!q', payload[offset:offset + int64_size])[0]
-        offset += int64_size
+        data = struct.unpack('!q', payload[offset:offset + 8])[0]
+        offset += 8
         return (data, offset)
     elif response_type == SER_ARR:
-        if offset + 4 > len(payload): raise ValueError("Payload exhausted while reading array element count.")
         num_elements = struct.unpack('!I', payload[offset:offset + 4])[0]
         offset += 4
         arr_data = []
-        for i in range(num_elements):
-            if offset >= len(payload): raise ValueError(f"Payload exhausted before reading element {i+1} of {num_elements}.")
+        for _ in range(num_elements):
             element_value, offset = _parse_element(payload, offset)
             arr_data.append(element_value)
         return (arr_data, offset)
-    return (f"Unknown Type Code {response_type}", offset)
-
-
-def parse_response(response_data):
-    """Processes the full response, including the initial length prefix."""
-    if len(response_data) < 4:
-        return ("ERROR: Response too short to contain a length header.", 0)
-
-    total_len_host = struct.unpack('!I', response_data[0:4])[0]
-    payload = response_data[4:4 + total_len_host]
-
-    if len(payload) != total_len_host:
-        return (f"ERROR: Received {len(payload)} bytes of payload, but header expected {total_len_host}.", 0)
-
-    try:
-        parsed_value, bytes_consumed = _parse_element(payload, 0)
-        return (parsed_value, total_len_host)
-    except Exception as e:
-        return (f"Parsing error: {e}", total_len_host)
-
+    
+    return (f"Unknown Type {response_type}", offset)
 
 def read_full_response(s):
-    """Reads a complete response from the socket based on the length prefix."""
-    # Read the 4-byte length header L
-    header = s.recv(4)
-    if not header:
-        return None 
-    if len(header) != 4:
-        raise IOError("Failed to read complete 4-byte response header.")
+    """Reads exactly one full response from the socket."""
+    # 1. Read Header (4 bytes)
+    header = s.recv(4, socket.MSG_WAITALL)
+    if not header or len(header) != 4:
+        return None
 
-    total_len_response = struct.unpack('!I', header)[0]
+    total_len = struct.unpack('!I', header)[0]
     
-    # Read the remaining payload (L bytes)
-    payload = b''
-    bytes_left = total_len_response
-    while bytes_left > 0:
-        chunk = s.recv(bytes_left)
-        if not chunk:
-            raise IOError("Server closed connection prematurely while reading payload.")
-        payload += chunk
-        bytes_left -= len(chunk)
+    # 2. Read Payload (L bytes) using MSG_WAITALL for efficiency
+    # This avoids the slow while loop in Python
+    payload = s.recv(total_len, socket.MSG_WAITALL)
+    if not payload or len(payload) != total_len:
+         raise IOError("Incomplete payload read.")
 
     return header + payload
 
-# --- Custom Encoding Function ---
+# --- Encoding ---
 
 def encode_custom_command(parts):
-    """
-    Encodes a list of command parts into the custom length-encoded binary protocol payload.
-    Format: N (count, 4 bytes) + [L (len, 4 bytes) + D (data, L bytes)] * N
-    """
-    N = struct.pack('!I', len(parts)) # Array element count N
-    payload = N
+    N = struct.pack('!I', len(parts))
+    payload = [N]
     
     for part in parts:
         part_bytes = str(part).encode('utf-8')
-        L = struct.pack('!I', len(part_bytes)) # Length L
-        D = part_bytes                       # Data D
-        payload += L + D
+        L = struct.pack('!I', len(part_bytes))
+        payload.append(L)
+        payload.append(part_bytes)
         
-    return payload 
+    raw_payload = b''.join(payload)
+    # Add Total Length Prefix
+    return struct.pack('!I', len(raw_payload)) + raw_payload
+
+# --- Operations ---
 
 def connect_to_server():
-    """Establishes a connection to the server."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.connect((SERVER_HOST, SERVER_PORT))
-        print(f"Connected to {SERVER_HOST}:{SERVER_PORT}")
-        sock.settimeout(10.0) 
-        return sock
-    except ConnectionRefusedError:
-        print(f"Error: Could not connect to {SERVER_HOST}:{SERVER_PORT}. Is the server running on port {SERVER_PORT}?")
-        sys.exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred during connection: {e}")
-        sys.exit(1)
+    sock.connect((SERVER_HOST, SERVER_PORT))
+    return sock
 
-def run_transaction_and_verify(sock, command_parts, expected_success='Success (NIL)'):
-    """Sends a command, reads response, and verifies success."""
-    raw_payload_bytes = encode_custom_command(command_parts)
+def setup_keys_mset(sock):
+    """Uses MSET to set all keys in one go."""
+    print(f"\n--- 1. Setting up {NUM_KEYS} keys ({VALUE_SIZE/1024:.0f}KB each) via MSET... ---")
     
-    # Prefix the payload with the 4-byte total length L
-    total_len = len(raw_payload_bytes)
-    length_prefix = struct.pack('!I', total_len)
-    full_request = length_prefix + raw_payload_bytes
-    
-    sock.sendall(full_request)
-    
-    full_response_data = read_full_response(sock)
-    if full_response_data is None:
-        raise ConnectionError("Server closed the connection unexpectedly.")
+    value = 'X' * VALUE_SIZE
+    args = ['MSET']
+    for i in range(NUM_KEYS):
+        args.append(f"{KEY_PREFIX}{i}")
+        args.append(value)
 
-    parsed_result, _ = parse_response(full_response_data)
+    req_data = encode_custom_command(args)
+    print(f"Sending MSET payload: {len(req_data)/1024:.2f} KB")
     
-    # For SET, we expect the SER_NIL type, which the parser turns into 'Success (NIL)'
-    if parsed_result != expected_success:
-        # Check if it was an integer result, which some commands (like DEL) return
-        if isinstance(parsed_result, int):
-            return True # Assume INT result is okay for verification
-        
-        print(f"Command {' '.join(command_parts)} failed.")
-        print(f"Error Response: {parsed_result}")
-        return False
-    return True
+    t0 = time.time()
+    sock.sendall(req_data)
+    read_full_response(sock) # Read the NIL/OK response
+    print(f"Setup complete in {time.time() - t0:.4f}s")
 
-def setup_keys(sock, count, size):
-    """Sets a large number of keys with specific value size."""
-    print(f"\n--- 1. Setting up {count} keys with {size/1024:.0f}KB value size... ---")
-    start_time = time.time()
+def cleanup_keys_mdel(sock):
+    """Uses variadic MDEL to remove keys."""
+    print(f"\n--- 3. Cleaning up {NUM_KEYS} keys via MDEL... ---")
+    args = ['MDEL'] + [f"{KEY_PREFIX}{i}" for i in range(NUM_KEYS)]
     
-    # Generate the value once
-    value = 'X' * size
-    
-    for i in range(count):
-        key = f"{KEY_PREFIX}{i}"
-        command_parts = ['SET', key, value]
-        
-        if not run_transaction_and_verify(sock, command_parts):
-            print("Stopping setup due to server error.")
-            return False
+    sock.sendall(encode_custom_command(args))
+    read_full_response(sock)
+    print("Cleanup complete.")
 
-    elapsed = time.time() - start_time
-    print(f"Key setup completed in {elapsed:.2f} seconds.")
-    return True
+def benchmark_mget_pipeline(sock):
+    print(f"\n--- 2. Running MGET Pipelined Benchmark ---")
+    print(f"Keys: {NUM_KEYS} | Iterations: {ITERATIONS} | Pipeline Depth: {PIPELINE_DEPTH}")
 
-def benchmark_mget(sock, count, iterations):
-    """Runs MGET benchmark repeatedly."""
-    print(f"\n--- 2. Running MGET benchmark ({iterations} iterations) ---")
-    
-    # 1. Construct the MGET command argument list
-    keys = [f"{KEY_PREFIX}{i}" for i in range(count)]
-    print (f'keys size: {len(keys)}')
+    # 1. Prepare Single Request
+    keys = [f"{KEY_PREFIX}{i}" for i in range(NUM_KEYS)]
     mget_args = ['MGET'] + keys
+    single_req = encode_custom_command(mget_args)
     
-    # 2. Encode the full MGET command request
-    raw_payload_bytes = encode_custom_command(mget_args)
-    total_len = len(raw_payload_bytes)
-    length_prefix = struct.pack('!I', total_len)
-    mget_command_request = length_prefix + raw_payload_bytes
+    # 2. Create Pipeline Batch
+    # We concatenate 'PIPELINE_DEPTH' requests into one giant buffer
+    batch_payload = single_req * PIPELINE_DEPTH
     
-    command_size_bytes = len(mget_command_request)
-    print(f"MGET request size ({NUM_KEYS} keys): {command_size_bytes / 1024:.1f} KB")
-    
-    # 3. Start timing
+    print(f"Single Request Size: {len(single_req)/1024:.2f} KB")
+    print(f"Batch Payload Size:  {len(batch_payload)/1024:.2f} KB")
+
+    # 3. Execution Loop
+    batches = ITERATIONS // PIPELINE_DEPTH
     start_time = time.time()
-    
-    # Loop for iterations - raw send/receive for maximal throughput measurement
-    for _ in range(iterations):
-        # Send the command
-        sock.sendall(mget_command_request)
+
+    for _ in range(batches):
+        # A. Send Batch
+        sock.sendall(batch_payload)
         
-        # Read the full, large response from the server, avoiding costly Python parsing
-        try:
-            full_response_data = read_full_response(sock)
-            if full_response_data is None:
-                 raise ConnectionError("Server closed during MGET response read.")
-        except Exception as e:
-            print(f"Error during MGET response read: {e}. Skipping iteration.")
-            continue
-            
-    # 4. End timing and calculate results
+        # B. Read Batch
+        for _ in range(PIPELINE_DEPTH):
+            read_full_response(sock)
+            # We skip parsing for pure throughput measurement
+            # (Parsing in Python is slow and distorts the network benchmark)
+
     elapsed = time.time() - start_time
-    total_requests = iterations
-    total_keys_retrieved = iterations * count
-    total_data_size_bytes = iterations * count * VALUE_SIZE
+    
+    # 4. Stats
+    total_reqs = batches * PIPELINE_DEPTH
+    total_data = total_reqs * NUM_KEYS * VALUE_SIZE
     
     print("\n--- Results ---")
-    print(f"Total time elapsed: {elapsed:.4f} seconds")
-    print(f"Total MGET requests: {total_requests}")
-    print(f"Total keys retrieved: {total_keys_retrieved:,}")
-    print(f"Total data transferred (estimated payload): {total_data_size_bytes / (1024*1024):.2f} MB")
-    
-    if elapsed > 0:
-        rps = total_requests / elapsed
-        mb_per_sec = (total_data_size_bytes / (1024 * 1024)) / elapsed
-        
-        print(f"MGET Throughput: {rps:.2f} requests/second (QPS)")
-        print(f"Data Throughput: {mb_per_sec:.2f} MB/second")
-
+    print(f"Time: {elapsed:.4f}s")
+    print(f"Throughput: {total_reqs / elapsed:.2f} ops/sec")
+    print(f"Data Rate:  {(total_data / 1024 / 1024) / elapsed:.2f} MB/sec")
 
 def main():
-    sock = connect_to_server()
-    
-    # 1. Setup keys
-    if setup_keys(sock, NUM_KEYS, VALUE_SIZE):
-        # 2. Run benchmark
+    try:
+        sock = connect_to_server()
         
-        # Close and reopen the connection to clear any network buffer state 
-        # that might skew the benchmark timing.
+        setup_keys_mset(sock)
+        
+        # Reconnect to ensure clean state for benchmark
         sock.close()
-        sock = connect_to_server() 
+        sock = connect_to_server()
         
-        benchmark_mget(sock, NUM_KEYS, ITERATIONS)
+        benchmark_mget_pipeline(sock)
         
-    sock.close()
-    print("\nBenchmark finished.")
-
+        cleanup_keys_mdel(sock)
+        sock.close()
+        
+    except Exception as e:
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     main()

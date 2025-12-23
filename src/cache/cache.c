@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,6 +102,48 @@ entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
 	  heap_update (&cache->heap, pos);
 	}
     }
+}
+
+static bool
+do_ping (Cache *cache, char **args, size_t arg_count, Buffer *out)
+{
+  (void) cache;
+  // Case 1: "PING" -> "+PONG\r\n" (Simple String)
+  if (arg_count == 1)
+    {
+      if (out->proto == PROTO_RESP)
+	{
+	  // Manually write Simple String (+PONG)
+	  // We can use buf_append_fmt or buf_append_cstr
+	  // Note: out_str writes Bulk Strings ($4\r\nPONG), which is also valid 
+	  // but +PONG is the standard.
+	  return buf_append_cstr (out, "+PONG\r\n");
+	}
+      // Binary protocol PONG (Maybe just return string "PONG")
+      return out_str (out, "PONG");
+    }
+
+  // Case 2: "PING message" -> "message" (Bulk String)
+  if (arg_count == 2)
+    {
+      return out_str (out, args[1]);
+    }
+
+  return out_err (out, ERR_ARG,
+		  "wrong number of arguments for 'ping' command");
+}
+
+static bool
+do_config (Cache *cache, char **args, size_t arg_count, Buffer *out)
+{
+  (void) cache;
+  (void) args;
+  (void) arg_count;
+  // Just return an empty array to make the tool happy
+  // It usually asks for "CONFIG GET save"
+
+  // Return *0\r\n
+  return out_arr (out, 0);
 }
 
 static void
@@ -496,7 +539,7 @@ del (Cache *cache, char *key)
   if (node)
     {
       Entry *entry = fetch_entry (node);
-      entry_del (cache, entry, (uint64_t)-1);
+      entry_del (cache, entry, (uint64_t) - 1);
       return 1;
     }
   return 0;
@@ -516,7 +559,7 @@ do_mdel (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
     {
       num += del (cache, cmd[i + 1]);
     }
-  return out_int(out, num);
+  return out_int (out, num);
 }
 
 static void
@@ -580,6 +623,8 @@ static bool
 do_set (Cache *cache, char **cmd, Buffer *out)
 {
   entry_set (cache, cmd[1], cmd[2]);
+  if (out->proto == PROTO_RESP)
+    return out_ok (out);
   return out_nil (out);
 }
 
@@ -728,6 +773,14 @@ bool
 cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out,
 	       uint64_t now_us)
 {
+  if (size > 0 && cmd_is (cmd[0], "ping"))
+    {
+      return do_ping (cache, cmd, size, out);
+    }
+  if (size > 0 && cmd_is (cmd[0], "config"))
+    {
+      return do_config (cache, cmd, size, out);
+    }
   if (size == 2 && cmd_is (cmd[0], "keys"))
     {
       return do_keys (cache, cmd, out, now_us);
@@ -740,7 +793,7 @@ cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out,
     {
       return do_get (cache, cmd[1], out, now_us);
     }
-  if (cmd_is (cmd[0], "mget") && size > 1)
+  if (size > 1 && cmd_is (cmd[0], "mget"))
     {
       return do_mget (cache, cmd, size - 1, out, now_us);
     }
@@ -752,10 +805,10 @@ cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out,
     {
       return do_del (cache, cmd, out);
     }
-  if (cmd_is (cmd[0], "mdel") && size > 1)
-  {
-    return do_mdel (cache, cmd, size - 1, out);
-  }
+  if (size > 1 && cmd_is (cmd[0], "mdel"))
+    {
+      return do_mdel (cache, cmd, size - 1, out);
+    }
   if (size == 3 && cmd_is (cmd[0], "pexpire"))
     {
       return do_expire (cache, cmd, out, now_us);

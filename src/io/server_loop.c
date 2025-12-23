@@ -203,37 +203,6 @@ conn_done (Conn *conn)
   // The Conn struct lives in the Slab and is recycled.
 }
 
-static ALWAYS_INLINE bool
-conn_has_pending_write (const Conn *conn)
-{
-  uint32_t idx = conn->read_idx;
-
-  // Loop through all slots starting from the oldest (read_idx) up to the newest (write_idx)
-  while (idx != conn->write_idx)
-    {
-      const ResponseSlot *slot = &conn->res_slots[idx];
-
-      // Check for any data waiting to be sent
-      if (slot->sent < slot->actual_length)
-	{
-	  // Found data that still needs a successful write() or sendmsg()
-	  return true;
-	}
-
-      // Check for any Zero-Copy operation waiting for kernel ACK
-      if (slot->is_zero_copy && slot->pending_ops > 0)
-	{
-	  // Found a Zero-Copy buffer the kernel still owns
-	  return true;
-	}
-
-      idx = (idx + 1) % K_SLOT_COUNT;
-    }
-
-  // If the loop finishes, all outstanding slots are fully sent and fully ACK'd.
-  return false;
-}
-
 static void
 process_timers (Cache *cache, uint64_t now_us)
 {

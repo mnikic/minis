@@ -22,7 +22,7 @@ typedef enum
 IOStatus transport_read_buffer (Conn * conn);
 
 /*
- * Sends data from the specified slot to the socket.
+ * Sends data from the head slot to the socket.
  * Handles Vanilla Send vs ZeroCopy Send logic automatically.
  *
  * Returns: 
@@ -30,6 +30,6 @@ IOStatus transport_read_buffer (Conn * conn);
  * IO_WAIT: Socket full, caller must listen for EPOLLOUT.
  * IO_ERROR: Fatal socket error.
  */
-IOStatus transport_send_slot (Conn * conn, uint32_t slot_idx);
+IOStatus transport_send_head_slot (Conn * conn);
 
 #endif // TRANSPORT_H
