@@ -11,7 +11,7 @@ import argparse
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 1234
 DEFAULT_THREADS = 16        
-BATCH_SIZE = 50        
+BATCH_SIZE = 500        
 DEFAULT_PREFIX = "soak"    
 
 # --- Protocol Constants ---
@@ -150,29 +150,795 @@ def worker(thread_id, host, port, prefix_base):
             for k, v in data.items():
                 mset_flattened.extend([k, v])
             
-            client.send("mset", *mset_flattened)
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
             
-            # 3. MGET 
-            keys = list(data.keys())
-            resp = client.send("mget", *keys)
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
             
             # Verify MGET
-            if not isinstance(resp, list):
-                raise Exception(f"MGET expected list, got {type(resp)}")
-            if len(resp) != len(keys):
-                raise Exception(f"MGET size mismatch. Expected {len(keys)}, got {len(resp)}")
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
             
-            for i, val in enumerate(resp):
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
                 expected = data[keys[i]]
                 if val != expected:
                     raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
 
-            # 4. DEL
-            count = client.send("mdel", *keys)
-            if count != len(keys):
-                 raise Exception(f"DEL count mismatch. Expected {len(keys)}, got {count}")
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
 
-            # 5. Ghost Check
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
+            check_key = keys[random.randint(0, len(keys)-1)]
+            val = client.send("get", check_key)
+            if val is not None:
+                raise Exception(f"Ghost Key found! {check_key} returned '{val}'")
+
+            with lock:
+                total_ops += (BATCH_SIZE * 3) + 1
+                mset_flattened = []
+            for k, v in data.items():
+                mset_flattened.extend([k, v])
+            
+            req_mset = create_request("mset", *mset_flattened)
+            req_mget = create_request("mget", *list(data.keys()))
+            req_mdel = create_request("mdel", *list(data.keys()))
+
+            # 2. Send ONE massive packet (The Pipeline)
+            # This triggers your server's batch processing logic
+            client.sock.sendall(req_mset + req_mget + req_mdel)
+
+            # --- PIPELINE READ ---
+            
+            # 3. Read responses sequentially
+            # Response 1: MSET -> Expect "+OK" (or equivalent)
+            res_mset = read_full_response(client.sock)
+            
+            # Response 2: MGET -> Expect List
+            res_mget = read_full_response(client.sock)
+
+            # Response 3: MDEL -> Expect Integer
+            res_mdel = read_full_response(client.sock)
+
+            # --- VALIDATION ---
+            
+            # Verify MGET
+            if not isinstance(res_mget, list):
+                 raise Exception(f"MGET expected list, got {type(res_mget)}")
+            if len(res_mget) != len(data):
+                 raise Exception(f"MGET size mismatch. Expected {len(data)}, got {len(res_mget)}")
+            
+            keys = list(data.keys())
+            for i, val in enumerate(res_mget):
+                expected = data[keys[i]]
+                if val != expected:
+                    raise Exception(f"Corruption! Key {keys[i]}: Expected '{expected}', Got '{val}'")
+
+            # Verify DEL
+            if res_mdel != len(data):
+                 raise Exception(f"DEL count mismatch. Expected {len(data)}, got {res_mdel}")
+
+            # 4. Ghost Check (Separate round-trip is fine here to be safe)
             check_key = keys[random.randint(0, len(keys)-1)]
             val = client.send("get", check_key)
             if val is not None:
