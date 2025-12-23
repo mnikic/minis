@@ -38,7 +38,7 @@
 
 #define K_ZEROCPY_THRESHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
 
-#define K_MAX_ARGS 2048
+#define K_MAX_ARGS 1024
 #define K_MAX_KEY 42
 #define K_MAX_VAL (1024 * 7)
 #define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
