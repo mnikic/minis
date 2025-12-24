@@ -4,8 +4,8 @@
 
 #include "common/common.h"
 #include "common/macros.h"
-#include "out.h"
-#include "buffer.h"
+#include "io/out.h"
+#include "io/buffer.h"
 #include "io/proto_defs.h"
 
 // RESP CONSTANTS

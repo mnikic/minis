@@ -13,7 +13,7 @@
 #include <string.h>
 #include <sys/types.h>
 
-#include "macros.h"
+#include "common/macros.h"
 
 #define ERR_UNKNOWN 1
 #define ERR_2BIG 2
@@ -159,12 +159,43 @@ NORETURN COLD void die (const char *msg);
 
 COLD uint16_t parse_port (int argc, char *argv[]);
 
-uint64_t htoll (uint64_t number);
-uint64_t ntohll (uint64_t number);
+HOT static ALWAYS_INLINE uint64_t
+hton_u64 (uint64_t host64)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  return __builtin_bswap64 (host64);
+#else
+  return host64;
+#endif
+}
 
-// Portable implementation of Host to Network 32-bit (htonl)
-uint32_t hton_u32 (uint32_t host_val);
-// Portable implementation of Host to Network 64-bit
-uint64_t hton_u64 (uint64_t host_val);
+HOT static ALWAYS_INLINE uint32_t
+hton_u32 (uint32_t host32)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  return __builtin_bswap32 (host32);
+#else
+  return host32;
+#endif
+}
+
+HOT static ALWAYS_INLINE uint64_t
+ntoh_u64 (uint64_t net64)
+{
+  return hton_u64 (net64);
+}
+
+HOT static ALWAYS_INLINE uint32_t
+ntoh_u32 (uint32_t net32)
+{
+  return hton_u32 (net32);
+}
+
+// Legacy alias if you use this name elsewhere
+HOT static ALWAYS_INLINE uint64_t
+ntohll (uint64_t number)
+{
+  return ntoh_u64 (number);
+}
 
 #endif /* COMMON_H_ */

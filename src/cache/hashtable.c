@@ -1,9 +1,9 @@
 #include <assert.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "hashtable.h"
 
-// --- Constants & Helpers ---
+#include "cache/hashtable.h"
 
 static const size_t k_resizing_work = 128;
 static const size_t k_init_size = 8;

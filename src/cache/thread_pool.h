@@ -11,8 +11,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <pthread.h>
-#include "deque.h"
 
+#include "cache/deque.h"
 
 typedef struct work
 {

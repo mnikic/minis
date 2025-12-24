@@ -9,7 +9,8 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include "heap.h"
+
+#include "cache/heap.h"
 #include "common/common.h"
 
 void

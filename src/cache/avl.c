@@ -5,9 +5,12 @@
  *      Author: loshmi
  */
 
-#include "avl.h"
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdint.h>
+
+#include "cache/avl.h"
+
 
 static uint32_t
 avl_depth (AVLNode *node)

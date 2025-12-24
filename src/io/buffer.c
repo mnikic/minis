@@ -5,7 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "buffer.h"
+#include "io/buffer.h"
 #include "common/common.h"
 #include "common/macros.h"
 #include "io/proto_defs.h"

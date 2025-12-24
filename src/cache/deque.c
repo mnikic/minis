@@ -4,9 +4,10 @@
  *  Created on: Jun 26, 2023
  *      Author: loshmi
  */
-#include "deque.h"
-#include "common/common.h"
 #include <stdlib.h>
+
+#include "cache/deque.h"
+#include "common/common.h"
 
 t_deque *
 dq_init (void)

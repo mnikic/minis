@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "connection.h"
+#include "io/connection.h"
 #include "cache/cache.h"
 
 // Context for request processing

@@ -5,13 +5,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <math.h>
 #include <time.h>
 
+#include "cache/hashtable.h"
+#include "cache/heap.h"
+#include "cache/cache.h"
+#include "cache/zset.h"
+#include "cache/thread_pool.h"
+#include "io/proto_defs.h"
 #include "io/buffer.h"
-#include "heap.h"
-#include "cache.h"
-#include "zset.h"
 #include "io/out.h"
 #include "common/common.h"
 #include "common/glob.h"

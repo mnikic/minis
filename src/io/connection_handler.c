@@ -6,11 +6,11 @@
  */
 #include <stdint.h>
 
-#include "connection_handler.h"
-#include "connection.h"
-#include "response_queue.h"
-#include "transport.h"
-#include "zero_copy.h"
+#include "io/connection_handler.h"
+#include "io/connection.h"
+#include "io/response_queue.h"
+#include "io/transport.h"
+#include "io/zero_copy.h"
 #include "common/macros.h"
 #include "common/common.h"
 #include "cache/cache.h"

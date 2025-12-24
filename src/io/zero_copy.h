@@ -17,7 +17,7 @@
 #include <stdint.h>
 
 #include "common/macros.h"
-#include "connection.h"
+#include "io/connection.h"
 
 /*
  * Checks the kernel error queue for ZeroCopy completion notifications.

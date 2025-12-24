@@ -8,8 +8,8 @@
 #ifndef ZSET_H_
 #define ZSET_H_
 
-#include "avl.h"
-#include "hashtable.h"
+#include "cache/avl.h"
+#include "cache/hashtable.h"
 
 typedef struct
 {

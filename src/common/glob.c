@@ -1,7 +1,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "glob.h"
+#include "common/glob.h"
 
 /*
  * Simple glob matching.

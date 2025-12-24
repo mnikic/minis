@@ -14,7 +14,9 @@
 
 #include "common/macros.h"
 #include "common/common.h"
-#include "zset.h"
+#include "cache/hashtable.h"
+#include "cache/zset.h"
+#include "cache/avl.h"
 
 #define EPSILON 1e-9
 

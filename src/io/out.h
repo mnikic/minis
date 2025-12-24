@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "buffer.h"
+#include "io/buffer.h"
 #include "common/macros.h"
 
 HOT bool out_nil (Buffer * out);

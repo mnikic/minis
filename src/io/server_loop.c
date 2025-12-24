@@ -46,13 +46,13 @@
 #include <signal.h>
 
 #include "cache/cache.h"
-#include "connection_handler.h"
-#include "conn_pool.h"
-#include "server_loop.h"
+#include "io/connection_handler.h"
+#include "io/conn_pool.h"
+#include "io/server_loop.h"
+#include "io/list.h"
+#include "io/zero_copy.h"
 #include "common/common.h"
 #include "common/macros.h"
-#include "list.h"
-#include "zero_copy.h"
 
 #define MAX_EVENTS 256
 #define K_IDLE_TIMEOUT_SEC 300UL	// in seconds

@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "common/common.h"
-#include "connection.h"
+#include "io/connection.h"
 #include "io/proto_defs.h"
 
 /**

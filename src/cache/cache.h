@@ -8,11 +8,12 @@
 #ifndef CACHE_H
 #define  CACHE_H
 
-#include "io/buffer.h"
-#include "hashtable.h"
-#include "heap.h"
-#include "thread_pool.h"
 #include <stdint.h>
+
+#include "io/buffer.h"
+#include "cache/hashtable.h"
+#include "cache/heap.h"
+#include "cache/thread_pool.h"
 
 typedef struct
 {

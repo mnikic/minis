@@ -17,7 +17,7 @@
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 
-#include "connection.h"
+#include "io/connection.h"
 #include "common/common.h"
 #include "common/macros.h"
 

@@ -4,9 +4,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "connection.h"
+#include "io/connection.h"
+#include "io/transport.h"
 #include "cache/cache.h"
-#include "transport.h"
 #include "common/macros.h"
 
 // Process incoming requests and fill the response queue

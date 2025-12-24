@@ -3,7 +3,7 @@
 
 #include <sys/types.h>
 
-#include "connection.h"
+#include "io/connection.h"
 
 typedef enum
 {

@@ -18,7 +18,7 @@
 #include "common/common.h"
 #include "io/proto_defs.h"
 #include "common/macros.h"
-#include "proto_parser.h"
+#include "io/proto_parser.h"
 
 /* * Zero-Copy Logic Constraint
  * Packed Binary, Network Byte Order (Big Endian), and the Zero-Copy Hack colliding 

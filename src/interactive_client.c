@@ -35,19 +35,6 @@ static int g_history_idx = 0;
 static int g_history_len = 0;
 
 
-// --- Network Byte Order Helpers ---
-#if defined(__APPLE__) || defined(__FreeBSD__)
-#include <libkern/OSByteOrder.h>
-#define ntohll(x) OSSwapBigToHostInt64(x)
-#define htonll(x) OSSwapHostToBigInt64(x)
-#else
-#define ntohll(x) __builtin_bswap64(x)
-#define htonll(x) __builtin_bswap64(x)
-#endif
-
-
-// --- History Management ---
-
 static void
 history_add (const char *command)
 {

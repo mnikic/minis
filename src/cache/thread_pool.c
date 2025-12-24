@@ -7,7 +7,9 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdlib.h>
-#include "thread_pool.h"
+
+#include "cache/deque.h"
+#include "cache/thread_pool.h"
 #include "common/common.h"
 
 
@@ -55,6 +57,7 @@ thread_pool_init (ThreadPool *thp, size_t num_threads)
   thp->stop = 0;		// Initialize stop flag
 
   int ret_val = pthread_mutex_init (&thp->mu, NULL);
+  (void) ret_val;
   assert (ret_val == 0);
   ret_val = pthread_cond_init (&thp->not_empty, NULL);
   assert (ret_val == 0);
@@ -67,6 +70,7 @@ thread_pool_init (ThreadPool *thp, size_t num_threads)
     {
       // Removed pthread_detach for controlled shutdown using pthread_join
       ret_val = pthread_create (&thp->threads[i], NULL, &worker, thp);
+      (void) ret_val;
       assert (ret_val == 0);
     }
 }

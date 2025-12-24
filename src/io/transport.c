@@ -8,8 +8,8 @@
 #include <stddef.h>
 
 #include "common/common.h"
-#include "connection.h"
-#include "transport.h"
+#include "io/connection.h"
+#include "io/transport.h"
 
 IOStatus
 transport_read_buffer (Conn *conn)

@@ -1,12 +1,12 @@
 #include <stdint.h>
 
-#include "response_queue.h"
-#include "protocol_handler.h"
-#include "zero_copy.h"
-#include "common/macros.h"
-#include "cache/cache.h"
+#include "io/response_queue.h"
+#include "io/protocol_handler.h"
+#include "io/zero_copy.h"
 #include "io/connection.h"
 #include "io/transport.h"
+#include "common/macros.h"
+#include "cache/cache.h"
 
 #define K_MAX_REQ_PER_TICK 64
 

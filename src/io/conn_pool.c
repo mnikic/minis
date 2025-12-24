@@ -5,7 +5,6 @@
  * Author: loshmi
  *
  */
-#include "conn_pool.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,9 +12,10 @@
 #include <stdio.h>
 #include <stddef.h>
 
+#include "io/conn_pool.h"
+#include "io/connection.h"
 #include "common/common.h"
 #include "common/macros.h"
-#include "io/connection.h"
 
 // Helper: Ensure the sparse FD array is big enough
 static inline void
