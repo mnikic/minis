@@ -15,6 +15,7 @@
 
 #include "common/common.h"
 #include "common/macros.h"
+#include "io/connection.h"
 
 // Helper: Ensure the sparse FD array is big enough
 static inline void

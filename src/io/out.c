@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -5,6 +6,7 @@
 #include "common/macros.h"
 #include "out.h"
 #include "buffer.h"
+#include "io/proto_defs.h"
 
 // RESP CONSTANTS
 #define RESP_OK     "+OK\r\n"

@@ -1,13 +1,14 @@
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
 #include "common/common.h"
 #include "connection.h"
-
-#include <stddef.h>
+#include "io/proto_defs.h"
 
 /**
  * Finalizes a write to the ring buffer.
- * * 1. Writes the Big Endian length prefix if PROTO_BIN.
+ * 1. Writes the Big Endian length prefix if PROTO_BIN.
  * 2. Populates the current ResponseSlot metadata.
  * 3. Advances the global wbuf_head.
  * 4. Allocates the next slot (conn_alloc_slot).
@@ -17,10 +18,10 @@ conn_commit_write (Conn *conn, uint8_t *write_ptr, size_t content_len,
 		   uint32_t gap, bool allow_zerocopy)
 {
   // Calculate total frame size (Content + Header)
-  uint32_t header_size = (conn->proto == PROTO_BIN) ? 4 : 0;
+  uint32_t header_size = (conn->proto == PROTO_BIN) ? BIN_HEADER_SIZE : 0;
   uint32_t total_len = (uint32_t) content_len + header_size;
 
-  // 1. Fill Binary Header (Length Prefix)
+  // Fill Binary Header (Length Prefix)
   if (conn->proto == PROTO_BIN)
     {
       uint32_t nwlen = htonl ((uint32_t) content_len);
@@ -51,7 +52,6 @@ conn_commit_write (Conn *conn, uint8_t *write_ptr, size_t content_len,
       slot->is_zero_copy = false;
     }
 
-  // 3. Advance Global State
   conn->wbuf_head += total_len;
   conn_alloc_slot (conn);
 }
@@ -111,17 +111,12 @@ conn_prepare_write_slot (Conn *conn, uint32_t needed_size, uint32_t *out_gap)
       return NULL;		// Buffer Full (cannot wrap)
     }
 
-  // --- EXECUTE WRAP ---
-
-  // 1. Calculate the gap (the space we are abandoning at the end)
   *out_gap = space_at_end;
 
-  // 2. Reset Head to 0
+  // Reset Head to 0
   // IMPORTANT: We move head to 0 immediately so the returned pointer is valid.
   // The caller is responsible for adding 'needed_size' to head after writing.
   conn->wbuf_head = 0;
-
-  // 3. Return the start of the buffer
   return conn->wbuf;
 }
 
@@ -165,7 +160,6 @@ conn_release_comp_slots (Conn *conn)
       if (!conn_is_slot_complete (slot))
 	break;
 
-      // --- NEW TAIL LOGIC ---
       if (slot->wbuf_gap > 0)
 	{
 	  conn->wbuf_tail = 0;	// Skip the gap
@@ -176,8 +170,6 @@ conn_release_comp_slots (Conn *conn)
 	  conn->wbuf_tail =
 	    (conn->wbuf_tail + slot->wbuf_bytes_used) % conn->wbuf_size;
 	}
-      // ---------------------
-
       // Reset everything
       slot->wbuf_bytes_used = 0;
       slot->wbuf_gap = 0;

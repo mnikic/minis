@@ -1,12 +1,15 @@
 #include <string.h>
-#include <arpa/inet.h>
+#include <stdint.h>
 
 #include "protocol_handler.h"
 #include "io/proto_defs.h"
 #include "common/common.h"
-#include "out.h"
-#include "proto_parser.h"
+#include "io/out.h"
+#include "io/proto_parser.h"
+#include "io/connection.h"
+#include "cache/cache.h"
 #include "common/macros.h"
+#include "io/buffer.h"
 
 // We are sync and single threaded, one cmd scratch will do!
 static char *global_cmd_scratch[K_MAX_ARGS];

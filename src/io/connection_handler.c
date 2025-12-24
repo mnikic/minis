@@ -4,11 +4,16 @@
  * Description      : Core networking state machine (Circular Buffer Edition)
  *============================================================================
  */
+#include <stdint.h>
+
 #include "connection_handler.h"
+#include "connection.h"
 #include "response_queue.h"
 #include "transport.h"
 #include "zero_copy.h"
 #include "common/macros.h"
+#include "common/common.h"
+#include "cache/cache.h"
 
 HOT static void
 process_buffered_data (Cache *cache, Conn *conn, uint64_t now_us)
@@ -58,7 +63,7 @@ process_buffered_data (Cache *cache, Conn *conn, uint64_t now_us)
     }
 
   // We still want to read, unless we are blocked on writing
-  IOEvent events = IO_EVENT_READ | IO_EVENT_ERR;
+  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
 
   if (conn_has_pending_write (conn) ||
       (conn_has_unprocessed_data (conn) && conn_is_res_queue_full (conn)))
@@ -119,7 +124,7 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
       return;
     }
 
-  IOEvent events = IO_EVENT_READ | IO_EVENT_ERR;
+  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
   if (conn_has_unsent_data (conn))
     events |= IO_EVENT_WRITE;
 

@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include <sys/epoll.h>
 #include <sys/types.h>
-#include <sys/uio.h>		// For struct iovec
+#include <sys/uio.h>
 
 #include "common/macros.h"
 #include "list.h"
@@ -120,10 +120,6 @@ conn_has_unprocessed_data (Conn *conn)
   return conn->read_offset < conn->rbuf_size;
 }
 
-// [DELETED] get_head_slot_data_ptr 
-// [DELETED] get_slot_data_ptr
-// Reason: Data is no longer in a flat array, it's in a ring or external DB memory.
-
 static ALWAYS_INLINE bool
 conn_is_res_queue_full (Conn *conn)
 {
@@ -147,11 +143,11 @@ conn_is_slot_empty (ResponseSlot *slot)
 }
 
 static ALWAYS_INLINE void
-conn_set_events (Conn *conn, IOEvent events)
+conn_set_events (Conn *conn, uint32_t events)
 {
   DBG_LOGF ("About to set events %u on the %i, old events are %u", events,
 	    conn->fd, conn->last_events);
-  conn->pending_events = (uint32_t) events | EPOLLET;
+  conn->pending_events = events | EPOLLET;
   DBG_LOGF ("Set events %u on the %i", conn->pending_events, conn->fd);
 }
 
@@ -176,20 +172,19 @@ conn_alloc_slot (Conn *conn)
 
 // Releases the head slot and Frees physical memory in the Ring Buffer.
 // connection.h (Update inline function)
-
 static ALWAYS_INLINE void
 conn_release_head_slot (Conn *conn)
 {
   ResponseSlot *slot = &conn->res_slots[conn->read_idx];
 
-  // 1. Handle the Gap (if we wrapped early)
+  // Handle the Gap (if we wrapped early)
   if (slot->wbuf_gap > 0)
     {
       // The tail MUST be at (Size - Gap). Move it to 0.
       conn->wbuf_tail = 0;
     }
 
-  // 2. Free the physical bytes
+  // Free the physical bytes
   if (slot->wbuf_bytes_used > 0)
     {
       conn->wbuf_tail =
@@ -198,7 +193,7 @@ conn_release_head_slot (Conn *conn)
 
   // Clear Metadata
   slot->wbuf_bytes_used = 0;
-  slot->wbuf_gap = 0;		// Reset!
+  slot->wbuf_gap = 0;
   slot->iov_cnt = 0;
   slot->sent = 0;
   slot->total_len = 0;

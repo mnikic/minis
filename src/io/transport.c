@@ -1,7 +1,11 @@
+#include <strings.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 #include <errno.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <sys/socket.h>
-#include <sys/uio.h>
+#include <stddef.h>
 
 #include "common/common.h"
 #include "connection.h"
@@ -131,7 +135,6 @@ transport_send_head_slot (Conn *conn)
 	      // We partially consumed this chunk
 	      iov->iov_base = (uint8_t *) iov->iov_base + bytes_to_advance;
 	      iov->iov_len -= bytes_to_advance;
-	      bytes_to_advance = 0;
 	      break;		// Done advancing
 	    }
 	}

@@ -6,6 +6,7 @@
  *============================================================================
  */
 #include "zero_copy.h"
+#include <stdint.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -16,8 +17,9 @@
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 
-#include "common/common.h"
 #include "connection.h"
+#include "common/common.h"
+#include "common/macros.h"
 
 // Helper: Fetch one notification count from the kernel.
 // Returns: number of completed operations (ranges), or 0 if none.

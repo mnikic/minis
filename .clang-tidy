@@ -4,7 +4,7 @@ Checks: >
   misc-*,
   performance-*,
   readability-*,
-  -misc-include-cleaner,
+  misc-include-cleaner,
   -bugprone-multi-level-implicit-pointer-conversion,
   -bugprone-narrowing-conversions,
   -readability-magic-numbers,

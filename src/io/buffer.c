@@ -8,6 +8,7 @@
 #include "buffer.h"
 #include "common/common.h"
 #include "common/macros.h"
+#include "io/proto_defs.h"
 
 // Remove NULL check for speed if this is called frequently on valid objects
 void

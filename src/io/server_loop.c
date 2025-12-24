@@ -130,14 +130,13 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 	fd_set_nb (connfd);
 #endif
 
-      // 2. Handle Accept Failures
       if (unlikely (connfd < 0))
 	{
 	  if (errno == EAGAIN)
 	    break;
 
 	  msgf ("accept() error: %s", strerror (errno));
-	  break;		// Stop looping on fatal errors too
+	  break;
 	}
 
       int sndbuf = 2 * 1024 * 1024;
@@ -225,9 +224,10 @@ process_timers (Cache *cache, uint64_t now_us)
 	  dlist_detach (&next->idle_list);
 	  dlist_insert_before (&g_data.idle_list, &next->idle_list);
 
-	  DBG_LOGF ("FD %d: Pending I/O. Resetting idle timer and skipping close.",	// Changed log
-		    next->fd);
-	  continue;		// Skip close and go to next item in the list
+	  DBG_LOGF
+	    ("FD %d: Pending I/O. Resetting idle timer and skipping close.",
+	     next->fd);
+	  continue;
 	}
       msgf ("Removing idle connection: %d", next->fd);
       conn_done (next);
@@ -272,7 +272,7 @@ flush_dead_conns (Conn **conns, int count)
 static ALWAYS_INLINE void
 update_idle_state (Conn *conn, uint64_t now_us)
 {
-  // 1. If we touched it, it's active. Remove from idle list.
+  // If we touched it, it's active. Remove from idle list.
   if (dlist_is_linked (&conn->idle_list))
     {
       dlist_detach (&conn->idle_list);
