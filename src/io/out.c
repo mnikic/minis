@@ -19,7 +19,7 @@ out_nil (Buffer *out)
       return buf_append_cstr (out, RESP_NIL);
     }
 
-  if (unlikely(!buf_has_space (out, 1)))
+  if (unlikely (!buf_has_space (out, 1)))
     return false;
 
   buf_append_byte (out, SER_NIL);
@@ -33,17 +33,17 @@ out_nil (Buffer *out)
 HOT bool
 out_str_size (Buffer *out, const char *string, size_t size)
 {
-  if (unlikely(!string || size == 0))
+  if (unlikely (!string || size == 0))
     {
       return out_nil (out);
     }
 
-  if (unlikely(size > UINT32_MAX))
+  if (unlikely (size > UINT32_MAX))
     {
       return out_err (out, ERR_UNKNOWN, "String too large");
     }
 
-  if (unlikely(!buf_has_space (out, 1 + sizeof (uint32_t) + size)))
+  if (unlikely (!buf_has_space (out, 1 + sizeof (uint32_t) + size)))
     return false;
 
   // Space guaranteed, append without further checks
@@ -63,7 +63,7 @@ HOT bool
 out_dbl (Buffer *out, double val)
 {
   // Check space for: 1 byte (SER_DBL) + 8 bytes (double)
-  if (unlikely(!buf_has_space (out, 1 + sizeof (double))))
+  if (unlikely (!buf_has_space (out, 1 + sizeof (double))))
     return false;
 
   buf_append_byte (out, SER_DBL);
@@ -75,7 +75,7 @@ out_dbl (Buffer *out, double val)
 HOT bool
 out_str (Buffer *out, const char *val)
 {
-  if (unlikely(!val))
+  if (unlikely (!val))
     return out_nil (out);
 
   size_t len = strlen (val);
@@ -83,27 +83,31 @@ out_str (Buffer *out, const char *val)
   if (out->proto == PROTO_RESP)
     {
       // Format: $<len>\r\n<data>\r\n
-      
+
       // Header: "$"
-      if (unlikely(!buf_append_byte(out, '$'))) return false;
-      
+      if (unlikely (!buf_append_byte (out, '$')))
+	return false;
+
       // Length: "N"
-      if (unlikely(!buf_append_int_as_string(out, (int64_t)len))) return false;
-      
+      if (unlikely (!buf_append_int_as_string (out, (int64_t) len)))
+	return false;
+
       // Separator: "\r\n"
-      if (unlikely(!buf_append_cstr(out, RESP_CRLF))) return false;
-      
+      if (unlikely (!buf_append_cstr (out, RESP_CRLF)))
+	return false;
+
       // Data
-      if (unlikely(!buf_append_bytes (out, val, len))) return false;
-      
+      if (unlikely (!buf_append_bytes (out, val, len)))
+	return false;
+
       // Footer: "\r\n"
       return buf_append_cstr (out, RESP_CRLF);
     }
 
-  if (unlikely(len > UINT32_MAX))
+  if (unlikely (len > UINT32_MAX))
     return out_err (out, ERR_UNKNOWN, "String too large");
 
-  if (unlikely(!buf_has_space (out, 1 + 4 + len)))
+  if (unlikely (!buf_has_space (out, 1 + 4 + len)))
     return false;
 
   buf_append_byte (out, SER_STR);
@@ -118,16 +122,18 @@ out_int (Buffer *out, int64_t val)
   if (out->proto == PROTO_RESP)
     {
       // Format: :<number>\r\n
-      
+
       // Manual construction
-      if (unlikely(!buf_append_byte(out, ':'))) return false;
-      if (unlikely(!buf_append_int_as_string(out, val))) return false;
-      return buf_append_cstr(out, RESP_CRLF);
+      if (unlikely (!buf_append_byte (out, ':')))
+	return false;
+      if (unlikely (!buf_append_int_as_string (out, val)))
+	return false;
+      return buf_append_cstr (out, RESP_CRLF);
     }
 
-  if (unlikely(!buf_has_space (out, 1 + 8)))
+  if (unlikely (!buf_has_space (out, 1 + 8)))
     return false;
-    
+
   buf_append_byte (out, SER_INT);
   buf_append_i64 (out, val);
   return true;
@@ -143,13 +149,15 @@ out_err (Buffer *out, int32_t code, const char *msg)
     {
       // Format: -ERR <msg>\r\n
       // We manually build this to avoid dependency on buf_append_fmt
-      if (!buf_append_cstr(out, "-ERR ")) return false;
-      if (!buf_append_cstr(out, msg)) return false;
-      return buf_append_cstr(out, RESP_CRLF);
+      if (!buf_append_cstr (out, "-ERR "))
+	return false;
+      if (!buf_append_cstr (out, msg))
+	return false;
+      return buf_append_cstr (out, RESP_CRLF);
     }
 
   size_t msg_len = strlen (msg);
-  if (unlikely(!buf_has_space (out, 1 + 4 + 4 + msg_len)))
+  if (unlikely (!buf_has_space (out, 1 + 4 + 4 + msg_len)))
     return false;
 
   buf_append_byte (out, SER_ERR);
@@ -165,12 +173,14 @@ out_arr (Buffer *out, size_t num)
   if (out->proto == PROTO_RESP)
     {
       // Format: *<count>\r\n
-      if (unlikely(!buf_append_byte(out, '*'))) return false;
-      if (unlikely(!buf_append_int_as_string(out, (int64_t)num))) return false;
-      return buf_append_cstr(out, RESP_CRLF);
+      if (unlikely (!buf_append_byte (out, '*')))
+	return false;
+      if (unlikely (!buf_append_int_as_string (out, (int64_t) num)))
+	return false;
+      return buf_append_cstr (out, RESP_CRLF);
     }
 
-  if (unlikely(!buf_has_space (out, 1 + 4)))
+  if (unlikely (!buf_has_space (out, 1 + 4)))
     return false;
 
   buf_append_byte (out, SER_ARR);
@@ -186,7 +196,7 @@ HOT size_t
 out_arr_begin (Buffer *out)
 {
   // Check space for: 1 byte (SER_ARR) + 4 bytes (Placeholder)
-  if (unlikely(!buf_has_space (out, 1 + sizeof (uint32_t))))
+  if (unlikely (!buf_has_space (out, 1 + sizeof (uint32_t))))
     return 0;
 
   buf_append_byte (out, SER_ARR);
@@ -206,7 +216,8 @@ out_arr_begin (Buffer *out)
 HOT bool
 out_arr_end (Buffer *out, size_t pos, size_t num)
 {
-  if (unlikely(!out || pos == 0 || (pos + sizeof (uint32_t) > buf_len (out))))
+  if (unlikely
+      (!out || pos == 0 || (pos + sizeof (uint32_t) > buf_len (out))))
     {
       return false;
     }
@@ -214,7 +225,7 @@ out_arr_end (Buffer *out, size_t pos, size_t num)
   uint8_t *data = out->data;
 
   // Validate that pos-1 is the SER_ARR marker
-  if (unlikely(data[pos - 1] != SER_ARR))
+  if (unlikely (data[pos - 1] != SER_ARR))
     {
       return false;
     }

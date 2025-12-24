@@ -23,15 +23,15 @@ buf_set_proto (Buffer *buf, ProtoType proto)
 inline bool
 buf_has_space (const Buffer *buf, size_t additional)
 {
-  if (unlikely(buf->length > buf->capacity))
+  if (unlikely (buf->length > buf->capacity))
     return false;
-    
+
   return (buf->length + additional <= buf->capacity);
 }
 
 // Helper to reverse string in place (used by itoa)
 static ALWAYS_INLINE void
-reverse_str(char *start, char *end)
+reverse_str (char *start, char *end)
 {
   char tmp;
   while (start < end)
@@ -51,12 +51,12 @@ bool
 buf_append_int_as_string (Buffer *buf, int64_t value)
 {
   // Max int64 string is 20 chars ("-9223372036854775808")
-  if (unlikely(!buf_has_space (buf, 21))) 
+  if (unlikely (!buf_has_space (buf, 21)))
     return false;
 
-  char *ptr = (char *)(buf->data + buf->length);
+  char *ptr = (char *) (buf->data + buf->length);
   char *start = ptr;
-  
+
   if (value == 0)
     {
       *ptr++ = '0';
@@ -68,7 +68,7 @@ buf_append_int_as_string (Buffer *buf, int64_t value)
   if (value < 0)
     {
       neg = true;
-      value = -value; // careful with INT64_MIN, usually handled specially
+      value = -value;		// careful with INT64_MIN, usually handled specially
     }
 
   // Generate digits in reverse
@@ -82,9 +82,9 @@ buf_append_int_as_string (Buffer *buf, int64_t value)
     *ptr++ = '-';
 
   // Reverse back to normal
-  reverse_str(start, ptr - 1);
+  reverse_str (start, ptr - 1);
 
-  buf->length += (size_t)(ptr - start);
+  buf->length += (size_t) (ptr - start);
   return true;
 }
 
@@ -94,7 +94,7 @@ bool
 buf_append_fmt (Buffer *buf, const char *fmt, ...)
 {
   // Check for at least 1 byte to start, vsnprintf will handle the rest
-  if (unlikely(!buf_has_space (buf, 1)))
+  if (unlikely (!buf_has_space (buf, 1)))
     return false;
 
   va_list args;
@@ -136,10 +136,12 @@ buf_clear (Buffer *buf)
 HOT bool
 buf_append_bytes (Buffer *buf, const void *data, size_t len)
 {
-  if (unlikely(!buf || !data)) return false;
-  if (len == 0) return true;
+  if (unlikely (!buf || !data))
+    return false;
+  if (len == 0)
+    return true;
 
-  if (unlikely(!buf_has_space (buf, len)))
+  if (unlikely (!buf_has_space (buf, len)))
     return false;
 
   memcpy (&buf->data[buf->length], data, len);
@@ -150,7 +152,7 @@ buf_append_bytes (Buffer *buf, const void *data, size_t len)
 bool
 buf_append_cstr (Buffer *buf, const char *str)
 {
-  if (unlikely(!str))
+  if (unlikely (!str))
     return true;
   return buf_append_bytes (buf, str, strlen (str));
 }
@@ -158,7 +160,7 @@ buf_append_cstr (Buffer *buf, const char *str)
 HOT bool
 buf_append_byte (Buffer *buf, uint8_t byte)
 {
-  if (unlikely(!buf_has_space (buf, 1)))
+  if (unlikely (!buf_has_space (buf, 1)))
     return false;
 
   buf->data[buf->length++] = byte;
@@ -168,7 +170,7 @@ buf_append_byte (Buffer *buf, uint8_t byte)
 bool
 buf_append_u32 (Buffer *buf, uint32_t value)
 {
-  if (unlikely(!buf_has_space (buf, sizeof (uint32_t))))
+  if (unlikely (!buf_has_space (buf, sizeof (uint32_t))))
     return false;
 
   uint32_t nval = hton_u32 (value);
@@ -180,7 +182,7 @@ buf_append_u32 (Buffer *buf, uint32_t value)
 bool
 buf_append_i64 (Buffer *buf, int64_t value)
 {
-  if (unlikely(!buf_has_space (buf, sizeof (int64_t))))
+  if (unlikely (!buf_has_space (buf, sizeof (int64_t))))
     return false;
 
   uint64_t nval = hton_u64 ((uint64_t) value);
@@ -192,7 +194,7 @@ buf_append_i64 (Buffer *buf, int64_t value)
 bool
 buf_append_double (Buffer *buf, double value)
 {
-  if (unlikely(!buf_has_space (buf, sizeof (double))))
+  if (unlikely (!buf_has_space (buf, sizeof (double))))
     return false;
 
   // Assumes client and server share IEEE 754 endianness (Standard on x86/ARM)

@@ -220,11 +220,6 @@ conn_wbuf_free_space (const Conn *conn)
   return conn->wbuf_tail - conn->wbuf_head - 1;
 }
 
-// Appends data to wbuf and adds it to the slot's IOVEC.
-// Handles wrap-around automatically. Returns false if no space.
-bool conn_append_to_wbuf (Conn * conn, ResponseSlot * slot, void *data,
-			  uint32_t len);
-
 bool conn_has_pending_write (const Conn * conn);
 uint32_t conn_release_comp_slots (Conn * conn);
 bool conn_is_idle (Conn * conn);
