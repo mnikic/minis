@@ -8,7 +8,7 @@
 #include "common/macros.h"
 #include "cache/cache.h"
 
-#define K_MAX_REQ_PER_TICK 64
+#define K_MAX_REQ_PER_TICK 1024
 
 // Process incoming data and generate responses
 HOT bool
@@ -20,7 +20,7 @@ response_queue_process_input (Cache *cache, Conn *conn, uint64_t now_us)
     .now_us = now_us
   };
 
-  uint_fast8_t budget = K_MAX_REQ_PER_TICK;
+  uint_fast16_t budget = K_MAX_REQ_PER_TICK;
 
   while (budget > 0)
     {
@@ -49,35 +49,31 @@ response_queue_process_input (Cache *cache, Conn *conn, uint64_t now_us)
   return true;
 }
 
-// Flush the response queue to the network
 HOT IOStatus
 response_queue_flush (Conn *conn)
 {
-  // Process any zerocopy completions first
+  // Process ZC completions...
   while (zc_process_completions (conn))
     {
     }
 
-  // Send all queued responses
-  while (likely (conn->pipeline_depth > 0))
+  // BATCHED SENDING LOOP
+  while (conn->pipeline_depth > 0)
     {
-      ResponseSlot *slot = conn_get_head_slot (conn);
-
-      if (unlikely (conn_is_slot_empty (slot)))
-	return IO_OK;
-
-      // Check if already fully sent (waiting for ZC ACKs)
-      if (conn_is_slot_fully_sent (slot))
+      // Check head slot for ZC block
+      ResponseSlot *head = conn_get_head_slot (conn);
+      if (conn_is_slot_fully_sent (head))
 	{
-	  if (slot->is_zero_copy && slot->pending_ops > 0)
-	    return IO_OK;	// Blocked waiting for completions
-
-	  // Release completed slots
+	  if (head->is_zero_copy && head->pending_ops > 0)
+	    return IO_OK;
 	  conn_release_comp_slots (conn);
 	  continue;
 	}
 
-      IOStatus status = transport_send_head_slot (conn);
+      // CALL THE NEW BATCHER
+      // This replaces the old 'transport_send_head_slot' loop
+      IOStatus status = transport_write_batch (conn);
+
       if (unlikely (status == IO_ERROR))
 	{
 	  conn->state = STATE_CLOSE;
@@ -87,7 +83,8 @@ response_queue_flush (Conn *conn)
       if (status == IO_WAIT)
 	return IO_WAIT;
 
-      // status == IO_OK, continue to next slot
+      // If IO_OK, we loop again to see if there is more to send
+      // (or until pipeline_depth is 0)
     }
 
   return IO_OK;

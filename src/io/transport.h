@@ -4,6 +4,7 @@
 #include <sys/types.h>
 
 #include "io/connection.h"
+#include "common/macros.h"
 
 typedef enum
 {
@@ -19,7 +20,7 @@ typedef enum
  * * Returns: IO_OK (got data), IO_WAIT (no data yet), IO_EOF, or IO_ERROR.
  * Output: updates conn->rbuf_size directly.
  */
-IOStatus transport_read_buffer (Conn * conn);
+HOT IOStatus transport_read_buffer (Conn * conn);
 
 /*
  * Sends data from the head slot to the socket.
@@ -30,6 +31,8 @@ IOStatus transport_read_buffer (Conn * conn);
  * IO_WAIT: Socket full, caller must listen for EPOLLOUT.
  * IO_ERROR: Fatal socket error.
  */
-IOStatus transport_send_head_slot (Conn * conn);
+HOT IOStatus transport_send_head_slot (Conn * conn);
+
+HOT IOStatus transport_write_batch (Conn * conn);
 
 #endif // TRANSPORT_H

@@ -34,13 +34,13 @@
 // This must be consistent between the client and the server's read buffer capacity.
 #define K_MAX_MSG (200 * 1024UL)
 // Number of slots in the ring buffer
-#define K_SLOT_COUNT 512UL
+#define K_SLOT_COUNT 2048UL
 
 #define K_ZEROCPY_THRESHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
 
 #define K_MAX_ARGS 1024
 #define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
-#define K_WBUF_SIZE (512UL * 1024UL)
+#define K_WBUF_SIZE (2048UL * 1024UL)
 
 #define MAX_CONNECTIONS 20000
 
