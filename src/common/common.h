@@ -8,6 +8,7 @@
 #define COMMON_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <arpa/inet.h>
 #include <string.h>
@@ -55,20 +56,24 @@
 #define SO_ZEROCOPY     60
 #endif
 
+// Defined in common.c
+extern bool g_verbose_mode;
+
 #ifndef SO_EE_ORIGIN_ZEROCOPY
 #define SO_EE_ORIGIN_ZEROCOPY  5
 #endif
 
-#ifdef DEBUG_LOGGING
-    // If DEBUG_LOGGING is defined, the macros call the implementation functions.
-#define DBG_LOG(msg_str) msg (msg_str)
-#define DBG_LOGF(...) msgf (__VA_ARGS__)
-#else
-    // If DEBUG_LOGGING is NOT defined, the macros resolve to a no-op statement.
-    // The use of (void)0 ensures zero overhead (no function call, no parameter evaluation).
-#define DBG_LOG(msg_str) (void)0
-#define DBG_LOGF(...) (void)0
-#endif
+#define DBG_LOGF(...) do { \
+    if (unlikely(g_verbose_mode)) { \
+        msgf(__VA_ARGS__); \
+    } \
+} while(0)
+
+#define DBG_LOG(str) do { \
+    if (unlikely(g_verbose_mode)) { \
+        msg(str); \
+    } \
+} while(0)
 
 void COLD msgf (const char *fmt, ...);
 void COLD msg (const char *msg);

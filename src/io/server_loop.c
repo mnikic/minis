@@ -357,7 +357,7 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
 }
 
 static bool COLD
-initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
+initialize_server_core (int port, int *listen_fd, int *epfd)
 {
   struct sockaddr_in addr = { 0 };
   int err, val = 1;
@@ -370,7 +370,7 @@ initialize_server_core (uint16_t port, int *listen_fd, int *epfd)
   setsockopt (*listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof (val));
 
   addr.sin_family = AF_INET;
-  addr.sin_port = htons (port);
+  addr.sin_port = htons ((__uint16_t) port);
   addr.sin_addr.s_addr = htonl (0);
 
   err = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
@@ -448,7 +448,7 @@ next_timer_ms (Cache *cache, uint64_t now_us)
 }
 
 int
-server_run (uint16_t port)
+server_run (int port)
 {
   struct epoll_event events[MAX_EVENTS];
   int listen_fd = -1;

@@ -3,6 +3,6 @@
 
 #include <stdint.h>
 
-int server_run (uint16_t port);
+int server_run (int port);
 
 #endif //SERVER_LOOP_H

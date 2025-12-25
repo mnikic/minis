@@ -18,6 +18,8 @@
 #include "common/common.h"
 #include "common/macros.h"
 
+bool g_verbose_mode = false;
+
 inline uint64_t
 str_hash (const uint8_t *data, size_t len)
 {
