@@ -7,25 +7,35 @@ import re
 import os
 
 # --- Dynamic Path Setup ---
-# Read the client executable name from an environment variable, defaulting to 'client'.
-CLIENT_BIN_NAME = os.environ.get('CLIENT_BIN_NAME', 'client')
-# The relative path to the client executable as defined in the test cases
-CLIENT_EXECUTABLE_REL_PATH = f'../build/bin/{CLIENT_BIN_NAME}'
-# The literal placeholder string used in the CASES raw string
-CLIENT_PLACEHOLDER = '{CLIENT_EXECUTABLE_REL_PATH}'
 
-# 1. Get the directory of the currently executing script
+# 1. Get the path from the Makefile environment variable.
+#    Defaults to the standard release location if run manually.
+#    The Makefile passes paths like: 'build/bin/android/minis-bench'
+CLIENT_BIN_PATH = os.environ.get('CLIENT_BIN_PATH', 'build/bin/release/minis-bench')
+
+# 2. Define the placeholder literal used in your test strings
+#    (We keep the old variable name in the string to avoid changing all your test cases)
+CLIENT_PLACEHOLDER = '{client_executable-abs_path}'
+
+# 3. Resolve the absolute path
 script_dir = os.path.dirname(os.path.abspath(__file__))
-# 2. Construct the absolute, invariant path to the client executable
-# os.path.normpath resolves the '..' segments correctly
-client_executable_abs_path = os.path.normpath(
-    os.path.join(script_dir, CLIENT_EXECUTABLE_REL_PATH)
-)
+
+if os.path.isabs(CLIENT_BIN_PATH):
+    # If Makefile passed an absolute path, use it directly
+    client_executable_abs_path = CLIENT_BIN_PATH
+else:
+    # If Makefile passed a relative path (e.g. "build/bin/..."), 
+    # it is relative to the Project Root.
+    # Since this script lives in "test/", we join with ".." to get to Root.
+    client_executable_abs_path = os.path.normpath(
+        os.path.join(script_dir, '..', CLIENT_BIN_PATH)
+    )
+
 # ------------------------------
 
 # *** DEBUGGING OUTPUT ***
 print(f"--- Client Configuration ---")
-print(f"CLIENT_BIN_NAME: {CLIENT_BIN_NAME}")
+print(f"CLIENT_BIN_NAME: {CLIENT_BIN_PATH}")
 print(f"Calculated Path: {client_executable_abs_path}")
 print(f"----------------------------")
 # **************************
@@ -33,166 +43,166 @@ print(f"----------------------------")
 
 CASES = r'''
 # Basic zset operations
-$ {CLIENT_EXECUTABLE_REL_PATH} zscore asdf n1
+$ {client_executable-abs_path} zscore asdf n1
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery xxx 1 asdf 1 10
+$ {client_executable-abs_path} zquery xxx 1 asdf 1 10
 (arr) len=0
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd zset 1 n1
+$ {client_executable-abs_path} zadd zset 1 n1
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd zset 2 n2
+$ {client_executable-abs_path} zadd zset 2 n2
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd zset 1.1 n1
+$ {client_executable-abs_path} zadd zset 1.1 n1
 (int) 0
-$ {CLIENT_EXECUTABLE_REL_PATH} zscore zset n1
+$ {client_executable-abs_path} zscore zset n1
 (dbl) 1.1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery zset 1 "" 0 10
+$ {client_executable-abs_path} zquery zset 1 "" 0 10
 (arr) len=4
 (str) n1
 (dbl) 1.1
 (str) n2
 (dbl) 2
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery zset 1.1 "" 1 10
+$ {client_executable-abs_path} zquery zset 1.1 "" 1 10
 (arr) len=2
 (str) n2
 (dbl) 2
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery zset 1.1 "" 2 10
+$ {client_executable-abs_path} zquery zset 1.1 "" 2 10
 (arr) len=0
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} zrem zset adsf
+$ {client_executable-abs_path} zrem zset adsf
 (int) 0
-$ {CLIENT_EXECUTABLE_REL_PATH} zrem zset n1
+$ {client_executable-abs_path} zrem zset n1
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery zset 1 "" 0 10
+$ {client_executable-abs_path} zquery zset 1 "" 0 10
 (arr) len=2
 (str) n2
 (dbl) 2
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} del zset
+$ {client_executable-abs_path} del zset
 (int) 1
 
 # Test basic key-value operations
-$ {CLIENT_EXECUTABLE_REL_PATH} get key1
+$ {client_executable-abs_path} get key1
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} set key1 value1
+$ {client_executable-abs_path} set key1 value1
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get key1
+$ {client_executable-abs_path} get key1
 (str) value1
-$ {CLIENT_EXECUTABLE_REL_PATH} set key1 value2
+$ {client_executable-abs_path} set key1 value2
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get key1
+$ {client_executable-abs_path} get key1
 (str) value2
-$ {CLIENT_EXECUTABLE_REL_PATH} del key1
+$ {client_executable-abs_path} del key1
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} get key1
+$ {client_executable-abs_path} get key1
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} del key1
+$ {client_executable-abs_path} del key1
 (int) 0
 
 # Test multiple keys
-$ {CLIENT_EXECUTABLE_REL_PATH} set k1 v1
+$ {client_executable-abs_path} set k1 v1
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} set k2 v2
+$ {client_executable-abs_path} set k2 v2
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} set k3 v3
+$ {client_executable-abs_path} set k3 v3
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get k1
+$ {client_executable-abs_path} get k1
 (str) v1
-$ {CLIENT_EXECUTABLE_REL_PATH} get k2
+$ {client_executable-abs_path} get k2
 (str) v2
-$ {CLIENT_EXECUTABLE_REL_PATH} get k3
+$ {client_executable-abs_path} get k3
 (str) v3
-$ {CLIENT_EXECUTABLE_REL_PATH} del k1
+$ {client_executable-abs_path} del k1
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} del k2
+$ {client_executable-abs_path} del k2
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} del k3
+$ {client_executable-abs_path} del k3
 (int) 1
 
 # Test keys command
-$ {CLIENT_EXECUTABLE_REL_PATH} set a 1
+$ {client_executable-abs_path} set a 1
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} set b 2
+$ {client_executable-abs_path} set b 2
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} set c 3
+$ {client_executable-abs_path} set c 3
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} keys \*
+$ {client_executable-abs_path} keys \*
 (arr) len=3
 (str) c
 (str) a
 (str) b
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} keys d
+$ {client_executable-abs_path} keys d
 (arr) len=0
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} keys c
+$ {client_executable-abs_path} keys c
 (arr) len=1
 (str) c
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} keys c?
+$ {client_executable-abs_path} keys c?
 (arr) len=0
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} set ca 4
+$ {client_executable-abs_path} set ca 4
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} keys c
+$ {client_executable-abs_path} keys c
 (arr) len=1
 (str) c
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} keys c
+$ {client_executable-abs_path} keys c
 (arr) len=1
 (str) c
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} keys c?
+$ {client_executable-abs_path} keys c?
 (arr) len=1
 (str) ca
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} keys c\*
+$ {client_executable-abs_path} keys c\*
 (arr) len=2
 (str) c
 (str) ca
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} keys \*
+$ {client_executable-abs_path} keys \*
 (arr) len=4
 (str) c
 (str) a
 (str) ca
 (str) b
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} del a
+$ {client_executable-abs_path} del a
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} del b
+$ {client_executable-abs_path} del b
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} del c
+$ {client_executable-abs_path} del c
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} del ca
+$ {client_executable-abs_path} del ca
 (int) 1
 
 # Test pexpire and pttl
-$ {CLIENT_EXECUTABLE_REL_PATH} set expkey value
+$ {client_executable-abs_path} set expkey value
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} pexpire expkey 10000
+$ {client_executable-abs_path} pexpire expkey 10000
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} get expkey
+$ {client_executable-abs_path} get expkey
 (str) value
-$ {CLIENT_EXECUTABLE_REL_PATH} del expkey
+$ {client_executable-abs_path} del expkey
 (int) 1
 
 # Test pexpire on non-existent key
-$ {CLIENT_EXECUTABLE_REL_PATH} pexpire nokey 5000
+$ {client_executable-abs_path} pexpire nokey 5000
 (int) 0
-$ {CLIENT_EXECUTABLE_REL_PATH} pttl nokey
+$ {client_executable-abs_path} pttl nokey
 (int) -2
 
 # Test zset with negative scores
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd negset -5 n1
+$ {client_executable-abs_path} zadd negset -5 n1
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd negset -2.5 n2
+$ {client_executable-abs_path} zadd negset -2.5 n2
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd negset 0 n3
+$ {client_executable-abs_path} zadd negset 0 n3
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery negset -10 "" 0 10
+$ {client_executable-abs_path} zquery negset -10 "" 0 10
 (arr) len=6
 (str) n1
 (dbl) -5
@@ -201,21 +211,21 @@ $ {CLIENT_EXECUTABLE_REL_PATH} zquery negset -10 "" 0 10
 (str) n3
 (dbl) 0
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} zscore negset n1
+$ {client_executable-abs_path} zscore negset n1
 (dbl) -5
-$ {CLIENT_EXECUTABLE_REL_PATH} zscore negset n2
+$ {client_executable-abs_path} zscore negset n2
 (dbl) -2.5
-$ {CLIENT_EXECUTABLE_REL_PATH} del negset
+$ {client_executable-abs_path} del negset
 (int) 1
 
 # Test zset with same scores (lexicographic ordering)
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd sameset 1 apple
+$ {client_executable-abs_path} zadd sameset 1 apple
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd sameset 1 banana
+$ {client_executable-abs_path} zadd sameset 1 banana
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd sameset 1 cherry
+$ {client_executable-abs_path} zadd sameset 1 cherry
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery sameset 0 "" 0 10
+$ {client_executable-abs_path} zquery sameset 0 "" 0 10
 (arr) len=6
 (str) apple
 (dbl) 1
@@ -224,111 +234,111 @@ $ {CLIENT_EXECUTABLE_REL_PATH} zquery sameset 0 "" 0 10
 (str) cherry
 (dbl) 1
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} del sameset
+$ {client_executable-abs_path} del sameset
 (int) 1
 
 # Test zset update existing member
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd updset 1 member
+$ {client_executable-abs_path} zadd updset 1 member
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zscore updset member
+$ {client_executable-abs_path} zscore updset member
 (dbl) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd updset 5 member
+$ {client_executable-abs_path} zadd updset 5 member
 (int) 0
-$ {CLIENT_EXECUTABLE_REL_PATH} zscore updset member
+$ {client_executable-abs_path} zscore updset member
 (dbl) 5
-$ {CLIENT_EXECUTABLE_REL_PATH} del updset
+$ {client_executable-abs_path} del updset
 (int) 1
 
 # Test large zset
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd large 1 a
+$ {client_executable-abs_path} zadd large 1 a
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd large 2 b
+$ {client_executable-abs_path} zadd large 2 b
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd large 3 c
+$ {client_executable-abs_path} zadd large 3 c
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd large 4 d
+$ {client_executable-abs_path} zadd large 4 d
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd large 5 e
+$ {client_executable-abs_path} zadd large 5 e
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery large 0 "" 0 3
+$ {client_executable-abs_path} zquery large 0 "" 0 3
 (arr) len=4
 (str) a
 (dbl) 1
 (str) b
 (dbl) 2
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery large 0 "" 3 10
+$ {client_executable-abs_path} zquery large 0 "" 3 10
 (arr) len=4
 (str) d
 (dbl) 4
 (str) e
 (dbl) 5
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} del large
+$ {client_executable-abs_path} del large
 (int) 1
 
 # Test empty string values
-$ {CLIENT_EXECUTABLE_REL_PATH} set emptykey ""
+$ {client_executable-abs_path} set emptykey ""
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get emptykey
+$ {client_executable-abs_path} get emptykey
 (str) 
 
-$ {CLIENT_EXECUTABLE_REL_PATH} del emptykey
+$ {client_executable-abs_path} del emptykey
 (int) 1
 
 # Test overwriting different types
-$ {CLIENT_EXECUTABLE_REL_PATH} set mixkey normalvalue
+$ {client_executable-abs_path} set mixkey normalvalue
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get mixkey
+$ {client_executable-abs_path} get mixkey
 (str) normalvalue
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd mixkey 1 member
+$ {client_executable-abs_path} zadd mixkey 1 member
 (err) 3 expect zset
-$ {CLIENT_EXECUTABLE_REL_PATH} del mixkey
+$ {client_executable-abs_path} del mixkey
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd mixkey 1 member
+$ {client_executable-abs_path} zadd mixkey 1 member
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zscore mixkey member
+$ {client_executable-abs_path} zscore mixkey member
 (dbl) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} del mixkey
+$ {client_executable-abs_path} del mixkey
 (int) 1
 
 # Test zrem multiple times
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd remset 1 a
+$ {client_executable-abs_path} zadd remset 1 a
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd remset 2 b
+$ {client_executable-abs_path} zadd remset 2 b
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd remset 3 c
+$ {client_executable-abs_path} zadd remset 3 c
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zrem remset a
+$ {client_executable-abs_path} zrem remset a
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zrem remset a
+$ {client_executable-abs_path} zrem remset a
 (int) 0
-$ {CLIENT_EXECUTABLE_REL_PATH} zrem remset b
+$ {client_executable-abs_path} zrem remset b
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zrem remset c
+$ {client_executable-abs_path} zrem remset c
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} del remset
+$ {client_executable-abs_path} del remset
 (int) 1
 
 # Test query with offset beyond size
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd offtest 1 a
+$ {client_executable-abs_path} zadd offtest 1 a
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd offtest 2 b
+$ {client_executable-abs_path} zadd offtest 2 b
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery offtest 0 "" 10 10
+$ {client_executable-abs_path} zquery offtest 0 "" 10 10
 (arr) len=0
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} del offtest
+$ {client_executable-abs_path} del offtest
 (int) 1
 
 # Test fractional scores
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd fracset 0.1 a
+$ {client_executable-abs_path} zadd fracset 0.1 a
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd fracset 0.2 b
+$ {client_executable-abs_path} zadd fracset 0.2 b
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd fracset 0.15 c
+$ {client_executable-abs_path} zadd fracset 0.15 c
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery fracset 0 "" 0 10
+$ {client_executable-abs_path} zquery fracset 0 "" 0 10
 (arr) len=6
 (str) a
 (dbl) 0.1
@@ -337,119 +347,119 @@ $ {CLIENT_EXECUTABLE_REL_PATH} zquery fracset 0 "" 0 10
 (str) b
 (dbl) 0.2
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} del fracset
+$ {client_executable-abs_path} del fracset
 (int) 1
 
 # Test special characters in keys and values
-$ {CLIENT_EXECUTABLE_REL_PATH} set "key with spaces" "value with spaces"
+$ {client_executable-abs_path} set "key with spaces" "value with spaces"
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get "key with spaces"
+$ {client_executable-abs_path} get "key with spaces"
 (str) value with spaces
-$ {CLIENT_EXECUTABLE_REL_PATH} del "key with spaces"
+$ {client_executable-abs_path} del "key with spaces"
 (int) 1
 
 # Test pttl on key without expiry
-$ {CLIENT_EXECUTABLE_REL_PATH} set noexp value
+$ {client_executable-abs_path} set noexp value
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} pttl noexp
+$ {client_executable-abs_path} pttl noexp
 (int) -1
-$ {CLIENT_EXECUTABLE_REL_PATH} del noexp
+$ {client_executable-abs_path} del noexp
 (int) 1
 
 # Test pttl and pexpire on key with short expiry
-$ {CLIENT_EXECUTABLE_REL_PATH} set shortxp value
+$ {client_executable-abs_path} set shortxp value
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get shortxp
+$ {client_executable-abs_path} get shortxp
 (str) value
-$ {CLIENT_EXECUTABLE_REL_PATH} pttl shortxp
+$ {client_executable-abs_path} pttl shortxp
 (int) -1
-$ {CLIENT_EXECUTABLE_REL_PATH} pexpire shortxp 100
+$ {client_executable-abs_path} pexpire shortxp 100
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} get shortxp
+$ {client_executable-abs_path} get shortxp
 (str) value
 $ sleep 0.15
-$ {CLIENT_EXECUTABLE_REL_PATH} get shortxp
+$ {client_executable-abs_path} get shortxp
 (nil)
 
 # Test sequential operations
-$ {CLIENT_EXECUTABLE_REL_PATH} set seq1 val1
+$ {client_executable-abs_path} set seq1 val1
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} set seq2 val2
+$ {client_executable-abs_path} set seq2 val2
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get seq1
+$ {client_executable-abs_path} get seq1
 (str) val1
-$ {CLIENT_EXECUTABLE_REL_PATH} del seq1
+$ {client_executable-abs_path} del seq1
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} set seq1 newval1
+$ {client_executable-abs_path} set seq1 newval1
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} get seq1
+$ {client_executable-abs_path} get seq1
 (str) newval1
-$ {CLIENT_EXECUTABLE_REL_PATH} get seq2
+$ {client_executable-abs_path} get seq2
 (str) val2
-$ {CLIENT_EXECUTABLE_REL_PATH} del seq1
+$ {client_executable-abs_path} del seq1
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} del seq2
+$ {client_executable-abs_path} del seq2
 (int) 1
 
 # Test zset boundaries
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd boundset 0 zero
+$ {client_executable-abs_path} zadd boundset 0 zero
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd boundset 100 hundred
+$ {client_executable-abs_path} zadd boundset 100 hundred
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery boundset 0 "" 0 1
+$ {client_executable-abs_path} zquery boundset 0 "" 0 1
 (arr) len=2
 (str) zero
 (dbl) 0
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery boundset 50 "" 0 10
+$ {client_executable-abs_path} zquery boundset 50 "" 0 10
 (arr) len=2
 (str) hundred
 (dbl) 100
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} del boundset
+$ {client_executable-abs_path} del boundset
 (int) 1
 
 # Test deleting while querying
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd delquery 1 a
+$ {client_executable-abs_path} zadd delquery 1 a
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd delquery 2 b
+$ {client_executable-abs_path} zadd delquery 2 b
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zadd delquery 3 c
+$ {client_executable-abs_path} zadd delquery 3 c
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zrem delquery b
+$ {client_executable-abs_path} zrem delquery b
 (int) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} zquery delquery 0 "" 0 10
+$ {client_executable-abs_path} zquery delquery 0 "" 0 10
 (arr) len=4
 (str) a
 (dbl) 1
 (str) c
 (dbl) 3
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} del delquery
+$ {client_executable-abs_path} del delquery
 (int) 1
 
 # Test mset, mget, mdel
-$ {CLIENT_EXECUTABLE_REL_PATH} mset a 1 b 2 c 3
+$ {client_executable-abs_path} mset a 1 b 2 c 3
 (nil)
-$ {CLIENT_EXECUTABLE_REL_PATH} mget a b c
+$ {client_executable-abs_path} mget a b c
 (arr) len=3
 (str) 1
 (str) 2
 (str) 3
 (arr) end
-$ {CLIENT_EXECUTABLE_REL_PATH} get a
+$ {client_executable-abs_path} get a
 (str) 1
-$ {CLIENT_EXECUTABLE_REL_PATH} get b
+$ {client_executable-abs_path} get b
 (str) 2
-$ {CLIENT_EXECUTABLE_REL_PATH} get c
+$ {client_executable-abs_path} get c
 (str) 3
-$ {CLIENT_EXECUTABLE_REL_PATH} mdel a b c
+$ {client_executable-abs_path} mdel a b c
 (int) 3
-$ {CLIENT_EXECUTABLE_REL_PATH} del a
+$ {client_executable-abs_path} del a
 (int) 0
-$ {CLIENT_EXECUTABLE_REL_PATH} del b
+$ {client_executable-abs_path} del b
 (int) 0
-$ {CLIENT_EXECUTABLE_REL_PATH} del c
+$ {client_executable-abs_path} del c
 (int) 0
 '''
 
