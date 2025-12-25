@@ -56,5 +56,6 @@ main (void)
     }
   assert (heap.size == 0);
   assert (heap_empty (&heap));
+  heap_free(&heap);
   printf ("Success!\n");
 }
