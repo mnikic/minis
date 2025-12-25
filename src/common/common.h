@@ -50,7 +50,6 @@
 #define K_ZEROCPY_THRESHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
 
 #define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
-#define K_WBUF_SIZE (2048UL * 1024UL)
 
 #define MAX_CONNECTIONS 20000
 
