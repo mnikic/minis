@@ -102,10 +102,9 @@ else ifeq ($(PROFILE),android)
     CFLAGS = $(RELEASE_FLAGS) -DMINIS_ANDROID
 
     # Filter out flags that trigger "unsupported flags" warnings on Android
-    # remove -z,nodlopen and -z,now
-    LDFLAGS_BASE = $(RELEASE_LDFLAGS)
-    LDFLAGS_FILTERED = $(filter-out -Wl,-z,nodlopen -Wl,-z,now, $(LDFLAGS_BASE))
-    LDFLAGS = $(LDFLAGS_FILTERED)
+    LDFLAGS = -pthread -flto=auto -march=native -O3 \
+              -Wl,-z,noexecstack -Wl,-z,relro \
+              -Wl,--as-needed
     OBJ_DIR = $(OBJ_ROOT)/android
     SUFFIX = _android
 endif
