@@ -89,34 +89,6 @@ buf_append_int_as_string (Buffer *buf, int64_t value)
   return true;
 }
 
-// Helper for RESP: Append formatted string (like printf)
-// WARNING: Slow. Use buf_append_int_as_string for numbers.
-bool
-buf_append_fmt (Buffer *buf, const char *fmt, ...)
-{
-  // Check for at least 1 byte to start, vsnprintf will handle the rest
-  if (unlikely (!buf_has_space (buf, 1)))
-    return false;
-
-  va_list args;
-
-  size_t remain = buf->capacity - buf->length;
-  char *ptr = (char *) (buf->data + buf->length);
-
-  va_start (args, fmt);
-  int written = vsnprintf (ptr, remain, fmt, args);
-  va_end (args);
-
-  // Check for overflow (vsnprintf returns size needed, not size written if truncated)
-  if (unlikely (written < 0 || (size_t) written >= remain))
-    {
-      return false;
-    }
-
-  buf->length += (size_t) written;
-  return true;
-}
-
 Buffer
 buf_init (uint8_t *external, size_t capacity)
 {

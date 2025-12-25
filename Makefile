@@ -98,6 +98,15 @@ else ifeq ($(PROFILE),tsan)
     LDFLAGS = -pthread -fsanitize=thread
     OBJ_DIR = $(OBJ_ROOT)/tsan
     SUFFIX = _tsan
+else ifeq ($(PROFILE),android)
+    CFLAGS = $(RELEASE_FLAGS) -DMINIS_ANDROID
+
+    # Filter out flags that trigger "unsupported flags" warnings on Android
+    LDFLAGS = -pthread -flto=auto -march=native -O3 \
+              -Wl,-z,noexecstack -Wl,-z,relro \
+              -Wl,--as-needed
+    OBJ_DIR = $(OBJ_ROOT)/android
+    SUFFIX = _android
 endif
 
 # Binary Names
@@ -131,6 +140,8 @@ ubsan:
 	@$(MAKE) PROFILE=ubsan all
 tsan:
 	@$(MAKE) PROFILE=tsan all
+android:
+	@$(MAKE) PROFILE=android all
 
 # --- Linkage Rules ---
 
@@ -175,6 +186,21 @@ test: $(TARGET_BENCH) $(TARGET_TEST)
 	@$(MAKE) heap-test
 	@echo "--- Running E2E Tests ($(PROFILE)) ---"
 	@CLIENT_BIN_NAME=$(notdir $(TARGET_BENCH)) python3 test/test_cmds_extra.py
+
+test-android:
+	@$(MAKE) PROFILE=android test
+
+test-asan:
+	@$(MAKE) PROFILE=asan test
+
+test-ubsan:
+	@$(MAKE) PROFILE=ubsan test
+
+test-tsan:
+	@$(MAKE) PROFILE=tsan test
+
+test-debug:
+	@$(MAKE) PROFILE=debug test
 
 # Installation (Standard Linux Path)
 install: release

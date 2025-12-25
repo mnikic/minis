@@ -150,7 +150,6 @@ out_err (Buffer *out, int32_t code, const char *msg)
   if (out->proto == PROTO_RESP)
     {
       // Format: -ERR <msg>\r\n
-      // We manually build this to avoid dependency on buf_append_fmt
       if (!buf_append_cstr (out, "-ERR "))
 	return false;
       if (!buf_append_cstr (out, msg))

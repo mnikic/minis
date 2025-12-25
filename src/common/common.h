@@ -31,17 +31,25 @@
 
 #define DEFAULT_PORT 1234
 
-// Max size of a single request message (payload data after the 4-byte length prefix).
-// This must be consistent between the client and the server's read buffer capacity.
+// Defaults & Limits
+#ifdef MINIS_ANDROID
+    // ANDROID / TERMUX PROFILE
+    // Tuning for lower RAM and smaller Kernel TCP buffers
+#define K_MAX_MSG (64 * 1024UL)	// 64KB max payload (vs 200KB)
+#define K_MAX_ARGS 1024
+#define K_WBUF_SIZE (256UL * 1024UL)	// 256KB write buffer (vs 2MB)
+#define K_SLOT_COUNT 128UL	// Smaller ring buffer (vs 2048)
+#else
+    // STANDARD SERVER PROFILE
+    // Tuning for high-performance Linux Servers
 #define K_MAX_MSG (200 * 1024UL)
-// Number of slots in the ring buffer
+#define K_MAX_ARGS 1024
+#define K_WBUF_SIZE (2048UL * 1024UL)
 #define K_SLOT_COUNT 2048UL
-
+#endif
 #define K_ZEROCPY_THRESHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
 
-#define K_MAX_ARGS 1024
 #define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
-#define K_WBUF_SIZE (2048UL * 1024UL)
 
 #define MAX_CONNECTIONS 20000
 

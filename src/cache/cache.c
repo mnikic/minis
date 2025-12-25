@@ -118,7 +118,6 @@ do_ping (Cache *cache, char **args, size_t arg_count, Buffer *out)
       if (out->proto == PROTO_RESP)
 	{
 	  // Manually write Simple String (+PONG)
-	  // We can use buf_append_fmt or buf_append_cstr
 	  // Note: out_str writes Bulk Strings ($4\r\nPONG), which is also valid 
 	  // but +PONG is the standard.
 	  return buf_append_cstr (out, "+PONG\r\n");

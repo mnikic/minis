@@ -23,8 +23,6 @@ typedef struct
 
 void buf_set_proto (Buffer * buf, ProtoType proto);
 
-bool buf_append_fmt (Buffer * buf, const char *fmt, ...);
-
 bool buf_append_int_as_string (Buffer * buf, int64_t value);
 
 /**
