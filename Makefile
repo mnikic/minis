@@ -187,6 +187,21 @@ test: $(TARGET_BENCH) $(TARGET_TEST)
 	@echo "--- Running E2E Tests ($(PROFILE)) ---"
 	@CLIENT_BIN_NAME=$(notdir $(TARGET_BENCH)) python3 test/test_cmds_extra.py
 
+test-android:
+	@$(MAKE) PROFILE=android test
+
+test-asan:
+	@$(MAKE) PROFILE=asan test
+
+test-ubsan:
+	@$(MAKE) PROFILE=ubsan test
+
+test-tsan:
+	@$(MAKE) PROFILE=tsan test
+
+test-debug:
+	@$(MAKE) PROFILE=debug test
+
 # Installation (Standard Linux Path)
 install: release
 	@echo "Installing minis to /usr/local/bin..."
