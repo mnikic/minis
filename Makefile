@@ -65,7 +65,13 @@ CLI_SRCS   := src/interactive_client.c src/common/common.c
 BENCH_SRCS := src/client.c src/common/common.c
 
 # Test Sources
-TEST_SRCS  := test/heap_test.c src/cache/heap.c src/common/common.c
+TEST_HEAP_SRCS  := test/heap_test.c src/cache/heap.c src/common/common.c
+TEST_CACHE_SRCS := test/cache_test.c \
+                   src/cache/cache.c src/cache/hashtable.c src/cache/heap.c \
+                   src/cache/zset.c src/cache/thread_pool.c src/cache/avl.c \
+                   src/cache/deque.c \
+                   src/io/buffer.c src/io/out.c \
+                   src/common/common.c src/common/glob.c
 
 # ============================================================================
 #  TARGET CONFIGURATION (Magic Happens Here)
@@ -120,13 +126,15 @@ endif
 TARGET_MINIS = $(BIN_DIR)/minis
 TARGET_CLI   = $(BIN_DIR)/minis-cli
 TARGET_BENCH = $(BIN_DIR)/minis-bench
-TARGET_TEST  = $(BIN_DIR)/heap_test
+TARGET_TEST_HEAP  = $(BIN_DIR)/heap_test
+TARGET_TEST_CACHE = $(BIN_DIR)/cache_test
 
 # --- Object Generators ---
 MINIS_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(MINIS_SRCS))
 CLI_OBJS   = $(patsubst %.c, $(OBJ_DIR)/%.o, $(CLI_SRCS))
 BENCH_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(BENCH_SRCS))
-TEST_OBJS  = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_SRCS))
+TEST_HEAP_OBJS  = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_HEAP_SRCS))
+TEST_CACHE_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_CACHE_SRCS))
 
 # ============================================================================
 #  RULES
@@ -167,10 +175,15 @@ $(TARGET_BENCH): $(BENCH_OBJS)
 	@echo "  LD      $@"
 	@$(CC) $(BENCH_OBJS) -o $@ $(LDFLAGS)
 
-$(TARGET_TEST): $(TEST_OBJS)
+$(TARGET_TEST_HEAP): $(TEST_HEAP_OBJS)
 	@mkdir -p $(dir $@)
 	@echo "  LD      $@"
-	@$(CC) $(TEST_OBJS) -o $@ $(LDFLAGS)
+	@$(CC) $(TEST_HEAP_OBJS) -o $@ $(LDFLAGS)
+
+$(TARGET_TEST_CACHE): $(TEST_CACHE_OBJS)
+	@mkdir -p $(dir $@)
+	@echo "  LD      $@"
+	@$(CC) $(TEST_CACHE_OBJS) -o $@ $(LDFLAGS) -lm
 
 # --- Compilation Rule ---
 $(OBJ_DIR)/%.o: %.c
@@ -183,14 +196,20 @@ $(OBJ_DIR)/%.o: %.c
 # ============================================================================
 
 # Unit Tests (C Heap Test)
-heap-test: $(TARGET_TEST)
+heap-test: $(TARGET_TEST_HEAP)
 	@echo "--- Running Heap Unit Test ($(PROFILE)) ---"
-	@./$(TARGET_TEST)
+	@./$(TARGET_TEST_HEAP)
+
+# Unit Tests (C Cache Test)
+cache-test: $(TARGET_TEST_CACHE)
+	@echo "--- Running Cache Unit Test ($(PROFILE)) ---"
+	@./$(TARGET_TEST_CACHE)
 
 # Integration Tests (Python E2E)
 # Pass full path to CLIENT_BIN_PATH so python knows exactly which binary to use
-test: $(TARGET_BENCH) $(TARGET_TEST)
+test: $(TARGET_BENCH) $(TARGET_TEST_HEAP) $(TARGET_TEST_CACHE)
 	@$(MAKE) heap-test
+	@$(MAKE) cache-test
 	@echo "--- Running E2E Tests ($(PROFILE)) ---"
 	@CLIENT_BIN_PATH=$(TARGET_BENCH) python3 test/test_cmds_extra.py
 

@@ -10,7 +10,7 @@ NUM_KEYS = 100
 KEY_PREFIX = "benchkey_"
 VALUE_SIZE = 1024       # 1KB values
 ITERATIONS = 50000      # Total requests to simulate
-PIPELINE_DEPTH = 50     # How many MGETs to batch per network write
+PIPELINE_DEPTH = 5     # How many MGETs to batch per network write
 
 # --- Protocol Constants ---
 SER_NIL = 0

@@ -12,7 +12,7 @@
 #include "common/macros.h"
 
 // We are sync and single threaded, one cmd scratch will do!
-static char *global_cmd_scratch[K_MAX_ARGS];
+static const char *global_cmd_scratch[K_MAX_ARGS];
 
 // Send error and close
 COLD static void

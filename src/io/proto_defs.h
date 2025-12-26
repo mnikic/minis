@@ -46,7 +46,7 @@ typedef struct
   uint32_t reqlen;
   uint32_t arg_count;
 
-  char **cmd;			// Array of pointers to fill
+  const char **cmd;		// Array of pointers to fill
   size_t cmd_size;
 
   // State Tracking

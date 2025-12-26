@@ -45,6 +45,43 @@ hnode_same (HNode *lhs, HNode *rhs)
   return lhs == rhs;
 }
 
+// Converts an HNode pointer (from the hash map) back to its parent Entry structure.
+static Entry *
+fetch_entry (HNode *node_to_fetch)
+{
+// This pragma block is necessary for container_of, which performs type punning.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  Entry *entry = container_of (node_to_fetch, Entry, node);
+#pragma GCC diagnostic pop
+  return entry;
+}
+
+static int
+entry_eq (HNode *lhs, HNode *rhs)
+{
+  Entry *lentry = fetch_entry (lhs);
+  Entry *rentry = fetch_entry (rhs);
+
+  return lhs->hcode == rhs->hcode
+    && (lentry != NULL && rentry != NULL && lentry->key != NULL
+	&& rentry->key != NULL && strcmp (lentry->key, rentry->key) == 0);
+}
+
+static HNode *
+hm_lookup_by_key (HMap *hmap, const char *key)
+{
+  Entry entry_key;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+  entry_key.key = (char *) key;
+#pragma GCC diagnostic pop
+  entry_key.node.hcode =
+    str_hash ((uint8_t *) entry_key.key, strlen (entry_key.key));
+
+  return hm_lookup (hmap, &entry_key.node, &entry_eq);
+}
+
 // Deallocates the Entry and its contents.
 static void
 entry_destroy (Entry *ent)
@@ -109,7 +146,7 @@ entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
 }
 
 static bool
-do_ping (Cache *cache, char **args, size_t arg_count, Buffer *out)
+do_ping (Cache *cache, const char **args, size_t arg_count, Buffer *out)
 {
   (void) cache;
   // Case 1: "PING" -> "+PONG\r\n" (Simple String)
@@ -137,7 +174,7 @@ do_ping (Cache *cache, char **args, size_t arg_count, Buffer *out)
 }
 
 static bool
-do_config (Cache *cache, char **args, size_t arg_count, Buffer *out)
+do_config (Cache *cache, const char **args, size_t arg_count, Buffer *out)
 {
   (void) cache;
   (void) args;
@@ -193,18 +230,6 @@ entry_dispose_atomic (Cache *cache, Entry *ent)
   entry_del (cache, ent, (uint64_t) - 1);
 }
 
-// Converts an HNode pointer (from the hash map) back to its parent Entry structure.
-static Entry *
-fetch_entry (HNode *node_to_fetch)
-{
-// This pragma block is necessary for container_of, which performs type punning.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  Entry *entry = container_of (node_to_fetch, Entry, node);
-#pragma GCC diagnostic pop
-  return entry;
-}
-
 // Converts a heap index reference (size_t *ref) back to its parent Entry structure.
 static Entry *
 fetch_entry_from_heap_ref (size_t *ref)
@@ -223,17 +248,6 @@ cmd_is (const char *word, const char *cmd)
   return 0 == strcasecmp (word, cmd);
 }
 
-static int
-entry_eq (HNode *lhs, HNode *rhs)
-{
-  Entry *lentry = fetch_entry (lhs);
-  Entry *rentry = fetch_entry (rhs);
-
-  return lhs->hcode == rhs->hcode
-    && (lentry != NULL && rentry != NULL && lentry->key != NULL
-	&& rentry->key != NULL && strcmp (lentry->key, rentry->key) == 0);
-}
-
 static void
 cb_destroy_entry (HNode *node, void *arg)
 {
@@ -249,6 +263,7 @@ typedef struct
   Buffer *out;
   uint32_t count;
   uint64_t now_us;
+  bool result;
   const char *pattern;
 } ScanContext;
 
@@ -256,6 +271,8 @@ static void
 cb_scan (HNode *node, void *arg)
 {
   ScanContext *ctx = (ScanContext *) arg;
+  if (!ctx->result)
+    return;
   Entry *ent = fetch_entry (node);
   if (ent->expire_at_us != 0)
     {
@@ -266,11 +283,13 @@ cb_scan (HNode *node, void *arg)
     }
   if (!glob_match (ctx->pattern, ent->key))
     return;
-  // NOTE: out_str returns true on success. If it fails, we should abort, but we cannot. out_arr_end will fail and report
+
   if (out_str (ctx->out, fetch_entry (node)->key))
     {
       ctx->count++;
     }
+  else
+    ctx->result = false;
 }
 
 static int
@@ -295,15 +314,12 @@ str2int (const char *string, int64_t *out)
  * @param is_valid_zset: true if the key was found, not expired, and is of type T_ZSET.
  */
 static bool
-expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
+expect_zset (Cache *cache, Buffer *out, const char *key, Entry **ent,
 	     bool *is_valid_zset, uint64_t now_us)
 {
   *is_valid_zset = false;
 
-  Entry key;
-  key.key = string;
-  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
-  HNode *hnode = hm_lookup (&cache->db, &key.node, &entry_eq);
+  HNode *hnode = hm_lookup_by_key (&cache->db, key);
 
   if (!hnode)
     {
@@ -334,7 +350,7 @@ expect_zset (Cache *cache, Buffer *out, char *string, Entry **ent,
 }
 
 static bool
-do_zadd (Cache *cache, char **cmd, Buffer *out)
+do_zadd (Cache *cache, const char **cmd, Buffer *out)
 {
   double score = 0;
   if (!str2dbl (cmd[2], &score))
@@ -342,10 +358,7 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
       return out_err (out, ERR_ARG, "expect fp number");
     }
 
-  Entry key;
-  key.key = cmd[1];
-  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
-  HNode *hnode = hm_lookup (&cache->db, &key.node, &entry_eq);
+  HNode *hnode = hm_lookup_by_key (&cache->db, cmd[1]);
 
   Entry *ent = NULL;
   if (!hnode)
@@ -355,13 +368,13 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
 	die ("Out of memory");
       memset (ent, 0, sizeof (Entry));
 
-      ent->key = calloc (strlen (key.key) + 1, sizeof (char));
+      ent->key = calloc (strlen (cmd[1]) + 1, sizeof (char));
       if (!ent->key)
 	{
 	  free (ent);
 	  die ("Out of memory");
 	}
-      strcpy (ent->key, key.key);
+      strcpy (ent->key, cmd[1]);
 
       ent->zset = malloc (sizeof (ZSet));
       if (!ent->zset)
@@ -372,7 +385,7 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
 	}
       memset (ent->zset, 0, sizeof (ZSet));
 
-      ent->node.hcode = key.node.hcode;
+      ent->node.hcode = str_hash ((const uint8_t *) cmd[1], strlen (cmd[1]));
       ent->type = T_ZSET;
       ent->heap_idx = (size_t) -1;
       ent->expire_at_us = 0;
@@ -394,7 +407,7 @@ do_zadd (Cache *cache, char **cmd, Buffer *out)
 
 // zrem zset name
 static bool
-do_zrem (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
+do_zrem (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
   Entry *ent = NULL;
   bool is_valid_zset;
@@ -420,7 +433,7 @@ do_zrem (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 
 // zscore zset name
 static bool
-do_zscore (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
+do_zscore (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
   Entry *ent = NULL;
   bool is_valid_zset;
@@ -446,7 +459,7 @@ do_zscore (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 
 // zquery zset score name offset limit
 static bool
-do_zquery (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
+do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
 // parse args
   double score = 0;
@@ -513,28 +526,35 @@ do_zquery (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 }
 
 static bool
-do_keys (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
+do_keys (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
   // Start the array response (writes a placeholder for the count)
   size_t idx = out_arr_begin (out);
   if (idx == 0)
     return false;
-  ScanContext ctx = {.out = out,.count = 0,.pattern = cmd[1] };
+  ScanContext ctx = {.out = out,.count = 0,.pattern = cmd[1],.result = true };
   ctx.now_us = now_us;
 
   // We cannot stop the scan if a write fails, but the subsequent calls will
   // also fail, and the final count will be accurate.
   hm_scan (&cache->db, &cb_scan, &ctx);
 
+  if (!ctx.result)
+    {
+      return false;
+    }
   // Finalize the array output with the actual number of elements written. If the buffer is full return false.
   return out_arr_end (out, idx, ctx.count);
 }
 
 static int
-del (Cache *cache, char *key)
+del (Cache *cache, const char *key)
 {
   Entry entry_key;
-  entry_key.key = key;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+  entry_key.key = (char *) key;
+#pragma GCC diagnostic pop
   entry_key.node.hcode =
     str_hash ((uint8_t *) entry_key.key, strlen (entry_key.key));
 
@@ -549,13 +569,13 @@ del (Cache *cache, char *key)
 }
 
 static bool
-do_del (Cache *cache, char **cmd, Buffer *out)
+do_del (Cache *cache, const char **cmd, Buffer *out)
 {
   return out_int (out, del (cache, cmd[1]));
 }
 
 static bool
-do_mdel (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
+do_mdel (Cache *cache, const char **cmd, size_t nkeys, Buffer *out)
 {
   int64_t num = 0;
   for (size_t i = 0; i < nkeys; ++i)
@@ -566,14 +586,9 @@ do_mdel (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
 }
 
 static void
-entry_set (Cache *cache, char *key, const char *val)
+entry_set (Cache *cache, const char *key, const char *val)
 {
-  Entry entry_key;
-  entry_key.key = key;
-  entry_key.node.hcode =
-    str_hash ((uint8_t *) entry_key.key, strlen (entry_key.key));
-
-  HNode *node = hm_lookup (&cache->db, &entry_key.node, &entry_eq);
+  HNode *node = hm_lookup_by_key (&cache->db, key);
   if (node)
     {
       Entry *ent = fetch_entry (node);
@@ -615,7 +630,7 @@ INSERT_NEW:
     }
   strcpy (ent->val, val);
 
-  ent->node.hcode = entry_key.node.hcode;
+  ent->node.hcode = str_hash ((const uint8_t *) key, strlen (key));
   ent->heap_idx = (size_t) -1;
   ent->expire_at_us = 0;
   ent->type = T_STR;
@@ -623,7 +638,7 @@ INSERT_NEW:
 }
 
 static bool
-do_set (Cache *cache, char **cmd, Buffer *out)
+do_set (Cache *cache, const char **cmd, Buffer *out)
 {
   entry_set (cache, cmd[1], cmd[2]);
   if (out->proto == PROTO_RESP)
@@ -632,7 +647,7 @@ do_set (Cache *cache, char **cmd, Buffer *out)
 }
 
 static bool
-do_mset (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
+do_mset (Cache *cache, const char **cmd, size_t nkeys, Buffer *out)
 {
   for (size_t i = 0; i < nkeys; i = i + 2)
     {
@@ -643,13 +658,9 @@ do_mset (Cache *cache, char **cmd, size_t nkeys, Buffer *out)
 }
 
 static bool
-do_get (Cache *cache, char *key_param, Buffer *out, uint64_t now_us)
+do_get (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 {
-  Entry key;
-  key.key = key_param;
-  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
-
-  HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
+  HNode *node = hm_lookup_by_key (&cache->db, key);
   if (!node)
     {
       return out_nil (out);
@@ -691,7 +702,8 @@ do_get (Cache *cache, char *key_param, Buffer *out, uint64_t now_us)
  * was successfully written; false otherwise (buffer exhausted).
  */
 static bool
-do_mget (Cache *cache, char **cmd, size_t nkeys, Buffer *out, uint64_t now_us)
+do_mget (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
+	 uint64_t now_us)
 {
   if (!out_arr (out, nkeys))
     {
@@ -720,7 +732,7 @@ do_mget (Cache *cache, char **cmd, size_t nkeys, Buffer *out, uint64_t now_us)
 }
 
 static bool
-do_expire (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
+do_expire (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
   int64_t ttl_ms = 0;
   if (!str2int (cmd[2], &ttl_ms))
@@ -728,11 +740,7 @@ do_expire (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
       return out_err (out, ERR_ARG, "expect int64");
     }
 
-  Entry key;
-  key.key = cmd[1];
-  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
-
-  HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
+  HNode *node = hm_lookup_by_key (&cache->db, cmd[1]);
   if (node)
     {
       Entry *ent = fetch_entry (node);
@@ -742,13 +750,9 @@ do_expire (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 }
 
 static bool
-do_ttl (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
+do_ttl (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
-  Entry key;
-  key.key = cmd[1];
-  key.node.hcode = str_hash ((uint8_t *) key.key, strlen (key.key));
-
-  HNode *node = hm_lookup (&cache->db, &key.node, &entry_eq);
+  HNode *node = hm_lookup_by_key (&cache->db, cmd[1]);
   if (!node)
     {
       return out_int (out, -2);	// Key not found
@@ -773,7 +777,7 @@ do_ttl (Cache *cache, char **cmd, Buffer *out, uint64_t now_us)
 }
 
 bool
-cache_execute (Cache *cache, char **cmd, size_t size, Buffer *out,
+cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
 	       uint64_t now_us)
 {
   if (size > 0 && cmd_is (cmd[0], "ping"))
