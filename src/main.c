@@ -8,6 +8,7 @@
 
 #include "common/common.h"
 #include <stdint.h>
+#include <stdio.h>
 #define _POSIX_C_SOURCE 200809L	// For daemon(), sigaction, etc.
 
 #include <stdlib.h>
@@ -128,7 +129,12 @@ daemonize_process (void)
   if (pid < 0)
     exit (EXIT_FAILURE);
   if (pid > 0)
-    exit (EXIT_SUCCESS);
+    {
+      msgf ("  > PID:  %d\n", pid);
+      msg ("  > Minis started in the background.");
+      fflush (stderr);
+      exit (EXIT_SUCCESS);	// Parent exits
+    }
 
   // Change file mode mask
   umask (0);
@@ -173,19 +179,19 @@ main (int argc, char *argv[])
 {
   parse_args (argc, argv, &config);
 
+  msg (MINIS_BANNER);
+  msgf ("\n  > Port: %d\n", config.port);
+  msgf ("  > Profile: %s\n", BUILD_PROFILE);
+  if (config.verbose)
+    msgf ("  > Verbose: Enabled\n");
+
   if (config.daemonize)
     {
       daemonize_process ();
     }
   else
     {
-      // Only print the cool banner if we are running in foreground
-      msg (MINIS_BANNER);
-      msgf ("\n  > Port: %d\n", config.port);
       msgf ("  > PID:  %d\n", getpid ());
-      msgf ("  > Profile: %s\n", BUILD_PROFILE);
-      if (config.verbose)
-	msgf ("  > Verbose: Enabled\n");
       msgf ("  > Ready to accept connections.\n\n");
     }
 
