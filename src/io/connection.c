@@ -6,6 +6,28 @@
 #include "io/connection.h"
 #include "io/proto_defs.h"
 
+void
+conn_compact_rbuf (Conn *conn)
+{
+  // If we haven't consumed anything, there's nothing to compact.
+  if (conn->read_offset == 0)
+    {
+      return;
+    }
+
+  size_t remaining = conn->rbuf_size - conn->read_offset;
+
+  // Move the valid data (from offset) to the beginning of the buffer
+  if (remaining > 0)
+    {
+      memmove (conn->rbuf, &conn->rbuf[conn->read_offset], remaining);
+    }
+
+  // Reset the pointers
+  conn->rbuf_size = remaining;
+  conn->read_offset = 0;
+}
+
 /**
  * Finalizes a write to the ring buffer.
  * 1. Writes the Big Endian length prefix if PROTO_BIN.

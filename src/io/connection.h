@@ -249,4 +249,6 @@ void
 conn_commit_write (Conn * conn, uint8_t * write_ptr, size_t content_len,
 		   uint32_t gap, bool allow_zerocopy);
 
+void conn_compact_rbuf (Conn * conn);
+
 #endif /* CONNECTION_H_ */

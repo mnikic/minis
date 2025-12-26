@@ -11,7 +11,8 @@ typedef enum
   IO_OK,			// Operation completed or made progress
   IO_WAIT,			// Resource busy (EAGAIN/EWOULDBLOCK), need Epoll
   IO_EOF,			// Connection closed by peer
-  IO_ERROR			// Fatal error
+  IO_ERROR,			// Fatal error
+  IO_BUF_FULL			// Cannot read even after compacting the buffer!
 } IOStatus;
 
 /*

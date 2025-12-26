@@ -21,23 +21,43 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
   while (true)
     {
       IOStatus read_status = transport_read_buffer (conn);
+
       if (unlikely (read_status == IO_ERROR || read_status == IO_EOF))
 	{
 	  conn->state = STATE_CLOSE;
 	  break;
 	}
 
-      bool made_progress =
+      QueueStatus q_status =
 	response_queue_process_buffered_data (cache, conn, now_us);
-      if (conn->state == STATE_CLOSE)
+
+      if (q_status == QUEUE_PROGRESSED)
+	continue;
+      if (q_status == QUEUE_ERROR || conn->state == STATE_CLOSE)
 	break;
-      if (!made_progress)
+
+      if (unlikely
+	  ((q_status != QUEUE_PROGRESSED && q_status != QUEUE_DONE)
+	   && read_status == IO_BUF_FULL))
+	{
+	  msgf
+	    ("Client %d sent request larger than buffer size even after compacting.", conn->fd);
+	  conn->state = STATE_CLOSE;
+	  return;
+	}
+
+      if (q_status == QUEUE_STALLED)
+	{
+	  conn_set_events (conn,
+			   IO_EVENT_READ | IO_EVENT_WRITE | IO_EVENT_ERR);
+	  break;
+	}
+
+      if (q_status == QUEUE_DONE)
 	{
 	  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
-	  if (read_status == IO_OK
-	      || (read_status == IO_WAIT && conn_has_pending_write (conn)))
+	  if (read_status == IO_OK || conn_has_pending_write (conn))
 	    events |= IO_EVENT_WRITE;
-
 	  conn_set_events (conn, events);
 	  break;
 	}
@@ -47,39 +67,26 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
 HOT static void
 handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
-  DBG_LOGF ("FD %d: Handling IO_EVENT_WRITE event", conn->fd);
+  IOStatus write_status = transport_write_batch (conn);
 
-  IOStatus status = response_queue_flush (conn);
-
-  if (unlikely (status == IO_ERROR))
+  if (unlikely (write_status == IO_ERROR))
     {
       conn->state = STATE_CLOSE;
       return;
     }
 
-  if (status == IO_WAIT)
+  if (conn_has_unprocessed_data (conn))
     {
-      conn_set_events (conn, IO_EVENT_READ | IO_EVENT_WRITE | IO_EVENT_ERR);
-      return;
-    }
-
-  if (unlikely
-      (conn->state == STATE_FLUSH_CLOSE && conn->pipeline_depth == 0))
-    {
-      conn->state = STATE_CLOSE;
-      return;
-    }
-
-  // Jump directly to data pump if advanageous
-  if (status == IO_OK && conn_has_unprocessed_data (conn))
-    {
-      response_queue_process_buffered_data (cache, conn, now_us);
-      return;
+      handle_in_event (cache, conn, now_us);
+      return;			// handle_in_event set the events. We are done.
     }
 
   uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
-  if (conn_has_unsent_data (conn))
-    events |= IO_EVENT_WRITE;
+
+  if (conn_has_pending_write (conn))
+    {
+      events |= IO_EVENT_WRITE;
+    }
 
   conn_set_events (conn, events);
 }
@@ -87,6 +94,7 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
 static void
 handle_err_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
+  die ("We are in err");
   DBG_LOGF ("FD %d: Handling IO_EVENT_ERR event", conn->fd);
 
   bool progress = false;

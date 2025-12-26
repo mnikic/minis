@@ -9,7 +9,15 @@
 #include "cache/cache.h"
 #include "common/macros.h"
 
-HOT bool
+typedef enum
+{
+  QUEUE_ERROR,			// Fatal error (close connection)
+  QUEUE_STALLED,		// Blocked on Write (Enable EPOLLOUT immediately)
+  QUEUE_PROGRESSED,		// Success: Parsed at least one command (Loop again!)
+  QUEUE_DONE			// Healthy, but no full command ready (Sleep/Wait)
+} QueueStatus;
+
+HOT QueueStatus
 response_queue_process_buffered_data (Cache * cache, Conn * conn,
 				      uint64_t now_us);
 

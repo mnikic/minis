@@ -23,7 +23,10 @@ transport_read_buffer (Conn *conn)
     {
       size_t cap = K_RBUF_SIZE - conn->rbuf_size;
       if (cap == 0)
-	return IO_OK;		// Buffer full
+	conn_compact_rbuf (conn);
+      cap = K_RBUF_SIZE - conn->rbuf_size;
+      if (cap == 0)
+	  return IO_BUF_FULL;
 
       ssize_t num;
       do
@@ -36,8 +39,6 @@ transport_read_buffer (Conn *conn)
 	{
 	  if (errno == EAGAIN)
 	    {
-	      // If we read *something* before blocking, it's OK.
-	      // This lets the parser try to consume it.
 	      return total_read > 0 ? IO_OK : IO_WAIT;
 	    }
 	  msgf ("transport: read error FD %d: %s", conn->fd,

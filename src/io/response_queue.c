@@ -1,7 +1,6 @@
 #include <stdint.h>
 
 #include "io/response_queue.h"
-#include "common/common.h"
 #include "io/protocol_handler.h"
 #include "io/zero_copy.h"
 #include "io/connection.h"
@@ -50,34 +49,36 @@ response_queue_process_input (Cache *cache, Conn *conn, uint64_t now_us)
   return true;
 }
 
-HOT bool
+HOT QueueStatus
 response_queue_process_buffered_data (Cache *cache, Conn *conn,
 				      uint64_t now_us)
 {
   size_t prev_read_offset = conn->read_offset;
+
   // THE DATA PUMP: Process requests and send responses
   while (true)
     {
       if (unlikely (conn->state == STATE_CLOSE))
-	break;
+	return QUEUE_ERROR;
 
+      // Returns true if we ran out of data or hit a partial command
       bool input_consumed =
 	response_queue_process_input (cache, conn, now_us);
 
       if (conn->state == STATE_CLOSE)
-	break;
+	return QUEUE_ERROR;
 
-      // Try to flush responses
       if (conn->pipeline_depth > 0)
 	{
 	  IOStatus write_status = response_queue_flush (conn);
 
 	  if (unlikely (write_status == IO_ERROR))
-	    break;
+	    return QUEUE_ERROR;
 
 	  if (write_status == IO_WAIT)
 	    {
-	      break;
+	      // Socket is full. We are definitively stalled.
+	      return QUEUE_STALLED;
 	    }
 
 	  // Check for "Soft Close" completion
@@ -85,14 +86,29 @@ response_queue_process_buffered_data (Cache *cache, Conn *conn,
 	      (conn->state == STATE_FLUSH_CLOSE && conn->pipeline_depth == 0))
 	    {
 	      conn->state = STATE_CLOSE;
-	      break;
+	      return QUEUE_DONE;
 	    }
 	}
 
-      if (input_consumed || conn_is_res_queue_full (conn))
-	break;
+      if (conn_is_res_queue_full (conn))
+	{
+	  return QUEUE_STALLED;
+	}
+
+      // We processed everything available in the buffer. Break to check progress.
+      if (input_consumed)
+	{
+	  break;
+	}
     }
-  return conn->read_offset != prev_read_offset;
+
+  // Did we move the read pointer at all during this call?
+  if (conn->read_offset != prev_read_offset)
+    {
+      return QUEUE_PROGRESSED;	// Success! Loop again immediately.
+    }
+
+  return QUEUE_DONE;		// No work done (waiting for more data).
 }
 
 HOT IOStatus
