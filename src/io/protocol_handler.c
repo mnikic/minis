@@ -134,7 +134,7 @@ execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
 	  return false;
 	}
       proto_req.arg_count = arg_count;
-      parse_result = parse_arguments (&proto_req);
+      parse_result = proto_parse_arguments (&proto_req);
     }
 
   // Parse failure is rare -> UNLIKELY

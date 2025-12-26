@@ -44,7 +44,7 @@ LLVMFuzzerTestOneInput (const uint8_t *data, size_t size)
 	.restore = &restore
       };
 
-      ParseResult parse_res = parse_arguments (&args);
+      ParseResult parse_res = proto_parse_arguments (&args);
       (void) parse_res;
       // Verification (The "Undo" Check)
       // Regardless of success/failure, restore must work.

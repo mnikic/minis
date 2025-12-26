@@ -45,7 +45,7 @@ validate_request_header (const uint8_t * req, uint32_t reqlen,
 			 uint32_t * out_arg_count);
 
 // Parse arguments from request buffer into cmd array (BINARY)
-HOT ParseResult parse_arguments (ProtoRequest * proto_request);
+HOT ParseResult proto_parse_arguments (ProtoRequest * proto_request);
 
 /**
  * @brief Scans a buffer to determine the total length of the next RESP message.

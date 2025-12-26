@@ -236,7 +236,7 @@ save_and_nullterm (RestoreState *state, uint8_t *location,
 }
 
 HOT ParseResult
-parse_arguments (ProtoRequest *proto_request)
+proto_parse_arguments (ProtoRequest *proto_request)
 {
   restore_state_init (proto_request->restore);
   size_t pos = 4;

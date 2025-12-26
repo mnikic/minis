@@ -16,65 +16,6 @@
 #include "cache/cache.h"
 
 HOT static void
-process_buffered_data (Cache *cache, Conn *conn, uint64_t now_us)
-{
-  // THE DATA PUMP: Process requests and send responses
-  while (true)
-    {
-      if (unlikely (conn->state == STATE_CLOSE))
-	return;
-
-      bool input_consumed =
-	response_queue_process_input (cache, conn, now_us);
-
-      if (conn->state == STATE_CLOSE)
-	return;
-
-      // Try to flush responses
-      if (conn->pipeline_depth > 0)
-	{
-	  IOStatus write_status = response_queue_flush (conn);
-
-	  if (unlikely (write_status == IO_ERROR))
-	    return;
-
-	  if (write_status == IO_WAIT)
-	    {
-	      // Socket full, enable WRITE and pause processing
-	      conn_set_events (conn,
-			       IO_EVENT_READ | IO_EVENT_WRITE | IO_EVENT_ERR);
-	      return;
-	    }
-
-	  // Check for "Soft Close" completion
-	  if (unlikely
-	      (conn->state == STATE_FLUSH_CLOSE && conn->pipeline_depth == 0))
-	    {
-	      conn->state = STATE_CLOSE;
-	      return;
-	    }
-	}
-
-      // Exit conditions
-      if (input_consumed)
-	break;
-      if (conn_is_res_queue_full (conn))
-	break;
-    }
-
-  // We still want to read, unless we are blocked on writing
-  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
-
-  if (conn_has_pending_write (conn) ||
-      (conn_has_unprocessed_data (conn) && conn_is_res_queue_full (conn)))
-    {
-      events |= IO_EVENT_WRITE;
-    }
-
-  conn_set_events (conn, events);
-}
-
-HOT static void
 handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
   DBG_LOGF ("FD %d: Handling IO_EVENT_READ event", conn->fd);
@@ -88,7 +29,7 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
       return;
     }
 
-  process_buffered_data (cache, conn, now_us);
+  response_queue_process_buffered_data (cache, conn, now_us);
 }
 
 HOT static void
@@ -120,7 +61,7 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
   // Jump directly to data pump if advanageous
   if (status == IO_OK && conn_has_unprocessed_data (conn))
     {
-      process_buffered_data (cache, conn, now_us);
+      response_queue_process_buffered_data (cache, conn, now_us);
       return;
     }
 
