@@ -18,18 +18,30 @@
 HOT static void
 handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
-  DBG_LOGF ("FD %d: Handling IO_EVENT_READ event", conn->fd);
-
-  // Read from socket
-  IOStatus status = transport_read_buffer (conn);
-
-  if (unlikely (status == IO_ERROR || status == IO_EOF))
+  while (true)
     {
-      conn->state = STATE_CLOSE;
-      return;
-    }
+      IOStatus read_status = transport_read_buffer (conn);
+      if (unlikely (read_status == IO_ERROR || read_status == IO_EOF))
+	{
+	  conn->state = STATE_CLOSE;
+	  break;
+	}
 
-  response_queue_process_buffered_data (cache, conn, now_us);
+      bool made_progress =
+	response_queue_process_buffered_data (cache, conn, now_us);
+      if (conn->state == STATE_CLOSE)
+	break;
+      if (!made_progress)
+	{
+	  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
+	  if (read_status == IO_OK
+	      || (read_status == IO_WAIT && conn_has_pending_write (conn)))
+	    events |= IO_EVENT_WRITE;
+
+	  conn_set_events (conn, events);
+	  break;
+	}
+    }
 }
 
 HOT static void

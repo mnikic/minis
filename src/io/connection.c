@@ -224,28 +224,5 @@ conn_reset (Conn *conn, int file_desc)
 bool
 conn_has_pending_write (const Conn *conn)
 {
-  uint32_t idx = conn->read_idx;
-  uint32_t count = conn->pipeline_depth;
-
-  while (count > 0)
-    {
-      const ResponseSlot *slot = &conn->res_slots[idx];
-
-      // Data waiting to be sent?
-      if (slot->total_len > 0 && slot->sent < slot->total_len)
-	{
-	  return true;
-	}
-
-      // Zero-Copy waiting for Kernel?
-      if (slot->is_zero_copy && slot->pending_ops > 0)
-	{
-	  return true;
-	}
-
-      idx = (idx + 1) % K_SLOT_COUNT;
-      count--;
-    }
-
-  return false;
+  return conn->pipeline_depth > 0;
 }

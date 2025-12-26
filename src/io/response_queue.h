@@ -9,7 +9,7 @@
 #include "cache/cache.h"
 #include "common/macros.h"
 
-HOT void
+HOT bool
 response_queue_process_buffered_data (Cache * cache, Conn * conn,
 				      uint64_t now_us);
 

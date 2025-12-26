@@ -22,17 +22,6 @@ typedef enum
  */
 HOT IOStatus transport_read_buffer (Conn * conn);
 
-/*
- * Sends data from the head slot to the socket.
- * Handles Vanilla Send vs ZeroCopy Send logic automatically.
- *
- * Returns: 
- * IO_OK:   Data sent (slot might be finished or partially sent).
- * IO_WAIT: Socket full, caller must listen for EPOLLOUT.
- * IO_ERROR: Fatal socket error.
- */
-HOT IOStatus transport_send_head_slot (Conn * conn);
-
 HOT IOStatus transport_write_batch (Conn * conn);
 
 #endif // TRANSPORT_H

@@ -10,7 +10,7 @@ NUM_KEYS = 100
 KEY_PREFIX = "benchkey_"
 VALUE_SIZE = 1024       # 1KB values
 ITERATIONS = 50000      # Total requests to simulate
-PIPELINE_DEPTH = 5     # How many MGETs to batch per network write
+PIPELINE_DEPTH = 100     # How many MGETs to batch per network write
 
 # --- Protocol Constants ---
 SER_NIL = 0
@@ -151,10 +151,11 @@ def benchmark_mget_pipeline(sock):
     for _ in range(batches):
         # A. Send Batch
         sock.sendall(batch_payload)
-        
+        i = 0;
         # B. Read Batch
         for _ in range(PIPELINE_DEPTH):
             read_full_response(sock)
+            i = i + 1
             # We skip parsing for pure throughput measurement
             # (Parsing in Python is slow and distorts the network benchmark)
 

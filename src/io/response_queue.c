@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "io/response_queue.h"
+#include "common/common.h"
 #include "io/protocol_handler.h"
 #include "io/zero_copy.h"
 #include "io/connection.h"
@@ -49,21 +50,22 @@ response_queue_process_input (Cache *cache, Conn *conn, uint64_t now_us)
   return true;
 }
 
-HOT void
+HOT bool
 response_queue_process_buffered_data (Cache *cache, Conn *conn,
 				      uint64_t now_us)
 {
+  size_t prev_read_offset = conn->read_offset;
   // THE DATA PUMP: Process requests and send responses
   while (true)
     {
       if (unlikely (conn->state == STATE_CLOSE))
-	return;
+	break;
 
       bool input_consumed =
 	response_queue_process_input (cache, conn, now_us);
 
       if (conn->state == STATE_CLOSE)
-	return;
+	break;
 
       // Try to flush responses
       if (conn->pipeline_depth > 0)
@@ -71,14 +73,11 @@ response_queue_process_buffered_data (Cache *cache, Conn *conn,
 	  IOStatus write_status = response_queue_flush (conn);
 
 	  if (unlikely (write_status == IO_ERROR))
-	    return;
+	    break;
 
 	  if (write_status == IO_WAIT)
 	    {
-	      // Socket full, enable WRITE and pause processing
-	      conn_set_events (conn,
-			       IO_EVENT_READ | IO_EVENT_WRITE | IO_EVENT_ERR);
-	      return;
+	      break;
 	    }
 
 	  // Check for "Soft Close" completion
@@ -86,27 +85,14 @@ response_queue_process_buffered_data (Cache *cache, Conn *conn,
 	      (conn->state == STATE_FLUSH_CLOSE && conn->pipeline_depth == 0))
 	    {
 	      conn->state = STATE_CLOSE;
-	      return;
+	      break;
 	    }
 	}
 
-      // Exit conditions
-      if (input_consumed)
-	break;
-      if (conn_is_res_queue_full (conn))
+      if (input_consumed || conn_is_res_queue_full (conn))
 	break;
     }
-
-  // We still want to read, unless we are blocked on writing
-  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
-
-  if (conn_has_pending_write (conn) ||
-      (conn_has_unprocessed_data (conn) && conn_is_res_queue_full (conn)))
-    {
-      events |= IO_EVENT_WRITE;
-    }
-
-  conn_set_events (conn, events);
+  return conn->read_offset != prev_read_offset;
 }
 
 HOT IOStatus
@@ -130,10 +116,7 @@ response_queue_flush (Conn *conn)
 	  continue;
 	}
 
-      // CALL THE NEW BATCHER
-      // This replaces the old 'transport_send_head_slot' loop
       IOStatus status = transport_write_batch (conn);
-
       if (unlikely (status == IO_ERROR))
 	{
 	  conn->state = STATE_CLOSE;
