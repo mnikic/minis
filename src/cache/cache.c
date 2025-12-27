@@ -95,8 +95,8 @@ entry_del_async (void *arg)
   entry_destroy ((Entry *) arg);
 }
 
-void 
-entry_set_expiration (Cache* cache, Entry* ent, uint64_t expire_at_us)
+void
+entry_set_expiration (Cache *cache, Entry *ent, uint64_t expire_at_us)
 {
   ent->expire_at_us = expire_at_us;
 
@@ -135,39 +135,41 @@ entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
     }
 }
 
-Entry* entry_new_zset (Cache* cache, const char *key) 
+Entry *
+entry_new_zset (Cache *cache, const char *key)
 {
-      Entry *ent = malloc (sizeof (Entry));
-      if (!ent)
-	die ("Out of memory");
-      memset (ent, 0, sizeof (Entry));
+  Entry *ent = malloc (sizeof (Entry));
+  if (!ent)
+    die ("Out of memory");
+  memset (ent, 0, sizeof (Entry));
 
-      ent->key = calloc (strlen (key) + 1, sizeof (char));
-      if (!ent->key)
-	{
-	  free (ent);
-	  die ("Out of memory");
-	}
-      strcpy (ent->key, key);
+  ent->key = calloc (strlen (key) + 1, sizeof (char));
+  if (!ent->key)
+    {
+      free (ent);
+      die ("Out of memory");
+    }
+  strcpy (ent->key, key);
 
-      ent->zset = malloc (sizeof (ZSet));
-      if (!ent->zset)
-	{
-	  free (ent->key);
-	  free (ent);
-	  die ("Couldn't allocate zset");
-	}
-      memset (ent->zset, 0, sizeof (ZSet));
+  ent->zset = malloc (sizeof (ZSet));
+  if (!ent->zset)
+    {
+      free (ent->key);
+      free (ent);
+      die ("Couldn't allocate zset");
+    }
+  memset (ent->zset, 0, sizeof (ZSet));
 
-      ent->node.hcode = str_hash ((const uint8_t *) key, strlen (key));
-      ent->type = T_ZSET;
-      ent->heap_idx = (size_t) -1;
-      ent->expire_at_us = 0;
-      hm_insert (&cache->db, &ent->node, &entry_eq);
-      return ent;
+  ent->node.hcode = str_hash ((const uint8_t *) key, strlen (key));
+  ent->type = T_ZSET;
+  ent->heap_idx = (size_t) -1;
+  ent->expire_at_us = 0;
+  hm_insert (&cache->db, &ent->node, &entry_eq);
+  return ent;
 }
 
-Entry* entry_new_str (Cache* cache, const char *key, const char *val)
+Entry *
+entry_new_str (Cache *cache, const char *key, const char *val)
 {
   Entry *ent = malloc (sizeof (Entry));
   if (!ent)
@@ -624,8 +626,8 @@ entry_set (Cache *cache, const char *key, const char *val)
       if (ent->type != T_STR)
 	{
 	  entry_dispose_atomic (cache, ent);
-          entry_new_str (cache, key, val);
-	  return; 
+	  entry_new_str (cache, key, val);
+	  return;
 	}
       if (ent->val)
 	{
@@ -635,8 +637,9 @@ entry_set (Cache *cache, const char *key, const char *val)
       if (!ent->val)
 	die ("Out of memory");
       strcpy (ent->val, val);
-    } else
-      entry_new_str (cache, key, val);
+    }
+  else
+    entry_new_str (cache, key, val);
 }
 
 static bool

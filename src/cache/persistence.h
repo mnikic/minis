@@ -9,13 +9,16 @@
 #define  PERSISTENCE_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "cache/cache.h"
 
 // Save the entire cache to a file (Atomic RDB style)
-bool cache_save_to_file(Cache *cache, const char *filename);
+bool cache_save_to_file (Cache * cache, const char *filename,
+			 uint64_t now_us);
 
 // Load the cache from a file (clears existing data if needed)
-bool cache_load_from_file(Cache *cache, const char *filename);
+bool cache_load_from_file (Cache * cache, const char *filename,
+			   uint64_t now_us);
 
-#endif // PERSISTENCE_H_ 
+#endif // PERSISTENCE_H_

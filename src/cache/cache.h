@@ -55,10 +55,9 @@ bool cache_execute (Cache * cache, const char **cmd, size_t size,
 void cache_free (Cache * cache);
 
 void
-entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms);
-Entry* entry_new_str (Cache* cache, const char *key, const char *val);
-Entry* entry_new_zset (Cache* cache, const char *key);
+entry_set_ttl (Cache * cache, uint64_t now_us, Entry * ent, int64_t ttl_ms);
+Entry *entry_new_str (Cache * cache, const char *key, const char *val);
+Entry *entry_new_zset (Cache * cache, const char *key);
 
-void 
-entry_set_expiration (Cache* cache, Entry* ent, uint64_t expire_at_us);
+void entry_set_expiration (Cache * cache, Entry * ent, uint64_t expire_at_us);
 #endif /* CACHE_H */

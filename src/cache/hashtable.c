@@ -434,14 +434,15 @@ hm_iter_init (const HMap *hmap, HMIter *iter)
 {
   iter->map = hmap;
   iter->pos = 0;
-  iter->table_idx = 0; // Start with ht1
+  iter->table_idx = 0;		// Start with ht1
 }
 
 HNode *
 hm_iter_next (HMIter *iter)
 {
   const HMap *hmap = iter->map;
-  if (!hmap) return NULL;
+  if (!hmap)
+    return NULL;
 
   while (iter->table_idx <= 1)
     {
@@ -450,30 +451,30 @@ hm_iter_next (HMIter *iter)
 
       // If table is empty or unallocated, move to next table
       if (tab->tab == NULL || tab->size == 0)
-        {
-          iter->table_idx++;
-          iter->pos = 0;
-          continue;
-        }
+	{
+	  iter->table_idx++;
+	  iter->pos = 0;
+	  continue;
+	}
 
       // Scan current table
       while (iter->pos <= tab->mask)
-        {
-          HNode *node = tab->tab[iter->pos].node;
-          iter->pos++; // Advance for next call
+	{
+	  HNode *node = tab->tab[iter->pos].node;
+	  iter->pos++;		// Advance for next call
 
-          if (node)
-            {
-              return node; // Found one!
-            }
-        }
+	  if (node)
+	    {
+	      return node;	// Found one!
+	    }
+	}
 
       // End of this table, switch to next
       iter->table_idx++;
       iter->pos = 0;
     }
 
-  return NULL; // Done
+  return NULL;			// Done
 }
 
 size_t

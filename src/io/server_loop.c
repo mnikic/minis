@@ -114,12 +114,12 @@ rdb_save_background (Cache *cache, uint64_t now_us)
 
   if (child_pid == 0)
     {
-      bool status = cache_save_to_file (cache, MINIS_DB_FILE);
+      bool status = cache_save_to_file (cache, MINIS_DB_FILE, now_us);
       _exit (status ? 0 : 1);
     }
   else
     {
-      // --- PARENT PROCESS ---
+      // PARENT PROCESS
       g_data.snapshot_child_pid = child_pid;
       msgf ("Background saving started by pid %d", child_pid);
     }
@@ -521,11 +521,11 @@ next_timer_ms (Cache *cache, uint64_t now_us)
 }
 
 static Cache *
-init_cache (void)
+init_cache (uint64_t now_us)
 {
   Cache *cache = cache_init ();
 
-  if (cache_load_from_file (cache, MINIS_DB_FILE))
+  if (cache_load_from_file (cache, MINIS_DB_FILE, now_us))
     {
       msgf ("[Minis] DB loaded from %s.", MINIS_DB_FILE);
     }
@@ -566,7 +566,7 @@ server_run (int port)
   setup_signal_handlers ();
 
   dlist_init (&g_data.idle_list);
-  Cache *cache = init_cache ();
+  Cache *cache = init_cache (get_monotonic_usec ());
 
   if (!initialize_server_core (port, &listen_fd, &epfd) != 0)
     return -1;

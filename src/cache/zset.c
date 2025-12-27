@@ -38,6 +38,24 @@ zset_init (ZSet *zset)
   hm_init (&zset->hmap);
 }
 
+static ZNode *
+load_znode_from_hnode (HNode *node)
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  return container_of (node, ZNode, hmap);
+#pragma GCC diagnostic pop
+}
+
+static ZNode *
+load_znode_from_tree (AVLNode *tree)
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  return container_of (tree, ZNode, tree);
+#pragma GCC diagnostic pop
+}
+
 static int
 hcmp (HNode *node, HNode *key)
 {
@@ -85,10 +103,7 @@ min (size_t lhs, size_t rhs)
 static bool
 zless1 (AVLNode *lhs, double score, const char *name, size_t len)
 {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  ZNode *z_node = container_of (lhs, ZNode, tree);
-#pragma GCC diagnostic pop
+  ZNode *z_node = load_znode_from_tree (lhs);
   if (fabs (z_node->score - score) > EPSILON)	// Not equal within epsilon
     {
       return z_node->score < score;
@@ -105,10 +120,7 @@ zless1 (AVLNode *lhs, double score, const char *name, size_t len)
 static bool
 zless (AVLNode *lhs, AVLNode *rhs)
 {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  ZNode *zrght = container_of (rhs, ZNode, tree);
-#pragma GCC diagnostic pop
+  ZNode *zrght = load_znode_from_tree (rhs);
   return zless1 (lhs, zrght->score, zrght->name, zrght->len);
 }
 
@@ -196,10 +208,7 @@ zset_lookup (ZSet *zset, const char *name, size_t len)
     {
       return NULL;
     }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  return container_of (found, ZNode, hmap);
-#pragma GCC diagnostic pop
+  return load_znode_from_hnode (found);
 }
 
 // deletion by name
@@ -220,12 +229,7 @@ zset_pop (ZSet *zset, const char *name, size_t len)
     {
       return NULL;
     }
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  ZNode *node = container_of (found, ZNode, hmap);
-#pragma GCC diagnostic pop
-
+  ZNode *node = load_znode_from_hnode (found);
   zset->tree = avl_del (&node->tree);
   return node;
 }
@@ -253,10 +257,7 @@ zset_query (ZSet *zset, double score, const char *name, size_t len)
 	  cur = cur->left;
 	}
     }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  return found ? container_of (found, ZNode, tree) : NULL;
-#pragma GCC diagnostic pop
+  return found ? load_znode_from_tree (found) : NULL;
 }
 
 // offset into the succeeding or preceding node.
@@ -264,10 +265,7 @@ ZNode *
 znode_offset (ZNode *node, int64_t offset)
 {
   AVLNode *tnode = node ? avl_offset (&node->tree, offset) : NULL;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  return tnode ? container_of (tnode, ZNode, tree) : NULL;
-#pragma GCC diagnostic pop
+  return tnode ? load_znode_from_tree (tnode) : NULL;
 }
 
 void
@@ -321,10 +319,7 @@ tree_dispose_iterative (AVLNode *root)
 	}
 
       // Now delete the node
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      znode_del (container_of (cur, ZNode, tree));
-#pragma GCC diagnostic pop
+      znode_del (load_znode_from_tree (cur));
     }
 
   free (stack);
