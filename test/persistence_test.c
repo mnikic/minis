@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,7 +34,7 @@ find_entry(Cache *cache, const char *key)
 
 int main(void) {
     const char *FILENAME = "test_dump.rdb";
-    
+    uint64_t now_us = 1;
     printf("=== 1. Initialization ===\n");
     // Ensure clean state
     remove(FILENAME);
@@ -60,7 +61,7 @@ int main(void) {
     ent3->expire_at_us = 123456789; // Arbitrary future timestamp
 
     printf("=== 3. Saving to Disk ===\n");
-    if (!cache_save_to_file(cache1, FILENAME)) {
+    if (!cache_save_to_file(cache1, FILENAME, now_us)) {
         msgf ("Save failed!\n");
         exit(1);
     }
@@ -70,7 +71,7 @@ int main(void) {
 
     printf("=== 4. Loading from Disk (New Cache) ===\n");
     Cache *cache2 = cache_init();
-    if (!cache_load_from_file(cache2, FILENAME)) {
+    if (!cache_load_from_file(cache2, FILENAME, now_us)) {
         msg("Load failed!\n");
         exit(1);
     }
@@ -151,7 +152,7 @@ int main(void) {
 
     printf("   -> File tampered. Attempting load...\n");
     Cache *cache_bad = cache_init();
-    if (cache_load_from_file(cache_bad, FILENAME)) {
+    if (cache_load_from_file(cache_bad, FILENAME, now_us)) {
         msg("   [FAIL] Loader accepted corrupted file!\n");
         exit(1);
     } else {
