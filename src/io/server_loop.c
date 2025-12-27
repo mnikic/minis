@@ -6,6 +6,7 @@
  * Description      : Server loop, connection handling.
  *============================================================================
  */
+#include <sys/wait.h>
 #include <arpa/inet.h>
 #include <error.h>
 #include <errno.h>
@@ -33,7 +34,6 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <linux/rds.h>
 
@@ -46,6 +46,7 @@
 #include <signal.h>
 
 #include "cache/cache.h"
+#include "cache/persistence.h"
 #include "io/connection_handler.h"
 #include "io/conn_pool.h"
 #include "io/server_loop.h"
@@ -62,6 +63,8 @@ static struct
   ConnPool *fd2conn;
   DList idle_list;
   int epfd;
+  uint64_t last_snapshot_time;
+  pid_t snapshot_child_pid;
   volatile sig_atomic_t terminate_flag;
 } g_data;
 
@@ -91,6 +94,65 @@ setup_signal_handlers (void)
   sigaction (SIGINT, &sig_action, NULL);
   sigaction (SIGTERM, &sig_action, NULL);
   sigaction (SIGQUIT, &sig_action, NULL);
+}
+
+static void
+rdb_save_background (Cache *cache, uint64_t now_us)
+{
+  if (g_data.snapshot_child_pid != 0)
+    return;			// Already saving
+
+  g_data.last_snapshot_time = now_us;
+
+  pid_t child_pid = fork ();
+
+  if (child_pid == -1)
+    {
+      msgf ("Error: fork() failed: %s", strerror (errno));
+      return;
+    }
+
+  if (child_pid == 0)
+    {
+      bool status = cache_save_to_file (cache, MINIS_DB_FILE);
+      _exit (status ? 0 : 1);
+    }
+  else
+    {
+      // --- PARENT PROCESS ---
+      g_data.snapshot_child_pid = child_pid;
+      msgf ("Background saving started by pid %d", child_pid);
+    }
+}
+
+static void
+check_snapshot_child_status (void)
+{
+  if (g_data.snapshot_child_pid == 0)
+    return;
+
+  int status;
+  // WNOHANG is crucial: it checks status but doesn't block if child is still running
+  pid_t res = waitpid (g_data.snapshot_child_pid, &status, WNOHANG);
+
+  if (res == g_data.snapshot_child_pid)
+    {
+      // Child finished
+      if (WIFEXITED (status) && WEXITSTATUS (status) == 0)
+	{
+	  msgf ("Background saving terminated with success");
+	}
+      else
+	{
+	  msgf ("Background saving error");
+	}
+      g_data.snapshot_child_pid = 0;
+    }
+  else if (res == -1)
+    {
+      msgf ("waitpid error: %s", strerror (errno));
+      g_data.snapshot_child_pid = 0;
+    }
 }
 
 static ALWAYS_INLINE void
@@ -412,7 +474,8 @@ initialize_server_core (int port, int *listen_fd, int *epfd)
       connpool_free (g_data.fd2conn);
       die ("epoll ctl: listen_sock!");
     }
-
+  // No need to make a snapshot immidiatelly afer we start!
+  g_data.last_snapshot_time = get_monotonic_usec ();
   return true;
 }
 
@@ -433,6 +496,16 @@ next_timer_ms (Cache *cache, uint64_t now_us)
   uint64_t from_cache = cache_next_expiry (cache);
   if (from_cache != (uint64_t) - 1 && from_cache < next_us)
     next_us = from_cache;
+  // 3. NEW: Check Snapshot Schedule
+  // Only schedule if interval is set and no child is currently running
+  if (SNAPSHOT_INTERVAL_US > 0 && g_data.snapshot_child_pid == 0)
+    {
+      uint64_t next_snap = g_data.last_snapshot_time + SNAPSHOT_INTERVAL_US;
+      if (next_snap < next_us)
+	{
+	  next_us = next_snap;
+	}
+    }
 
   if (next_us == (uint64_t) - 1)
     return 10000;
@@ -447,6 +520,41 @@ next_timer_ms (Cache *cache, uint64_t now_us)
   return final_timeout;
 }
 
+static Cache *
+init_cache (void)
+{
+  Cache *cache = cache_init ();
+
+  if (cache_load_from_file (cache, MINIS_DB_FILE))
+    {
+      msgf ("[Minis] DB loaded from %s.", MINIS_DB_FILE);
+    }
+  else
+    {
+      if (errno != ENOENT)
+	{
+	  msgf ("[Minis] Warning: Failed to load %s (Starting empty).",
+		MINIS_DB_FILE);
+	}
+      else
+	{
+	  msgf ("[Minis] No existing DB found. Starting fresh.",
+		MINIS_DB_FILE);
+	}
+    }
+  return cache;
+}
+
+static void
+process_snapshots (Cache *cache, uint64_t now_us)
+{
+  check_snapshot_child_status ();
+  if (SNAPSHOT_INTERVAL_US > 0 &&
+      g_data.snapshot_child_pid == 0 &&
+      now_us >= g_data.last_snapshot_time + SNAPSHOT_INTERVAL_US)
+    rdb_save_background (cache, now_us);
+}
+
 int
 server_run (int port)
 {
@@ -458,7 +566,7 @@ server_run (int port)
   setup_signal_handlers ();
 
   dlist_init (&g_data.idle_list);
-  Cache *cache = cache_init ();
+  Cache *cache = init_cache ();
 
   if (!initialize_server_core (port, &listen_fd, &epfd) != 0)
     return -1;
@@ -468,7 +576,6 @@ server_run (int port)
       uint64_t now_us = get_monotonic_usec ();
       int timeout_ms = (int) next_timer_ms (cache, now_us);
       DBG_LOGF ("Epoll wait for %dms...", timeout_ms);
-
       int enfd_count = epoll_wait (epfd, events, MAX_EVENTS, timeout_ms);
       // We might have slept for quite a while!
       now_us = get_monotonic_usec ();
@@ -487,6 +594,7 @@ server_run (int port)
       if (enfd_count > 0)
 	process_active_events (cache, events, enfd_count, listen_fd, now_us);
 
+      process_snapshots (cache, now_us);
       process_timers (cache, now_us);
     }
 

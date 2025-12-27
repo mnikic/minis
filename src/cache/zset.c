@@ -165,19 +165,17 @@ zset_add (ZSet *zset, const char *name, size_t len, double score)
   if (node)
     {
       zset_update (zset, node, score);
-      return 0;			// updated
+      return 0;
     }
 
   node = znode_new (name, len, score);
   if (!node)
     {
-      return -1;		// allocation failed
+      return -1;
     }
-//  hm_insert (&zset->hmap, &node->hmap, &hcmp);
   hm_insert (&zset->hmap, &node->hmap, &hcmp);
   tree_add (zset, node);
-  return 1;			// added new
-
+  return 1;
 }
 
 // lookup by name

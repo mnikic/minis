@@ -36,6 +36,18 @@ typedef struct
   size_t resizing_pos;		// Position in ht2 for progressive migration
 } HMap;
 
+typedef struct {
+    const HMap *map;         // The map we are iterating
+    size_t pos;        // Current index in the current table
+    int table_idx;     // 0 = ht1, 1 = ht2
+} HMIter;
+
+// Initialize iterator
+void hm_iter_init(const HMap *hmap, HMIter *iter);
+
+// Get next node, or NULL if finished
+HNode *hm_iter_next(HMIter *iter);
+
 // Callback for comparing nodes (return non-zero if equal)
 typedef int (*hnode_cmp_fn) (HNode *, HNode *);
 

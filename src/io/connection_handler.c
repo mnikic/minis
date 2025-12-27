@@ -41,7 +41,8 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
 	   && read_status == IO_BUF_FULL))
 	{
 	  msgf
-	    ("Client %d sent request larger than buffer size even after compacting.", conn->fd);
+	    ("Client %d sent request larger than buffer size even after compacting.",
+	     conn->fd);
 	  conn->state = STATE_CLOSE;
 	  return;
 	}
@@ -94,7 +95,6 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
 static void
 handle_err_event (Cache *cache, Conn *conn, uint64_t now_us)
 {
-  die ("We are in err");
   DBG_LOGF ("FD %d: Handling IO_EVENT_ERR event", conn->fd);
 
   bool progress = false;

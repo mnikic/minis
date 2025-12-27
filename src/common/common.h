@@ -31,6 +31,10 @@
 
 #define DEFAULT_PORT 1234
 
+#define MINIS_DB_FILE      "dump.mdb"
+#define MINIS_DB_MAGIC     "M1NI"
+#define MINIS_DB_VERSION   1
+
 // Defaults & Limits
 #ifdef MINIS_ANDROID
     // ANDROID / TERMUX PROFILE
@@ -52,6 +56,7 @@
 #define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
 
 #define MAX_CONNECTIONS 20000
+#define SNAPSHOT_INTERVAL_US (60 * 1000000ULL)
 
 // Android/Bionic often misses these flags despite Kernel support (4.14+).
 // We manually define them to the stable Linux ABI values.

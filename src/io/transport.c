@@ -26,7 +26,7 @@ transport_read_buffer (Conn *conn)
 	conn_compact_rbuf (conn);
       cap = K_RBUF_SIZE - conn->rbuf_size;
       if (cap == 0)
-	  return IO_BUF_FULL;
+	return IO_BUF_FULL;
 
       ssize_t num;
       do

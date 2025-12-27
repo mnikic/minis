@@ -73,6 +73,13 @@ TEST_CACHE_SRCS := test/cache_test.c \
                    src/io/buffer.c src/io/out.c \
                    src/common/common.c src/common/glob.c
 
+TEST_PERSIST_SRCS := test/persistence_test.c \
+                     src/cache/persistence.c src/cache/cache.c src/cache/hashtable.c \
+                     src/cache/zset.c src/cache/heap.c src/cache/avl.c \
+                     src/cache/thread_pool.c src/cache/deque.c \
+                     src/io/buffer.c src/io/out.c \
+                     src/common/common.c src/common/glob.c
+
 # ============================================================================
 #  TARGET CONFIGURATION (Magic Happens Here)
 # ============================================================================
@@ -128,6 +135,7 @@ TARGET_CLI   = $(BIN_DIR)/minis-cli
 TARGET_BENCH = $(BIN_DIR)/minis-bench
 TARGET_TEST_HEAP  = $(BIN_DIR)/heap_test
 TARGET_TEST_CACHE = $(BIN_DIR)/cache_test
+TARGET_TEST_PERSIST = $(BIN_DIR)/persistence_test
 
 # --- Object Generators ---
 MINIS_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(MINIS_SRCS))
@@ -135,6 +143,7 @@ CLI_OBJS   = $(patsubst %.c, $(OBJ_DIR)/%.o, $(CLI_SRCS))
 BENCH_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(BENCH_SRCS))
 TEST_HEAP_OBJS  = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_HEAP_SRCS))
 TEST_CACHE_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_CACHE_SRCS))
+TEST_PERSIST_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_PERSIST_SRCS))
 
 # ============================================================================
 #  RULES
@@ -185,6 +194,11 @@ $(TARGET_TEST_CACHE): $(TEST_CACHE_OBJS)
 	@echo "  LD      $@"
 	@$(CC) $(TEST_CACHE_OBJS) -o $@ $(LDFLAGS) -lm
 
+$(TARGET_TEST_PERSIST): $(TEST_PERSIST_OBJS)
+	@mkdir -p $(dir $@)
+	@echo "  LD      $@"
+	@$(CC) $(TEST_PERSIST_OBJS) -o $@ $(LDFLAGS) -lm
+
 # --- Compilation Rule ---
 $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -205,11 +219,17 @@ cache-test: $(TARGET_TEST_CACHE)
 	@echo "--- Running Cache Unit Test ($(PROFILE)) ---"
 	@./$(TARGET_TEST_CACHE)
 
+# Unit Tests (Persistence)
+persist-test: $(TARGET_TEST_PERSIST)
+	@echo "--- Running Persistence Test ($(PROFILE)) ---"
+	@./$(TARGET_TEST_PERSIST)
+
 # Integration Tests (Python E2E)
 # Pass full path to CLIENT_BIN_PATH so python knows exactly which binary to use
 test: $(TARGET_BENCH) $(TARGET_TEST_HEAP) $(TARGET_TEST_CACHE)
 	@$(MAKE) heap-test
 	@$(MAKE) cache-test
+	@$(MAKE) persist-test
 	@echo "--- Running E2E Tests ($(PROFILE)) ---"
 	@CLIENT_BIN_PATH=$(TARGET_BENCH) python3 test/test_cmds_extra.py
 

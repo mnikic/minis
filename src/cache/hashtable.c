@@ -427,6 +427,55 @@ hm_scan (HMap *hmap, void (*func) (HNode *, void *), void *arg)
   h_scan (&hmap->ht2, func, arg);
 }
 
+// cache/hashtable.c
+
+void
+hm_iter_init (const HMap *hmap, HMIter *iter)
+{
+  iter->map = hmap;
+  iter->pos = 0;
+  iter->table_idx = 0; // Start with ht1
+}
+
+HNode *
+hm_iter_next (HMIter *iter)
+{
+  const HMap *hmap = iter->map;
+  if (!hmap) return NULL;
+
+  while (iter->table_idx <= 1)
+    {
+      // Select current table (ht1 or ht2)
+      const HTab *tab = (iter->table_idx == 0) ? &hmap->ht1 : &hmap->ht2;
+
+      // If table is empty or unallocated, move to next table
+      if (tab->tab == NULL || tab->size == 0)
+        {
+          iter->table_idx++;
+          iter->pos = 0;
+          continue;
+        }
+
+      // Scan current table
+      while (iter->pos <= tab->mask)
+        {
+          HNode *node = tab->tab[iter->pos].node;
+          iter->pos++; // Advance for next call
+
+          if (node)
+            {
+              return node; // Found one!
+            }
+        }
+
+      // End of this table, switch to next
+      iter->table_idx++;
+      iter->pos = 0;
+    }
+
+  return NULL; // Done
+}
+
 size_t
 hm_size (HMap *hmap)
 {

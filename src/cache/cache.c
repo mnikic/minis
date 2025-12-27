@@ -21,24 +21,6 @@
 #include "common/glob.h"
 #include "common/macros.h"
 
-// the structure for the key
-typedef struct entry
-{
-  HNode node;
-  char *key;
-  char *val;
-  uint32_t type;
-  uint64_t expire_at_us;
-  ZSet *zset;
-  // for TTLs
-  size_t heap_idx;		// Index in the TTL heap. (size_t)-1 means not in heap.
-} Entry;
-
-enum
-{
-  T_STR = 0, T_ZSET = 1,
-};
-
 static int
 hnode_same (HNode *lhs, HNode *rhs)
 {
@@ -94,6 +76,8 @@ entry_destroy (Entry *ent)
       zset_dispose (ent->zset);
       free (ent->zset);
       break;
+    case T_STR:
+      // fallsthrough
     default:
       break;
     }
@@ -111,8 +95,30 @@ entry_del_async (void *arg)
   entry_destroy ((Entry *) arg);
 }
 
+void 
+entry_set_expiration (Cache* cache, Entry* ent, uint64_t expire_at_us)
+{
+  ent->expire_at_us = expire_at_us;
+
+  size_t pos = ent->heap_idx;
+  if (pos == (size_t) -1)
+    {
+      // add an new item to the heap
+      HeapItem item;
+      item.ref = &ent->heap_idx;
+      item.val = expire_at_us;
+      heap_add (&cache->heap, &item);
+    }
+  else
+    {
+      // Update existing item in the heap
+      heap_get (&cache->heap, pos)->val = expire_at_us;
+      heap_update (&cache->heap, pos);
+    }
+}
+
 // set or remove the TTL
-static void
+void
 entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
 {
   if (ttl_ms < 0 && ent->heap_idx != (size_t) -1)
@@ -125,24 +131,71 @@ entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
   else if (ttl_ms >= 0)
     {
       uint64_t new_expire_at_us = now_us + (uint64_t) (ttl_ms * 1000);
-      ent->expire_at_us = new_expire_at_us;
-
-      size_t pos = ent->heap_idx;
-      if (pos == (size_t) -1)
-	{
-	  // add an new item to the heap
-	  HeapItem item;
-	  item.ref = &ent->heap_idx;
-	  item.val = new_expire_at_us;
-	  heap_add (&cache->heap, &item);
-	}
-      else
-	{
-	  // Update existing item in the heap
-	  heap_get (&cache->heap, pos)->val = new_expire_at_us;
-	  heap_update (&cache->heap, pos);
-	}
+      entry_set_expiration (cache, ent, new_expire_at_us);
     }
+}
+
+Entry* entry_new_zset (Cache* cache, const char *key) 
+{
+      Entry *ent = malloc (sizeof (Entry));
+      if (!ent)
+	die ("Out of memory");
+      memset (ent, 0, sizeof (Entry));
+
+      ent->key = calloc (strlen (key) + 1, sizeof (char));
+      if (!ent->key)
+	{
+	  free (ent);
+	  die ("Out of memory");
+	}
+      strcpy (ent->key, key);
+
+      ent->zset = malloc (sizeof (ZSet));
+      if (!ent->zset)
+	{
+	  free (ent->key);
+	  free (ent);
+	  die ("Couldn't allocate zset");
+	}
+      memset (ent->zset, 0, sizeof (ZSet));
+
+      ent->node.hcode = str_hash ((const uint8_t *) key, strlen (key));
+      ent->type = T_ZSET;
+      ent->heap_idx = (size_t) -1;
+      ent->expire_at_us = 0;
+      hm_insert (&cache->db, &ent->node, &entry_eq);
+      return ent;
+}
+
+Entry* entry_new_str (Cache* cache, const char *key, const char *val)
+{
+  Entry *ent = malloc (sizeof (Entry));
+  if (!ent)
+    die ("Out of memory in do_set");
+
+  ent->key = calloc (strlen (key) + 1, sizeof (char));
+  if (!ent->key)
+    {
+      free (ent);
+      die ("Out of memory");
+    }
+  strcpy (ent->key, key);
+
+  ent->val = calloc (strlen (val) + 1, sizeof (char));
+  if (!ent->val)
+    {
+      free (ent->key);
+      free (ent);
+      die ("Out of memory");
+    }
+  strcpy (ent->val, val);
+
+  ent->node.hcode = str_hash ((const uint8_t *) key, strlen (key));
+  ent->heap_idx = (size_t) -1;
+  ent->expire_at_us = 0;
+  ent->type = T_STR;
+  hm_insert (&cache->db, &ent->node, &entry_eq);
+  return ent;
 }
 
 static bool
@@ -199,6 +252,8 @@ entry_del (Cache *cache, Entry *ent, uint64_t now_us)
     case T_ZSET:
       too_big = hm_size (&ent->zset->hmap) > k_large_container_size;
       break;
+    case T_STR:
+      // fallsthrough
     default:
       break;
     }
@@ -242,7 +297,7 @@ fetch_entry_from_heap_ref (size_t *ref)
   return ent;
 }
 
-static bool
+static ALWAYS_INLINE bool
 cmd_is (const char *word, const char *cmd)
 {
   return 0 == strcasecmp (word, cmd);
@@ -363,33 +418,7 @@ do_zadd (Cache *cache, const char **cmd, Buffer *out)
   Entry *ent = NULL;
   if (!hnode)
     {
-      ent = malloc (sizeof (Entry));
-      if (!ent)
-	die ("Out of memory");
-      memset (ent, 0, sizeof (Entry));
-
-      ent->key = calloc (strlen (cmd[1]) + 1, sizeof (char));
-      if (!ent->key)
-	{
-	  free (ent);
-	  die ("Out of memory");
-	}
-      strcpy (ent->key, cmd[1]);
-
-      ent->zset = malloc (sizeof (ZSet));
-      if (!ent->zset)
-	{
-	  free (ent->key);
-	  free (ent);
-	  die ("Couldn't allocate zset");
-	}
-      memset (ent->zset, 0, sizeof (ZSet));
-
-      ent->node.hcode = str_hash ((const uint8_t *) cmd[1], strlen (cmd[1]));
-      ent->type = T_ZSET;
-      ent->heap_idx = (size_t) -1;
-      ent->expire_at_us = 0;
-      hm_insert (&cache->db, &ent->node, &entry_eq);
+      ent = entry_new_zset (cache, cmd[1]);
     }
   else
     {
@@ -595,7 +624,8 @@ entry_set (Cache *cache, const char *key, const char *val)
       if (ent->type != T_STR)
 	{
 	  entry_dispose_atomic (cache, ent);
-	  goto INSERT_NEW;
+          entry_new_str (cache, key, val);
+	  return; 
 	}
       if (ent->val)
 	{
@@ -605,36 +635,8 @@ entry_set (Cache *cache, const char *key, const char *val)
       if (!ent->val)
 	die ("Out of memory");
       strcpy (ent->val, val);
-      return;
-    }
-  Entry *ent;
-INSERT_NEW:
-  ent = malloc (sizeof (Entry));
-  if (!ent)
-    die ("Out of memory in do_set");
-
-  ent->key = calloc (strlen (key) + 1, sizeof (char));
-  if (!ent->key)
-    {
-      free (ent);
-      die ("Out of memory");
-    }
-  strcpy (ent->key, key);
-
-  ent->val = calloc (strlen (val) + 1, sizeof (char));
-  if (!ent->val)
-    {
-      free (ent->key);
-      free (ent);
-      die ("Out of memory");
-    }
-  strcpy (ent->val, val);
-
-  ent->node.hcode = str_hash ((const uint8_t *) key, strlen (key));
-  ent->heap_idx = (size_t) -1;
-  ent->expire_at_us = 0;
-  ent->type = T_STR;
-  hm_insert (&cache->db, &ent->node, &entry_eq);
+    } else
+      entry_new_str (cache, key, val);
 }
 
 static bool
