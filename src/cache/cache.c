@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -586,7 +587,7 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
     }
 
   // Write Header: The array size is count * 2 (Name + Score)
-  if (!out_arr (out, (size_t)(actual_count * (size_t) 2)))
+  if (!out_arr (out, (size_t) (actual_count * (size_t) 2)))
     return false;
 
   // Write Data
@@ -728,6 +729,68 @@ entry_set (Cache *cache, const char *key, const char *val)
       return true;
     }
   return entry_new_str (cache, key, val) != NULL;
+}
+
+static bool
+do_incr (Cache *cache, const char *key, int64_t delta, Buffer *out,
+	 uint64_t now_us)
+{
+  HNode *node = hm_lookup_by_key (&cache->db, key);
+  int64_t val = 0;
+
+  if (node)
+    {
+      Entry *ent = fetch_entry (node);
+      if (ent->expire_at_us != 0 && ent->expire_at_us < now_us)
+	{
+	  entry_dispose_atomic (cache, ent);
+	  node = NULL;
+	}
+      else
+	{
+	  if (ent->type != T_STR)
+	    {
+	      return out_err (out, ERR_TYPE,
+			      "value is not an integer or out of range");
+	    }
+
+	  char *endptr = NULL;
+	  val = strtoll (ent->val, &endptr, 10);
+
+	  if (ent->val[0] == '\0' || *endptr != '\0')
+	    {
+	      return out_err (out, ERR_ARG,
+			      "value is not an integer or out of range");
+	    }
+	}
+    }
+
+  // If node was NULL (or expired), val is 0. 
+  // We effectively do: 0 + delta.
+
+  // Overflow Check
+  if ((delta > 0 && val > INT64_MAX - delta) ||
+      (delta < 0 && val < INT64_MIN - delta))
+    {
+      return out_err (out, ERR_ARG, "increment or decrement would overflow");
+    }
+
+  val += delta;
+
+  // Store Back as String
+  char val_str[32];
+  snprintf (val_str, sizeof (val_str), "%" PRId64, val);
+
+  if (entry_set (cache, key, val_str))
+    {
+      cache->dirty_count++;
+    }
+  else
+    {
+      return out_err (out, ERR_UNKNOWN, "OOM updating integer");
+    }
+
+  return out_int (out, val);
 }
 
 static bool
@@ -934,6 +997,28 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
   if (size == 6 && cmd_is (cmd[0], "zquery"))
     {
       return do_zquery (cache, cmd, out, now_us);
+    }
+  if (size == 2 && cmd_is (cmd[0], "incr"))
+    {
+      return do_incr (cache, cmd[1], 1, out, now_us);
+    }
+  if (size == 2 && cmd_is (cmd[0], "decr"))
+    {
+      return do_incr (cache, cmd[1], -1, out, now_us);
+    }
+  if (size == 3 && cmd_is (cmd[0], "incrby"))
+    {
+      int64_t delta;
+      if (!str2int (cmd[2], &delta))
+	return out_err (out, ERR_ARG, "expect int");
+      return do_incr (cache, cmd[1], delta, out, now_us);
+    }
+  if (size == 3 && cmd_is (cmd[0], "decrby"))
+    {
+      int64_t delta;
+      if (!str2int (cmd[2], &delta))
+	return out_err (out, ERR_ARG, "expect int");
+      return do_incr (cache, cmd[1], -delta, out, now_us);
     }
 
   return out_err (out, ERR_UNKNOWN, "Unknown cmd");
