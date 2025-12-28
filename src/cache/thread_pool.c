@@ -78,23 +78,33 @@ thread_pool_init (ThreadPool *thp, size_t num_threads)
 void
 thread_pool_queue (ThreadPool *thp, void (*func) (void *), void *arg)
 {
-  // Do not allow queuing new work if the pool is stopping
-  if (thp->stop)
-    {
-      // In a real scenario, this would return an error code or handle the work item
-      // but for simple cleanup, we assume the caller stops queuing work first.
-      return;
-    }
-
   Work *wrk = malloc (sizeof (Work));
   if (!wrk)
-    die ("Out of memory at thread_pool_queue.");
+    {
+      msg ("Out of memory at thread_pool_queue.");
+      return;
+    }
   wrk->f = func;
   wrk->arg = arg;
 
   pthread_mutex_lock (&thp->mu);
-  dq_push_back (thp->queue, wrk);
-  // Signal one thread to pick up the work
+
+  // Check stop flag while holding the lock
+  if (thp->stop)
+    {
+      pthread_mutex_unlock (&thp->mu);
+      free (wrk);
+      return;
+    }
+
+  if (!dq_push_back (thp->queue, wrk))
+    {
+      msg ("OOM on tread_pool_queue push back.");
+      free (wrk);
+      pthread_mutex_unlock (&thp->mu);
+      return;
+    }
+
   pthread_cond_signal (&thp->not_empty);
   pthread_mutex_unlock (&thp->mu);
 }
@@ -129,5 +139,13 @@ thread_pool_destroy (ThreadPool *thp)
   // at this point are leaks unless the caller ensures the queue is empty.
   // We assume the caller (cache_free) ensures no more work is queued.
   // The dq_dispose function should ideally handle freeing memory allocated for the queue itself.
+  // Drain remaining work items
+  while (!dq_empty (thp->queue))
+    {
+      Work *wrk = (Work *) dq_pop_front (thp->queue);
+      free (wrk);
+      // Optional: You could actually execute them here if you wanted strict completion,
+      // but freeing them avoids the memory leak.
+    }
   dq_dispose (thp->queue);
 }

@@ -95,7 +95,7 @@ entry_del_async (void *arg)
   entry_destroy ((Entry *) arg);
 }
 
-void
+bool
 entry_set_expiration (Cache *cache, Entry *ent, uint64_t expire_at_us)
 {
   ent->expire_at_us = expire_at_us;
@@ -107,18 +107,16 @@ entry_set_expiration (Cache *cache, Entry *ent, uint64_t expire_at_us)
       HeapItem item;
       item.ref = &ent->heap_idx;
       item.val = expire_at_us;
-      heap_add (&cache->heap, &item);
+      return heap_add (&cache->heap, &item);
     }
-  else
-    {
-      // Update existing item in the heap
-      heap_get (&cache->heap, pos)->val = expire_at_us;
-      heap_update (&cache->heap, pos);
-    }
+  // Update existing item in the heap
+  heap_get (&cache->heap, pos)->val = expire_at_us;
+  heap_update (&cache->heap, pos);
+  return true;
 }
 
 // set or remove the TTL
-void
+bool
 entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
 {
   if (ttl_ms < 0 && ent->heap_idx != (size_t) -1)
@@ -131,32 +129,48 @@ entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
   else if (ttl_ms >= 0)
     {
       uint64_t new_expire_at_us = now_us + (uint64_t) (ttl_ms * 1000);
-      entry_set_expiration (cache, ent, new_expire_at_us);
+      return entry_set_expiration (cache, ent, new_expire_at_us);
     }
+  return true;
+}
+
+static Entry *
+entry_new (const char *key)
+{
+  Entry *ent = calloc (1, sizeof (Entry));
+  if (!ent)
+    {
+      msg ("Out of memory in entry_new_str.");
+      return NULL;
+    }
+  ent->key = calloc (strlen (key) + 1, sizeof (char));
+  if (!ent->key)
+    {
+      free (ent);
+      msg ("Out of memory in entry_new_str key allocation.");
+      return NULL;
+    }
+  ent->heap_idx = (size_t) -1;
+  strcpy (ent->key, key);
+  return ent;
 }
 
 Entry *
 entry_new_zset (Cache *cache, const char *key)
 {
-  Entry *ent = malloc (sizeof (Entry));
+  Entry *ent = entry_new (key);
   if (!ent)
-    die ("Out of memory");
-  memset (ent, 0, sizeof (Entry));
-
-  ent->key = calloc (strlen (key) + 1, sizeof (char));
-  if (!ent->key)
     {
-      free (ent);
-      die ("Out of memory");
+      return NULL;
     }
-  strcpy (ent->key, key);
 
   ent->zset = malloc (sizeof (ZSet));
   if (!ent->zset)
     {
       free (ent->key);
       free (ent);
-      die ("Couldn't allocate zset");
+      msg ("Out of memory for new zset.");
+      return NULL;
     }
   memset (ent->zset, 0, sizeof (ZSet));
 
@@ -171,24 +185,18 @@ entry_new_zset (Cache *cache, const char *key)
 Entry *
 entry_new_str (Cache *cache, const char *key, const char *val)
 {
-  Entry *ent = malloc (sizeof (Entry));
+  Entry *ent = entry_new (key);
   if (!ent)
-    die ("Out of memory in do_set");
-
-  ent->key = calloc (strlen (key) + 1, sizeof (char));
-  if (!ent->key)
     {
-      free (ent);
-      die ("Out of memory");
+      return NULL;
     }
-  strcpy (ent->key, key);
-
   ent->val = calloc (strlen (val) + 1, sizeof (char));
   if (!ent->val)
     {
       free (ent->key);
       free (ent);
-      die ("Out of memory");
+      msg ("Out of memory in entry_new_str value allocation.");
+      return NULL;
     }
   strcpy (ent->val, val);
 
@@ -245,7 +253,8 @@ static void
 entry_del (Cache *cache, Entry *ent, uint64_t now_us)
 {
   // Ensure TTL is removed from the heap and expire_at_us is set to 0.
-  entry_set_ttl (cache, now_us, ent, -1);
+  bool success = entry_set_ttl (cache, now_us, ent, -1);
+  (void) success;
 
   const size_t k_large_container_size = 10000;
   bool too_big = false;
@@ -635,7 +644,10 @@ entry_set (Cache *cache, const char *key, const char *val)
 	}
       ent->val = calloc (strlen (val) + 1, sizeof (char));
       if (!ent->val)
-	die ("Out of memory");
+	{
+	  msg ("Out of memory in entry_new_str value allocation.");
+	  return;
+	}
       strcpy (ent->val, val);
     }
   else

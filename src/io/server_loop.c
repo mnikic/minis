@@ -115,7 +115,8 @@ rdb_save_background (Cache *cache, uint64_t now_us)
   if (child_pid == 0)
     {
       bool status = cache_save_to_file (cache, MINIS_DB_FILE, now_us);
-      msgf ("Background saving terminated with success in %llu ms.", (get_monotonic_usec () - g_data.last_snapshot_time) / 1000);
+      msgf ("Background saving terminated with success in %llu ms.",
+	    (get_monotonic_usec () - g_data.last_snapshot_time) / 1000);
       _exit (status ? 0 : 1);
     }
   else
@@ -527,7 +528,8 @@ init_cache (uint64_t now_us)
 
   if (cache_load_from_file (cache, MINIS_DB_FILE, now_us))
     {
-      msgf ("[Minis] DB loaded from %s in %llu ms.", MINIS_DB_FILE, (get_monotonic_usec() - now_us)/1000);
+      msgf ("[Minis] DB loaded from %s in %llu ms.", MINIS_DB_FILE,
+	    (get_monotonic_usec () - now_us) / 1000);
     }
   else
     {
@@ -549,9 +551,10 @@ static void
 process_snapshots (Cache *cache, uint64_t now_us)
 {
   if (SNAPSHOT_INTERVAL_US == 0)
-    return; // Disabled
+    return;			// Disabled
   check_snapshot_child_status ();
-  if (g_data.snapshot_child_pid == 0 && now_us >= g_data.last_snapshot_time + SNAPSHOT_INTERVAL_US)
+  if (g_data.snapshot_child_pid == 0
+      && now_us >= g_data.last_snapshot_time + SNAPSHOT_INTERVAL_US)
     rdb_save_background (cache, now_us);
 }
 

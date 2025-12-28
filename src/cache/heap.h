@@ -31,7 +31,7 @@ bool heap_empty (Heap * heap);
 HeapItem *heap_top (Heap * heap);
 HeapItem *heap_remove_idx (Heap * heap, size_t pos);
 void heap_update (Heap * heap, size_t pos);
-void heap_add (Heap * heap, HeapItem * item);
+bool heap_add (Heap * heap, HeapItem * item);
 HeapItem *heap_get (Heap * heap, size_t pos);
 
 #endif /* HEAP_H_ */

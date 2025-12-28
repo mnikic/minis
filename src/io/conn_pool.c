@@ -18,11 +18,11 @@
 #include "common/macros.h"
 
 // Helper: Ensure the sparse FD array is big enough
-static inline void
+static inline bool
 ensure_fd_capacity (ConnPool *pool, int file_desc)
 {
   if ((size_t) file_desc < pool->capacity)
-    return;
+    return true;
 
   size_t new_cap = pool->capacity;
   while (new_cap <= (size_t) file_desc)
@@ -32,7 +32,8 @@ ensure_fd_capacity (ConnPool *pool, int file_desc)
   Conn **new_by_fd = realloc (pool->by_fd, new_cap * sizeof (Conn *));
   if (unlikely (!new_by_fd))
     {
-      die ("OOM expanding FD table");
+      msg ("OOM expanding FD table");
+      return false;
     }
 
   pool->by_fd = new_by_fd;
@@ -42,6 +43,7 @@ ensure_fd_capacity (ConnPool *pool, int file_desc)
 	  (new_cap - pool->capacity) * sizeof (Conn *));
 
   pool->capacity = new_cap;
+  return true;
 }
 
 COLD ConnPool *
@@ -98,7 +100,8 @@ connpool_get (ConnPool *pool, int file_desc)
 {
   if (pool->free_head == UINT32_MAX)
     return NULL;
-  ensure_fd_capacity (pool, file_desc);
+  if (!ensure_fd_capacity (pool, file_desc))
+    return NULL;
   uint32_t idx = pool->free_head;
   Conn *conn = &pool->storage[idx];
   pool->free_head = conn->next_free_idx;

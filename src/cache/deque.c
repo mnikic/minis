@@ -22,18 +22,21 @@ dq_init (void)
   return deque;
 }
 
-int
+bool
 dq_empty (t_deque *deque)
 {
   return !deque->first || !deque->last;
 }
 
-void
+bool
 dq_push_front (t_deque *deque, void *content)
 {
   t_deque_node *node = malloc (sizeof (t_deque_node));
   if (!node)
-    die ("Out of memory dq_push_front");
+    {
+      msg ("Out of memory dq_push_front");
+      return false;
+    }
   node->content = content;
   node->prev = NULL;
   node->next = deque->first;
@@ -42,14 +45,18 @@ dq_push_front (t_deque *deque, void *content)
   else
     deque->first->prev = node;
   deque->first = node;
+  return true;
 }
 
-void
+bool
 dq_push_back (t_deque *deque, void *content)
 {
   t_deque_node *node = malloc (sizeof (t_deque_node));
   if (!node)
-    die ("Out of memory dq_push_back");
+    {
+      msg ("Out of memory dq_push_back");
+      return false;
+    }
   node->content = content;
   node->prev = deque->last;
   node->next = NULL;
@@ -58,6 +65,7 @@ dq_push_back (t_deque *deque, void *content)
   else
     deque->last->next = node;
   deque->last = node;
+  return true;
 }
 
 void *
@@ -115,6 +123,8 @@ dq_peek_back (t_deque *deque)
 void
 dq_dispose (t_deque *deque)
 {
+  if (!deque)
+    return;
   t_deque_node *current = deque->first;
   t_deque_node *next;
 

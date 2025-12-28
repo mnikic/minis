@@ -12,27 +12,27 @@
 
 #include "cache/heap.h"
 #include "common/common.h"
+#include "common/macros.h"
 
 void
 heap_init (Heap *heap)
 {
-  if (!heap)
+  if (unlikely (!heap))
     return;
 
   heap->size = 0;
   heap->capacity = 10;
   heap->items = malloc (sizeof (HeapItem) * heap->capacity);
-  if (!heap->items)
+  if (unlikely (!heap->items))
     die ("Failed to allocate memory for heap.");
-
 }
 
 void
 heap_free (Heap *heap)
 {
-  if (!heap)
+  if (unlikely (!heap))
     return;
-  if (heap->items)
+  if (unlikely (heap->items))
     {
       free (heap->items);
       heap->items = NULL;
@@ -79,22 +79,28 @@ heap_remove_idx (Heap *heap, size_t pos)
   return &removed;
 }
 
-void
+bool
 heap_add (Heap *heap, HeapItem *item)
 {
   if (!heap)
-    die ("Cannot add items to a NULL heap.");
+    {
+      msg ("Cannot add items to a NULL heap.");
+      return false;
+    }
 
   if (!item)
-    die ("Cannot add NULL item to heap.");
+    {
+      msg ("Cannot add NULL item to heap.");
+      return false;
+    }
 
   if (heap->size + 1 > heap->capacity)
     {
       // Check for overflow
       if (heap->capacity > SIZE_MAX / 2)
 	{
-	  die ("Heap capacity overflow.");
-	  abort ();
+	  msg ("Heap capacity overflow.");
+	  return false;
 	}
 
       size_t new_capacity = heap->capacity * 2;
@@ -102,7 +108,8 @@ heap_add (Heap *heap, HeapItem *item)
 	realloc (heap->items, sizeof (HeapItem) * new_capacity);
       if (!new_items)
 	{
-	  die ("Could not reallocate memory to increase heap capacity.");
+	  msg ("Could not reallocate memory to increase heap capacity.");
+	  return false;
 	}
       heap->items = new_items;
       heap->capacity = new_capacity;
@@ -115,6 +122,7 @@ heap_add (Heap *heap, HeapItem *item)
     }
   heap->size++;
   heap_update (heap, heap->size - 1);
+  return true;
 }
 
 HeapItem *
