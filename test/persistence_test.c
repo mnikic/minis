@@ -45,7 +45,7 @@ int main(void) {
     
     // A. Add a String
     printf("   -> Adding String 'greeting' = 'Hello Persistence'\n");
-    Entry *ent1 = entry_new_str(cache1, "greeting", strdup("Hello Persistence"));
+    Entry *ent1 = entry_new_str(cache1, "greeting", "Hello Persistence");
     (void) ent1; 
 
     // B. Add a ZSet
@@ -57,7 +57,7 @@ int main(void) {
 
     // C. Add Expiration
     printf("   -> Adding Expiring Key 'temp' (TTL 5000ms)\n");
-    Entry *ent3 = entry_new_str(cache1, "temp", strdup("I will survive"));
+    Entry *ent3 = entry_new_str(cache1, "temp", "I will survive");
     ent3->expire_at_us = 123456789; // Arbitrary future timestamp
 
     printf("=== 3. Saving to Disk ===\n");

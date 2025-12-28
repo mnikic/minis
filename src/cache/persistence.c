@@ -261,8 +261,11 @@ load_string_entry (FILE *file_ptr, Cache *cache, const char *key,
   val[vlen] = '\0';
 
   Entry *ent = entry_new_str (cache, key, val);
+  if (!ent)
+    return false;
   if (expire_at > 0)
     ent->expire_at_us = expire_at;
+  free (val);
   return true;
 }
 
