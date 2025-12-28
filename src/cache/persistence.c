@@ -264,7 +264,7 @@ load_string_entry (FILE *file_ptr, Cache *cache, const char *key,
   if (!ent)
     return false;
   if (expire_at > 0)
-    ent->expire_at_us = expire_at;
+    entry_set_expiration (cache, ent, expire_at);
   free (val);
   return true;
 }
@@ -286,7 +286,7 @@ load_zset_entry (FILE *file_ptr, Cache *cache, const char *key,
       if (!ent)
 	return false;
       if (expire_at > 0)
-	ent->expire_at_us = expire_at;
+	entry_set_expiration (cache, ent, expire_at);
     }
 
   for (uint32_t i = 0; i < count; i++)

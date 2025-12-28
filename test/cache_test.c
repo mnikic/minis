@@ -34,9 +34,8 @@ assert_buffer_contains (Buffer *buf, const char *expected)
 
   if (strstr ((char *) buf->data, expected) == NULL)
     {
-      fprintf (stderr,
-	       "ASSERTION FAILED: Buffer content '%s' does not contain '%s'\n",
-	       (char *) buf->data, expected);
+      msgf ("ASSERTION FAILED: Buffer content '%s' does not contain '%s'",
+	    (char *) buf->data, expected);
       exit (1);
     }
 }
@@ -44,7 +43,7 @@ assert_buffer_contains (Buffer *buf, const char *expected)
 #define ASSERT_TRUE(expr)                                                      \
 	do {                                                                       \
 		if (!(expr)) {                                                         \
-			fprintf(stderr, "ASSERTION FAILED: %s:%d: %s\n", __FILE__,         \
+			msgf ("ASSERTION FAILED: %s:%d: %s", __FILE__,         \
 					__LINE__, #expr);                                          \
 			exit(1);                                                           \
 		}                                                                      \
@@ -903,7 +902,7 @@ test_async_delete (void)
       // but we assume they work if basic tests passed.
       if (!cache_execute (cache, cmd, 4, &buf, now))
 	{
-	  fprintf (stderr, "Failed to insert member %d\n", i);
+	  msgf ("Failed to insert member %d", i);
 	  exit (1);
 	}
     }
