@@ -463,6 +463,55 @@ $ {client_executable-abs_path} del b
 (int) 0
 $ {client_executable-abs_path} del c
 (int) 0
+
+# Test incr and decr
+$ {client_executable-abs_path} set counter 10
+(str) OK
+$ {client_executable-abs_path} incr counter
+(int) 11
+$ {client_executable-abs_path} get counter
+(str) 11
+$ {client_executable-abs_path} decr counter
+(int) 10
+$ {client_executable-abs_path} get counter
+(str) 10
+
+# Test incrby and decrby
+$ {client_executable-abs_path} incrby counter 5
+(int) 15
+$ {client_executable-abs_path} decrby counter 3
+(int) 12
+$ {client_executable-abs_path} get counter
+(str) 12
+$ {client_executable-abs_path} del counter
+(int) 1
+
+# Test incr on non-existent key (starts at 0)
+$ {client_executable-abs_path} incr newcount
+(int) 1
+$ {client_executable-abs_path} decrby newcount 10
+(int) -9
+$ {client_executable-abs_path} del newcount
+(int) 1
+
+# Test incr type validation
+$ {client_executable-abs_path} set mytext "hello"
+(str) OK
+$ {client_executable-abs_path} incr mytext
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} del mytext
+(int) 1
+
+# Test incr on expired key (should reset)
+$ {client_executable-abs_path} set expinc 100
+(str) OK
+$ {client_executable-abs_path} pexpire expinc 100
+(int) 1
+$ sleep 0.15
+$ {client_executable-abs_path} incr expinc
+(int) 1
+$ {client_executable-abs_path} del expinc
+(int) 1
 '''
 
 
