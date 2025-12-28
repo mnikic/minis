@@ -87,11 +87,11 @@ $ {client_executable-abs_path} del zset
 $ {client_executable-abs_path} get key1
 (nil)
 $ {client_executable-abs_path} set key1 value1
-(nil)
+(str) OK
 $ {client_executable-abs_path} get key1
 (str) value1
 $ {client_executable-abs_path} set key1 value2
-(nil)
+(str) OK
 $ {client_executable-abs_path} get key1
 (str) value2
 $ {client_executable-abs_path} del key1
@@ -103,11 +103,11 @@ $ {client_executable-abs_path} del key1
 
 # Test multiple keys
 $ {client_executable-abs_path} set k1 v1
-(nil)
+(str) OK
 $ {client_executable-abs_path} set k2 v2
-(nil)
+(str) OK
 $ {client_executable-abs_path} set k3 v3
-(nil)
+(str) OK
 $ {client_executable-abs_path} get k1
 (str) v1
 $ {client_executable-abs_path} get k2
@@ -123,11 +123,11 @@ $ {client_executable-abs_path} del k3
 
 # Test keys command
 $ {client_executable-abs_path} set a 1
-(nil)
+(str) OK
 $ {client_executable-abs_path} set b 2
-(nil)
+(str) OK
 $ {client_executable-abs_path} set c 3
-(nil)
+(str) OK
 $ {client_executable-abs_path} keys \*
 (arr) len=3
 (str) c
@@ -145,7 +145,7 @@ $ {client_executable-abs_path} keys c?
 (arr) len=0
 (arr) end
 $ {client_executable-abs_path} set ca 4
-(nil)
+(str) OK
 $ {client_executable-abs_path} keys c
 (arr) len=1
 (str) c
@@ -181,7 +181,7 @@ $ {client_executable-abs_path} del ca
 
 # Test pexpire and pttl
 $ {client_executable-abs_path} set expkey value
-(nil)
+(str) OK
 $ {client_executable-abs_path} pexpire expkey 10000
 (int) 1
 $ {client_executable-abs_path} get expkey
@@ -261,11 +261,13 @@ $ {client_executable-abs_path} zadd large 4 d
 $ {client_executable-abs_path} zadd large 5 e
 (int) 1
 $ {client_executable-abs_path} zquery large 0 "" 0 3
-(arr) len=4
+(arr) len=6
 (str) a
 (dbl) 1
 (str) b
 (dbl) 2
+(str) c
+(dbl) 3
 (arr) end
 $ {client_executable-abs_path} zquery large 0 "" 3 10
 (arr) len=4
@@ -279,7 +281,7 @@ $ {client_executable-abs_path} del large
 
 # Test empty string values
 $ {client_executable-abs_path} set emptykey ""
-(nil)
+(str) OK
 $ {client_executable-abs_path} get emptykey
 (str) 
 
@@ -288,7 +290,7 @@ $ {client_executable-abs_path} del emptykey
 
 # Test overwriting different types
 $ {client_executable-abs_path} set mixkey normalvalue
-(nil)
+(str) OK
 $ {client_executable-abs_path} get mixkey
 (str) normalvalue
 $ {client_executable-abs_path} zadd mixkey 1 member
@@ -352,7 +354,7 @@ $ {client_executable-abs_path} del fracset
 
 # Test special characters in keys and values
 $ {client_executable-abs_path} set "key with spaces" "value with spaces"
-(nil)
+(str) OK
 $ {client_executable-abs_path} get "key with spaces"
 (str) value with spaces
 $ {client_executable-abs_path} del "key with spaces"
@@ -360,7 +362,7 @@ $ {client_executable-abs_path} del "key with spaces"
 
 # Test pttl on key without expiry
 $ {client_executable-abs_path} set noexp value
-(nil)
+(str) OK
 $ {client_executable-abs_path} pttl noexp
 (int) -1
 $ {client_executable-abs_path} del noexp
@@ -368,7 +370,7 @@ $ {client_executable-abs_path} del noexp
 
 # Test pttl and pexpire on key with short expiry
 $ {client_executable-abs_path} set shortxp value
-(nil)
+(str) OK
 $ {client_executable-abs_path} get shortxp
 (str) value
 $ {client_executable-abs_path} pttl shortxp
@@ -383,15 +385,15 @@ $ {client_executable-abs_path} get shortxp
 
 # Test sequential operations
 $ {client_executable-abs_path} set seq1 val1
-(nil)
+(str) OK
 $ {client_executable-abs_path} set seq2 val2
-(nil)
+(str) OK
 $ {client_executable-abs_path} get seq1
 (str) val1
 $ {client_executable-abs_path} del seq1
 (int) 1
 $ {client_executable-abs_path} set seq1 newval1
-(nil)
+(str) OK
 $ {client_executable-abs_path} get seq1
 (str) newval1
 $ {client_executable-abs_path} get seq2
@@ -440,7 +442,7 @@ $ {client_executable-abs_path} del delquery
 
 # Test mset, mget, mdel
 $ {client_executable-abs_path} mset a 1 b 2 c 3
-(nil)
+(str) OK
 $ {client_executable-abs_path} mget a b c
 (arr) len=3
 (str) 1

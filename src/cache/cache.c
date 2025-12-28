@@ -216,26 +216,15 @@ static bool
 do_ping (Cache *cache, const char **args, size_t arg_count, Buffer *out)
 {
   (void) cache;
-  // Case 1: "PING" -> "+PONG\r\n" (Simple String)
   if (arg_count == 1)
     {
-      if (out->proto == PROTO_RESP)
-	{
-	  // Manually write Simple String (+PONG)
-	  // Note: out_str writes Bulk Strings ($4\r\nPONG), which is also valid 
-	  // but +PONG is the standard.
-	  return buf_append_cstr (out, "+PONG\r\n");
-	}
-      // Binary protocol PONG (Maybe just return string "PONG")
-      return out_str (out, "PONG");
+      return out_simple_str (out, "PONG");
     }
-
-  // Case 2: "PING message" -> "message" (Bulk String)
   if (arg_count == 2)
     {
+      // Echo the argument back as a Bulk String
       return out_str (out, args[1]);
     }
-
   return out_err (out, ERR_ARG,
 		  "wrong number of arguments for 'ping' command");
 }
@@ -335,6 +324,7 @@ typedef struct
   uint64_t now_us;
   bool result;
   const char *pattern;
+  bool write;
 } ScanContext;
 
 static void
@@ -353,13 +343,19 @@ cb_scan (HNode *node, void *arg)
     }
   if (!glob_match (ctx->pattern, ent->key))
     return;
-
-  if (out_str (ctx->out, fetch_entry (node)->key))
+  if (ctx->write)
+    {
+      if (out_str (ctx->out, fetch_entry (node)->key))
+	{
+	  ctx->count++;
+	}
+      else
+	ctx->result = false;
+    }
+  else
     {
       ctx->count++;
     }
-  else
-    ctx->result = false;
 }
 
 static int
@@ -508,18 +504,19 @@ do_zscore (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 static bool
 do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
-// parse args
   double score = 0;
   if (!str2dbl (cmd[2], &score))
     {
       return out_err (out, ERR_ARG, "expect fp number");
     }
+
   int64_t offset = 0;
-  int64_t limit = 0;
   if (!str2int (cmd[4], &offset))
     {
       return out_err (out, ERR_ARG, "expect int");
     }
+
+  int64_t limit = 0;
   if (!str2int (cmd[5], &limit))
     {
       return out_err (out, ERR_ARG, "expect int");
@@ -531,13 +528,13 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   // expect_zset handles lookup, passive expiration check, and type check
   if (!expect_zset (cache, out, cmd[1], &ent, &is_valid_zset, now_us))
     {
-      return false;		// Buffer write failure (backpressure)
+      return false;
     }
 
   if (!is_valid_zset)
     {
-      // If the output buffer contains SER_NIL (key not found or expired), clear it and send empty array instead.
-      // If it was an ERR (wrong type), the ERR was already written and we return true below.
+      // If expect_zset wrote SER_NIL (key not found), clear it and return Empty Array.
+      // If it wrote SER_ERR (wrong type), leave it and return true.
       if (buf_len (out) > 0 && buf_data (out)[0] == SER_NIL)
 	{
 	  buf_clear (out);
@@ -550,48 +547,113 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
     {
       return out_arr (out, 0);
     }
+
+  // Find Start Node
+  // This is common to both paths.
   ZNode *znode = zset_query (ent->zset, score, cmd[3], strlen (cmd[3]));
   znode = znode_offset (znode, offset);
 
-  // output
-  size_t idx = out_arr_begin (out);
-  if (idx == 0)
+  // BINARY PROTOCOL (Single Pass + Patching)
+  if (out->proto == PROTO_BIN)
+    {
+      size_t idx = out_arr_begin (out);
+      if (idx == 0)
+	return false;
+
+      uint32_t num = 0;
+      // Loop until we hit the limit or the end of the ZSet
+      while (znode && (int64_t) (num / 2) < limit)
+	{
+	  if (!out_str_size (out, znode->name, znode->len))
+	    return false;
+	  if (!out_dbl (out, znode->score))
+	    return false;
+
+	  znode = znode_offset (znode, +1);
+	  num += 2;		// Each member is 2 elements (Name + Score)
+	}
+      return out_arr_end (out, idx, num);
+    }
+
+  // RESP PROTOCOL (Double Pass: Count -> Write)
+  // We cannot patch RESP arrays, so we must count the available items first.
+  ZNode *iter = znode;
+  uint32_t actual_count = 0;
+  while (iter && (int64_t) actual_count < limit)
+    {
+      actual_count++;
+      iter = znode_offset (iter, +1);
+    }
+
+  // Write Header: The array size is count * 2 (Name + Score)
+  if (!out_arr (out, (size_t)(actual_count * (size_t) 2)))
     return false;
 
-  uint32_t num = 0;
-  while (znode && (int64_t) num < limit)
+  // Write Data
+  iter = znode;
+  uint32_t written = 0;
+  while (iter && written < actual_count)
     {
-      if (!out_str_size (out, znode->name, znode->len))
+      if (!out_str_size (out, iter->name, iter->len))
 	return false;
-      if (!out_dbl (out, znode->score))
+      // out_dbl handles formatting (binary double vs string "3.14")
+      if (!out_dbl (out, iter->score))
 	return false;
 
-      znode = znode_offset (znode, +1);
-      num += 2;
+      iter = znode_offset (iter, +1);
+      written++;
     }
-  return out_arr_end (out, idx, num);
+
+  return true;
 }
 
 static bool
 do_keys (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
-  // Start the array response (writes a placeholder for the count)
-  size_t idx = out_arr_begin (out);
-  if (idx == 0)
-    return false;
-  ScanContext ctx = {.out = out,.count = 0,.pattern = cmd[1],.result = true };
-  ctx.now_us = now_us;
+  // Initialize context with common fields
+  ScanContext ctx = {
+    .out = out,
+    .count = 0,
+    .pattern = cmd[1],
+    .result = true,
+    .now_us = now_us
+      // .write is set below
+  };
 
-  // We cannot stop the scan if a write fails, but the subsequent calls will
-  // also fail, and the final count will be accurate.
+  // PATH BINARY (Single Pass + Patching)
+  if (out->proto == PROTO_BIN)
+    {
+      size_t idx = out_arr_begin (out);
+      if (idx == 0)
+	return false;
+
+      ctx.write = true;		// Write immediately
+      hm_scan (&cache->db, &cb_scan, &ctx);
+
+      if (!ctx.result)
+	return false;
+      return out_arr_end (out, idx, ctx.count);
+    }
+
+  // PATH RESP (Two Pass: Count -> Header -> Write)
+
+  // Pass 1: Count ONLY
+  ctx.write = false;
   hm_scan (&cache->db, &cb_scan, &ctx);
 
-  if (!ctx.result)
-    {
-      return false;
-    }
-  // Finalize the array output with the actual number of elements written. If the buffer is full return false.
-  return out_arr_end (out, idx, ctx.count);
+  // Write the Header (*N\r\n)
+  // We use the count we just gathered
+  if (!out_arr (out, ctx.count))
+    return false;
+
+  // Write Data
+  ctx.write = true;
+  ctx.count = 0;
+
+  // because ctx.write == true this actually writes!
+  hm_scan (&cache->db, &cb_scan, &ctx);
+
+  return ctx.result;
 }
 
 static int
@@ -673,9 +735,9 @@ do_set (Cache *cache, const char **cmd, Buffer *out)
 {
   if (entry_set (cache, cmd[1], cmd[2]))
     cache->dirty_count++;
-  if (out->proto == PROTO_RESP)
-    return out_ok (out);
-  return out_nil (out);
+
+  // Unified: Returns +OK in RESP, "OK" string in Binary
+  return out_ok (out);
 }
 
 static bool
@@ -687,7 +749,7 @@ do_mset (Cache *cache, const char **cmd, size_t nkeys, Buffer *out)
 	cache->dirty_count++;
     }
 
-  return out_nil (out);
+  return out_ok (out);
 }
 
 static bool

@@ -13,6 +13,30 @@
 #define RESP_NIL    "$-1\r\n"
 #define RESP_CRLF   "\r\n"
 
+// ============================================================================
+// GENERIC HELPERS
+// ============================================================================
+
+HOT bool
+out_simple_str (Buffer *out, const char *str)
+{
+  if (unlikely (!str))
+    return out_nil (out);
+
+  if (out->proto == PROTO_RESP)
+    {
+      // Format: +string\r\n
+      if (unlikely (!buf_append_byte (out, '+')))
+	return false;
+      if (unlikely (!buf_append_cstr (out, str)))
+	return false;
+      return buf_append_cstr (out, RESP_CRLF);
+    }
+
+  // Binary Protocol fallback: Just use a normal string
+  return out_str (out, str);
+}
+
 HOT bool
 out_nil (Buffer *out)
 {
@@ -25,119 +49,6 @@ out_nil (Buffer *out)
     return false;
 
   buf_append_byte (out, SER_NIL);
-  return true;
-}
-
-/**
- * @brief Appends a string value with SER_STR marker and length prefix.
- * If string is NULL or size is 0, it writes SER_NIL.
- */
-HOT bool
-out_str_size (Buffer *out, const char *string, size_t size)
-{
-  if (unlikely (!string || size == 0))
-    {
-      return out_nil (out);
-    }
-
-  if (unlikely (size > UINT32_MAX))
-    {
-      return out_err (out, ERR_UNKNOWN, "String too large");
-    }
-
-  if (unlikely (!buf_has_space (out, 1 + sizeof (uint32_t) + size)))
-    return false;
-
-  // Space guaranteed, append without further checks
-  uint32_t len = (uint32_t) size;
-
-  buf_append_byte (out, SER_STR);
-  buf_append_u32 (out, len);
-  buf_append_bytes (out, string, len);
-
-  return true;
-}
-
-/**
- * @brief Appends a Double marker (SER_DBL) and a double value. (9 bytes total)
- */
-HOT bool
-out_dbl (Buffer *out, double val)
-{
-  // Check space for: 1 byte (SER_DBL) + 8 bytes (double)
-  if (unlikely (!buf_has_space (out, 1 + sizeof (double))))
-    return false;
-
-  buf_append_byte (out, SER_DBL);
-  buf_append_double (out, val);
-
-  return true;
-}
-
-HOT bool
-out_str (Buffer *out, const char *val)
-{
-  if (unlikely (!val))
-    return out_nil (out);
-
-  size_t len = strlen (val);
-
-  if (out->proto == PROTO_RESP)
-    {
-      // Format: $<len>\r\n<data>\r\n
-
-      // Header: "$"
-      if (unlikely (!buf_append_byte (out, '$')))
-	return false;
-
-      // Length: "N"
-      if (unlikely (!buf_append_int_as_string (out, (int64_t) len)))
-	return false;
-
-      // Separator: "\r\n"
-      if (unlikely (!buf_append_cstr (out, RESP_CRLF)))
-	return false;
-
-      // Data
-      if (unlikely (!buf_append_bytes (out, val, len)))
-	return false;
-
-      // Footer: "\r\n"
-      return buf_append_cstr (out, RESP_CRLF);
-    }
-
-  if (unlikely (len > UINT32_MAX))
-    return out_err (out, ERR_UNKNOWN, "String too large");
-
-  if (unlikely (!buf_has_space (out, 1 + 4 + len)))
-    return false;
-
-  buf_append_byte (out, SER_STR);
-  buf_append_u32 (out, (uint32_t) len);
-  buf_append_cstr (out, val);
-  return true;
-}
-
-HOT bool
-out_int (Buffer *out, int64_t val)
-{
-  if (out->proto == PROTO_RESP)
-    {
-      // Format: :<number>\r\n
-
-      // Manual construction
-      if (unlikely (!buf_append_byte (out, ':')))
-	return false;
-      if (unlikely (!buf_append_int_as_string (out, val)))
-	return false;
-      return buf_append_cstr (out, RESP_CRLF);
-    }
-
-  if (unlikely (!buf_has_space (out, 1 + 8)))
-    return false;
-
-  buf_append_byte (out, SER_INT);
-  buf_append_i64 (out, val);
   return true;
 }
 
@@ -169,6 +80,134 @@ out_err (Buffer *out, int32_t code, const char *msg)
 }
 
 HOT bool
+out_ok (Buffer *out)
+{
+  return out_simple_str (out, "OK");
+}
+
+// ============================================================================
+// STRING OUTPUT
+// ============================================================================
+
+HOT bool
+out_str (Buffer *out, const char *val)
+{
+  if (unlikely (!val))
+    return out_nil (out);
+
+  size_t len = strlen (val);
+
+  if (out->proto == PROTO_RESP)
+    {
+      // Format: $<len>\r\n<data>\r\n
+      if (unlikely (!buf_append_byte (out, '$')))
+	return false;
+      if (unlikely (!buf_append_int_as_string (out, (int64_t) len)))
+	return false;
+      if (unlikely (!buf_append_cstr (out, RESP_CRLF)))
+	return false;
+      if (unlikely (!buf_append_bytes (out, val, len)))
+	return false;
+      return buf_append_cstr (out, RESP_CRLF);
+    }
+
+  if (unlikely (len > UINT32_MAX))
+    return out_err (out, ERR_UNKNOWN, "String too large");
+
+  if (unlikely (!buf_has_space (out, 1 + 4 + len)))
+    return false;
+
+  buf_append_byte (out, SER_STR);
+  buf_append_u32 (out, (uint32_t) len);
+  buf_append_cstr (out, val);
+  return true;
+}
+
+HOT bool
+out_str_size (Buffer *out, const char *string, size_t size)
+{
+  if (unlikely (!string || size == 0))
+    {
+      return out_nil (out);
+    }
+
+  // Handle RESP manually here to avoid double-strlen calculation
+  if (out->proto == PROTO_RESP)
+    {
+      if (unlikely (!buf_append_byte (out, '$')))
+	return false;
+      if (unlikely (!buf_append_int_as_string (out, (int64_t) size)))
+	return false;
+      if (unlikely (!buf_append_cstr (out, RESP_CRLF)))
+	return false;
+      if (unlikely (!buf_append_bytes (out, string, size)))
+	return false;
+      return buf_append_cstr (out, RESP_CRLF);
+    }
+
+  if (unlikely (size > UINT32_MAX))
+    return out_err (out, ERR_UNKNOWN, "String too large");
+
+  if (unlikely (!buf_has_space (out, 1 + sizeof (uint32_t) + size)))
+    return false;
+
+  buf_append_byte (out, SER_STR);
+  buf_append_u32 (out, (uint32_t) size);
+  buf_append_bytes (out, string, size);
+  return true;
+}
+
+// ============================================================================
+// NUMERIC OUTPUT
+// ============================================================================
+
+HOT bool
+out_int (Buffer *out, int64_t val)
+{
+  if (out->proto == PROTO_RESP)
+    {
+      // Format: :<number>\r\n
+      if (unlikely (!buf_append_byte (out, ':')))
+	return false;
+      if (unlikely (!buf_append_int_as_string (out, val)))
+	return false;
+      return buf_append_cstr (out, RESP_CRLF);
+    }
+
+  if (unlikely (!buf_has_space (out, 1 + 8)))
+    return false;
+
+  buf_append_byte (out, SER_INT);
+  buf_append_i64 (out, val);
+  return true;
+}
+
+HOT bool
+out_dbl (Buffer *out, double val)
+{
+  // RESP also usually sends doubles as Bulk Strings (e.g. "3.14")
+  // because precision can drift in floating point transmission.
+  if (out->proto == PROTO_RESP)
+    {
+      char buf[64];
+      // %.17g preserves double precision
+      snprintf (buf, sizeof (buf), "%.17g", val);
+      return out_str (out, buf);
+    }
+
+  if (unlikely (!buf_has_space (out, 1 + sizeof (double))))
+    return false;
+
+  buf_append_byte (out, SER_DBL);
+  buf_append_double (out, val);
+  return true;
+}
+
+// ============================================================================
+// ARRAY OUTPUT
+// ============================================================================
+
+HOT bool
 out_arr (Buffer *out, size_t num)
 {
   if (out->proto == PROTO_RESP)
@@ -190,33 +229,34 @@ out_arr (Buffer *out, size_t num)
 }
 
 /**
- * @brief Appends an Array marker (SER_ARR) and a 4-byte zero placeholder.
- * NOTE: This is likely Binary Protocol specific. RESP doesn't support easy patching.
+ * @brief Begins an array for Binary Protocol Patching.
+ * @return 0 if failed OR if PROTO_RESP (Patching not supported in RESP).
  */
 HOT size_t
 out_arr_begin (Buffer *out)
 {
-  // Check space for: 1 byte (SER_ARR) + 4 bytes (Placeholder)
+  // SAFETY CHECK: RESP cannot support patching because integers are variable length strings.
+  // We force the caller to use the count-first strategy by failing here.
+  if (out->proto == PROTO_RESP)
+    return 0;
+
   if (unlikely (!buf_has_space (out, 1 + sizeof (uint32_t))))
     return 0;
 
   buf_append_byte (out, SER_ARR);
-
-  // pos is the current length (start of the 4-byte count placeholder)
   size_t pos = buf_len (out);
-
-  // Append placeholder (0)
-  buf_append_u32 (out, 0);
+  buf_append_u32 (out, 0);	// Placeholder
 
   return pos;
 }
 
-/**
- * @brief Patches the array element count into the placeholder.
- */
 HOT bool
 out_arr_end (Buffer *out, size_t pos, size_t num)
 {
+  // Double check we aren't in RESP mode (though out_arr_begin should have caught it)
+  if (out->proto == PROTO_RESP)
+    return false;
+
   if (unlikely
       (!out || pos == 0 || (pos + sizeof (uint32_t) > buf_len (out))))
     {
@@ -225,25 +265,12 @@ out_arr_end (Buffer *out, size_t pos, size_t num)
 
   uint8_t *data = out->data;
 
-  // Validate that pos-1 is the SER_ARR marker
   if (unlikely (data[pos - 1] != SER_ARR))
     {
       return false;
     }
 
-  // Patch in the actual count (Network Byte Order)
   uint32_t n_net = hton_u32 ((uint32_t) num);
   memcpy (&data[pos], &n_net, sizeof (uint32_t));
   return true;
-}
-
-HOT bool
-out_ok (Buffer *out)
-{
-  if (out->proto == PROTO_RESP)
-    {
-      return buf_append_cstr (out, RESP_OK);
-    }
-
-  return out_str (out, "OK");
 }

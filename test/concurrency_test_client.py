@@ -143,13 +143,13 @@ def client_thread(thread_id):
             
             res_type, res_content = parse_response_type(response_data)
 
-            if res_type == SER_NIL:
+            if res_type == SER_STR:
                 with print_lock:
                     print(f"[{thread_name}] Iteration {i}: SET {key}={value} -> OK")
                 success_count += 1
             else:
                 with print_lock:
-                    print(f"[{thread_name}] Iteration {i}: SET FAILED. Expected NIL, got {res_content} (Type {res_type})")
+                    print(f"[{thread_name}] Iteration {i}: SET FAILED. Expected SER_STR, got {res_content} (Type {res_type})")
                 failure_count += 1
                 continue # Skip GET/DEL if SET failed
 

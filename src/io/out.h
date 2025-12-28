@@ -13,6 +13,7 @@
 #include "io/buffer.h"
 #include "common/macros.h"
 
+HOT bool out_simple_str (Buffer * out, const char *str);
 HOT bool out_nil (Buffer * out);
 HOT bool out_str (Buffer * out, const char *val);
 HOT bool out_str_size (Buffer * out, const char *string, size_t size);

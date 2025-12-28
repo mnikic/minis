@@ -618,7 +618,7 @@ if __name__ == '__main__':
         
         # 1. SET a = "hello_world" (NIL response)
         result, ok = send_and_receive(s, 'set', 'a', 'hello_world')
-        if not ok or result[0] != SER_NIL: print("Basic SET failed."); sys.exit(1)
+        if not ok or (result[0] != SER_STR and result[1] != 'OK'): print("Basic SET failed."); sys.exit(1)
 
         # 2. GET a (STR response)
         result, ok = send_and_receive(s, 'get', 'a')
