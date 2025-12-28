@@ -26,6 +26,9 @@ typedef struct
 
   // the thread pool
   ThreadPool tp;
+
+  // count of mutations from startup
+  uint64_t dirty_count;
 } Cache;
 
 typedef enum

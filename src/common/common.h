@@ -56,7 +56,7 @@
 #define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
 
 #define MAX_CONNECTIONS 20000
-#define SNAPSHOT_INTERVAL_US (60 * 1000000ULL)
+#define SNAPSHOT_INTERVAL_US (10 * 1000000ULL)
 
 // Android/Bionic often misses these flags despite Kernel support (4.14+).
 // We manually define them to the stable Linux ABI values.
@@ -71,6 +71,22 @@
 
 // Defined in common.c
 extern bool g_verbose_mode;
+
+typedef struct
+{
+  uint64_t seconds;
+  uint64_t changes;
+} SaveParam;
+
+// Redis-like defaults:
+// 1. Save after 15 min if at least 1 key changed
+// 2. Save after 5 min if at least 100 keys changed
+// 3. Save after 1 min if at least 10,000 keys changed
+static const SaveParam save_params[] = {
+  {900, 1},
+  {300, 100},
+  {60, 10000}
+};
 
 #ifndef SO_EE_ORIGIN_ZEROCOPY
 #define SO_EE_ORIGIN_ZEROCOPY  5

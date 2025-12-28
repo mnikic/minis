@@ -125,10 +125,14 @@ entry_set_ttl (Cache *cache, uint64_t now_us, Entry *ent, int64_t ttl_ms)
       (void) heap_remove_idx (&cache->heap, ent->heap_idx);
       ent->heap_idx = (size_t) -1;
       ent->expire_at_us = 0;
+      cache->dirty_count++;
     }
   else if (ttl_ms >= 0)
     {
       uint64_t new_expire_at_us = now_us + (uint64_t) (ttl_ms * 1000);
+      if (new_expire_at_us == ent->expire_at_us)
+	return false;
+      cache->dirty_count++;
       return entry_set_expiration (cache, ent, new_expire_at_us);
     }
   return true;
@@ -442,6 +446,8 @@ do_zadd (Cache *cache, const char **cmd, Buffer *out)
 
   const char *name = cmd[3];
   int added = zset_add (ent->zset, name, strlen (name), score);
+  if (added == 1)
+    cache->dirty_count++;
   return out_int (out, (int64_t) added);
 }
 
@@ -466,6 +472,7 @@ do_zrem (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   ZNode *znode = zset_pop (ent->zset, cmd[2], strlen (cmd[2]));
   if (znode)
     {
+      cache->dirty_count++;
       znode_del (znode);
     }
   return out_int (out, znode ? 1 : 0);
@@ -611,7 +618,11 @@ del (Cache *cache, const char *key)
 static bool
 do_del (Cache *cache, const char **cmd, Buffer *out)
 {
-  return out_int (out, del (cache, cmd[1]));
+  int deleted = del (cache, cmd[1]);
+  if (deleted == 1)
+    cache->dirty_count++;
+
+  return out_int (out, deleted);
 }
 
 static bool
@@ -622,10 +633,11 @@ do_mdel (Cache *cache, const char **cmd, size_t nkeys, Buffer *out)
     {
       num += del (cache, cmd[i + 1]);
     }
+  cache->dirty_count += (uint64_t) num;
   return out_int (out, num);
 }
 
-static void
+static bool
 entry_set (Cache *cache, const char *key, const char *val)
 {
   HNode *node = hm_lookup_by_key (&cache->db, key);
@@ -635,29 +647,32 @@ entry_set (Cache *cache, const char *key, const char *val)
       if (ent->type != T_STR)
 	{
 	  entry_dispose_atomic (cache, ent);
-	  entry_new_str (cache, key, val);
-	  return;
+	  Entry *new = entry_new_str (cache, key, val);
+	  return new != NULL;
 	}
       if (ent->val)
 	{
+	  if (strcmp (ent->val, val) == 0)
+	    return false;
 	  free (ent->val);
 	}
       ent->val = calloc (strlen (val) + 1, sizeof (char));
       if (!ent->val)
 	{
 	  msg ("Out of memory in entry_new_str value allocation.");
-	  return;
+	  return false;
 	}
       strcpy (ent->val, val);
+      return true;
     }
-  else
-    entry_new_str (cache, key, val);
+  return entry_new_str (cache, key, val) != NULL;
 }
 
 static bool
 do_set (Cache *cache, const char **cmd, Buffer *out)
 {
-  entry_set (cache, cmd[1], cmd[2]);
+  if (entry_set (cache, cmd[1], cmd[2]))
+    cache->dirty_count++;
   if (out->proto == PROTO_RESP)
     return out_ok (out);
   return out_nil (out);
@@ -668,7 +683,8 @@ do_mset (Cache *cache, const char **cmd, size_t nkeys, Buffer *out)
 {
   for (size_t i = 0; i < nkeys; i = i + 2)
     {
-      entry_set (cache, cmd[i + 1], cmd[i + 2]);
+      if (entry_set (cache, cmd[i + 1], cmd[i + 2]))
+	cache->dirty_count++;
     }
 
   return out_nil (out);

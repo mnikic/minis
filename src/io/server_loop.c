@@ -65,6 +65,8 @@ static struct
   int epfd;
   uint64_t last_snapshot_time;
   pid_t snapshot_child_pid;
+  uint64_t last_snapshot_mod_count;
+  uint64_t last_snapshot_mod_count_at_fork;
   volatile sig_atomic_t terminate_flag;
 } g_data;
 
@@ -103,6 +105,7 @@ rdb_save_background (Cache *cache, uint64_t now_us)
     return;			// Already saving
 
   g_data.last_snapshot_time = now_us;
+  g_data.last_snapshot_mod_count_at_fork = cache->dirty_count;
 
   pid_t child_pid = fork ();
 
@@ -142,6 +145,8 @@ check_snapshot_child_status (void)
       // Child finished
       if (WIFEXITED (status) && WEXITSTATUS (status) == 0)
 	{
+	  g_data.last_snapshot_mod_count =
+	    g_data.last_snapshot_mod_count_at_fork;
 	}
       else
 	{
@@ -550,12 +555,40 @@ init_cache (uint64_t now_us)
 static void
 process_snapshots (Cache *cache, uint64_t now_us)
 {
-  if (SNAPSHOT_INTERVAL_US == 0)
-    return;			// Disabled
   check_snapshot_child_status ();
-  if (g_data.snapshot_child_pid == 0
-      && now_us >= g_data.last_snapshot_time + SNAPSHOT_INTERVAL_US)
-    rdb_save_background (cache, now_us);
+
+  if (g_data.snapshot_child_pid != 0)
+    return;
+
+  uint64_t dirty_diff = cache->dirty_count - g_data.last_snapshot_mod_count;
+  uint64_t time_diff_sec = (now_us - g_data.last_snapshot_time) / 1000000;
+
+  // Optimization: If nothing changed, don't check rules
+  if (dirty_diff == 0)
+    return;
+
+  // Check Rules
+  bool trigger = false;
+  int num_rules = sizeof (save_params) / sizeof (SaveParam);
+
+  for (int i = 0; i < num_rules; i++)
+    {
+      if (time_diff_sec >= save_params[i].seconds &&
+	  dirty_diff >= save_params[i].changes)
+	{
+	  msgf
+	    ("Snapshot triggered: rule %llu/%llu with %llu changes in %llu seconds",
+	     save_params[i].changes, save_params[i].seconds, dirty_diff,
+	     time_diff_sec);
+	  trigger = true;
+	  break;
+	}
+    }
+
+  if (trigger)
+    {
+      rdb_save_background (cache, now_us);
+    }
 }
 
 int
