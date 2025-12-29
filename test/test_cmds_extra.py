@@ -512,6 +512,27 @@ $ {client_executable-abs_path} incr expinc
 (int) 1
 $ {client_executable-abs_path} del expinc
 (int) 1
+# Test exists command
+$ {client_executable-abs_path} set ex1 val1
+(str) OK
+$ {client_executable-abs_path} exists ex1
+(int) 1
+$ {client_executable-abs_path} exists nonex
+(int) 0
+$ {client_executable-abs_path} set ex2 val2
+(str) OK
+$ {client_executable-abs_path} exists ex1 ex2 nonex
+(int) 2
+$ {client_executable-abs_path} del ex1
+(int) 1
+$ {client_executable-abs_path} exists ex1
+(int) 0
+# Test exists on expired key
+$ {client_executable-abs_path} pexpire ex2 100
+(int) 1
+$ sleep 0.15
+$ {client_executable-abs_path} exists ex2
+(int) 0
 '''
 
 

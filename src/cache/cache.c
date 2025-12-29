@@ -732,6 +732,35 @@ entry_set (Cache *cache, const char *key, const char *val)
 }
 
 static bool
+do_exists (Cache *cache, const char **cmd, size_t nkeys, Buffer *out, uint64_t now_us)
+{
+  int64_t hits = 0;
+  for (size_t i = 0; i < nkeys; ++i)
+    {
+      const char *key = cmd[i + 1];
+      HNode *node = hm_lookup_by_key (&cache->db, key);
+      
+      if (node)
+        {
+          Entry *ent = fetch_entry (node);
+          
+          // Check expiration
+          if (ent->expire_at_us != 0 && ent->expire_at_us < now_us)
+            {
+              // Key exists but is dead.
+              // Passive expire: Remove it now so subsequent calls see it as gone.
+              entry_dispose_atomic (cache, ent);
+            }
+          else
+            {
+              hits++;
+            }
+        }
+    }
+  return out_int (out, hits);
+}
+
+static bool
 do_incr (Cache *cache, const char *key, int64_t delta, Buffer *out,
 	 uint64_t now_us)
 {
@@ -1020,6 +1049,10 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
 	return out_err (out, ERR_ARG, "expect int");
       return do_incr (cache, cmd[1], -delta, out, now_us);
     }
+  if (size >= 2 && cmd_is (cmd[0], "exists"))
+  {
+    return do_exists (cache, cmd, size - 1, out, now_us);
+  }
 
   return out_err (out, ERR_UNKNOWN, "Unknown cmd");
 }
