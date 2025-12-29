@@ -15,6 +15,7 @@
 #include "io/buffer.h"
 #include "cache/cache.h"
 #include "cache/zset.h"
+#include "cache/hash.h"
 
 // ============================================================================
 // CRC32 Utilities
@@ -132,6 +133,38 @@ serialize_zset (Buffer *buf, ZSet *zset)
   return count > 0 ? serialize_znode (buf, zset->tree) : true;
 }
 
+static bool
+serialize_hash (Buffer *buf, HMap *hmap)
+{
+  if (!buf_append_byte (buf, T_HASH))
+    return false;
+
+  // Write the number of fields
+  uint32_t count = (uint32_t) hm_size (hmap);
+  if (!buf_append_u32 (buf, count))
+    return false;
+
+  // Iterate over the hash map
+  HMIter iter;
+  hm_iter_init (hmap, &iter);
+  HNode *node;
+  while ((node = hm_iter_next (&iter)) != NULL)
+    {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+      HashEntry *hash_entry = container_of (node, HashEntry, node);
+#pragma GCC diagnostic pop
+
+      // Write Field
+      if (!out_raw_str (buf, hash_entry->field, strlen (hash_entry->field)))
+	return false;
+      // Write Value
+      if (!out_raw_str (buf, hash_entry->value, strlen (hash_entry->value)))
+	return false;
+    }
+  return true;
+}
+
 // ============================================================================
 // Entry Serialization
 // ============================================================================
@@ -152,6 +185,8 @@ serialize_entry (Buffer *buf, Entry *entry)
     return out_typed_str (buf, entry->val);
   if (entry->type == T_ZSET)
     return serialize_zset (buf, entry->zset);
+  if (entry->type == T_HASH)
+    return serialize_hash (buf, entry->hash);
 
   return false;
 }
@@ -221,6 +256,81 @@ read_and_verify_header (FILE *file_ptr, uint32_t *expected_crc)
 // ============================================================================
 // Entry Deserialization
 // ============================================================================
+
+static bool
+load_hash_entry (FILE *file_ptr, Cache *cache, const char *key,
+		 uint64_t expire_at, uint32_t *crc, bool skip)
+{
+  uint32_t count;
+  if (!read_u32_crc (file_ptr, &count, crc))
+    return false;
+
+  Entry *ent = NULL;
+  if (!skip)
+    {
+      ent = entry_new_hash (cache, key);
+      if (!ent)
+	return false;
+      if (expire_at > 0)
+	entry_set_expiration (cache, ent, expire_at);
+    }
+
+  for (uint32_t i = 0; i < count; i++)
+    {
+      // 1. Read Field
+      uint32_t flen;
+      if (!read_u32_crc (file_ptr, &flen, crc))
+	return false;
+
+      char field_buf[K_MAX_MSG];	// Assuming fields are reasonably small keys
+      if (flen >= sizeof (field_buf))
+	return false;
+      if (!read_exact_crc (file_ptr, field_buf, flen, crc))
+	return false;
+      field_buf[flen] = '\0';
+
+      // 2. Read Value (handling potentially large values)
+      uint32_t vlen;
+      if (!read_u32_crc (file_ptr, &vlen, crc))
+	return false;
+
+      if (skip)
+	{
+	  // Drain the value data to update CRC
+	  char dump[1024];
+	  size_t rem = vlen;
+	  while (rem > 0)
+	    {
+	      size_t chunk = (rem < sizeof (dump)) ? rem : sizeof (dump);
+	      if (!read_exact_crc (file_ptr, dump, chunk, crc))
+		return false;
+	      rem -= chunk;
+	    }
+	}
+      else
+	{
+	  // Read full value into memory to set it
+	  char *val_buf = malloc (vlen + 1);
+	  if (!val_buf)
+	    return false;
+
+	  if (!read_exact_crc (file_ptr, val_buf, vlen, crc))
+	    {
+	      free (val_buf);
+	      return false;
+	    }
+	  val_buf[vlen] = '\0';
+
+	  // Insert into Hash
+	  if (ent)
+	    {
+	      hash_set (ent->hash, field_buf, val_buf);
+	    }
+	  free (val_buf);
+	}
+    }
+  return true;
+}
 
 // Reads data to update CRC/Stream, but ignores the result if skip=true
 static bool
@@ -376,6 +486,8 @@ load_one_entry (FILE *file_ptr, uint64_t now_us, Cache *cache, uint32_t *crc,
     return load_string_entry (file_ptr, cache, key_buf, expire_at, crc, skip);
   if (type == T_ZSET)
     return load_zset_entry (file_ptr, cache, key_buf, expire_at, crc, skip);
+  if (type == T_HASH)
+    return load_hash_entry (file_ptr, cache, key_buf, expire_at, crc, skip);
 
   msgf ("Snapshot: unknown type %u for key %s", type, key_buf);
   return false;

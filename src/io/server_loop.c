@@ -86,16 +86,25 @@ sigint_handler (int sig)
   g_data.terminate_flag = 1;
 }
 
-// Signal handler function (async-signal-safe)
 static void
 setup_signal_handlers (void)
 {
-  struct sigaction sig_action = { 0 };
-  sig_action.sa_handler = sigint_handler;
-  sig_action.sa_flags = 0;
-  sigaction (SIGINT, &sig_action, NULL);
-  sigaction (SIGTERM, &sig_action, NULL);
-  sigaction (SIGQUIT, &sig_action, NULL);
+  struct sigaction sa_term = { 0 };
+  sa_term.sa_handler = sigint_handler;	// Sets terminate_flag = 1
+  sa_term.sa_flags = 0;
+  sigemptyset (&sa_term.sa_mask);
+
+  sigaction (SIGINT, &sa_term, NULL);
+  sigaction (SIGTERM, &sa_term, NULL);
+  sigaction (SIGQUIT, &sa_term, NULL);
+  sigaction (SIGHUP, &sa_term, NULL);	// Terminal closed
+
+  struct sigaction sa_ign = { 0 };
+  sa_ign.sa_handler = SIG_IGN;
+  sa_ign.sa_flags = 0;
+  sigemptyset (&sa_ign.sa_mask);
+
+  sigaction (SIGPIPE, &sa_ign, NULL);
 }
 
 static void

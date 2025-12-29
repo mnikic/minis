@@ -7,39 +7,21 @@ import re
 import os
 
 # --- Dynamic Path Setup ---
-
-# 1. Get the path from the Makefile environment variable.
-#    Defaults to the standard release location if run manually.
-#    The Makefile passes paths like: 'build/bin/android/minis-bench'
 CLIENT_BIN_PATH = os.environ.get('CLIENT_BIN_PATH', 'build/bin/release/minis-bench')
-
-# 2. Define the placeholder literal used in your test strings
-#    (We keep the old variable name in the string to avoid changing all your test cases)
 CLIENT_PLACEHOLDER = '{client_executable-abs_path}'
-
-# 3. Resolve the absolute path
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 if os.path.isabs(CLIENT_BIN_PATH):
-    # If Makefile passed an absolute path, use it directly
     client_executable_abs_path = CLIENT_BIN_PATH
 else:
-    # If Makefile passed a relative path (e.g. "build/bin/..."), 
-    # it is relative to the Project Root.
-    # Since this script lives in "test/", we join with ".." to get to Root.
     client_executable_abs_path = os.path.normpath(
         os.path.join(script_dir, '..', CLIENT_BIN_PATH)
     )
 
-# ------------------------------
-
-# *** DEBUGGING OUTPUT ***
 print(f"--- Client Configuration ---")
 print(f"CLIENT_BIN_NAME: {CLIENT_BIN_PATH}")
 print(f"Calculated Path: {client_executable_abs_path}")
 print(f"----------------------------")
-# **************************
-
 
 CASES = r'''
 # Basic zset operations
@@ -100,6 +82,77 @@ $ {client_executable-abs_path} get key1
 (nil)
 $ {client_executable-abs_path} del key1
 (int) 0
+
+# Test Hash Operations (Basic)
+$ {client_executable-abs_path} hget user:1000 name
+(nil)
+$ {client_executable-abs_path} hset user:1000 name "Alice"
+(int) 1
+$ {client_executable-abs_path} hget user:1000 name
+(str) Alice
+$ {client_executable-abs_path} hset user:1000 name "Bob"
+(int) 0
+$ {client_executable-abs_path} hget user:1000 name
+(str) Bob
+$ {client_executable-abs_path} hset user:1000 email "bob@example.com"
+(int) 1
+$ {client_executable-abs_path} hget user:1000 email
+(str) bob@example.com
+$ {client_executable-abs_path} hget user:1000 age
+(nil)
+$ {client_executable-abs_path} del user:1000
+(int) 1
+$ {client_executable-abs_path} hget user:1000 name
+(nil)
+
+# Test Advanced Hash Operations (HGETALL, HDEL)
+$ {client_executable-abs_path} hset car:1 model "Tesla"
+(int) 1
+$ {client_executable-abs_path} hset car:1 year "2024"
+(int) 1
+$ {client_executable-abs_path} hset car:1 color "Red"
+(int) 1
+$ {client_executable-abs_path} hgetall car:1
+(arr) len=6
+(str) color
+(str) Red
+(str) model
+(str) Tesla
+(str) year
+(str) 2024
+(arr) end
+$ {client_executable-abs_path} hdel car:1 year
+(int) 1
+$ {client_executable-abs_path} hget car:1 year
+(nil)
+$ {client_executable-abs_path} hgetall car:1
+(arr) len=4
+(str) color
+(str) Red
+(str) model
+(str) Tesla
+(arr) end
+$ {client_executable-abs_path} hdel car:1 model color
+(int) 2
+$ {client_executable-abs_path} exists car:1
+(int) 0
+$ {client_executable-abs_path} hdel car:1 whatever
+(int) 0
+
+# Test Hash Type Conflicts
+$ {client_executable-abs_path} set str_key "some string"
+(str) OK
+$ {client_executable-abs_path} hset str_key field value
+(err) 3 WRONGTYPE...
+$ {client_executable-abs_path} hget str_key field
+(nil)
+$ {client_executable-abs_path} hdel str_key field
+(int) 0
+$ {client_executable-abs_path} hgetall str_key
+(arr) len=0
+(arr) end
+$ {client_executable-abs_path} del str_key
+(int) 1
 
 # Test multiple keys
 $ {client_executable-abs_path} set k1 v1

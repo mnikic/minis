@@ -33,7 +33,7 @@ typedef struct
 
 typedef enum
 {
-  T_STR = 0, T_ZSET = 1,
+  T_STR = 0, T_ZSET = 1, T_HASH = 2
 } EntryType;
 
 typedef struct entry
@@ -44,6 +44,7 @@ typedef struct entry
   EntryType type;
   uint64_t expire_at_us;
   ZSet *zset;
+  HMap *hash;
   // for TTLs
   size_t heap_idx;		// Index in the TTL heap. (size_t)-1 means not in heap.
 } Entry;
@@ -61,6 +62,8 @@ bool
 entry_set_ttl (Cache * cache, uint64_t now_us, Entry * ent, int64_t ttl_ms);
 Entry *entry_new_str (Cache * cache, const char *key, const char *val);
 Entry *entry_new_zset (Cache * cache, const char *key);
+Entry *entry_new_hash (Cache * cache, const char *key);
+
 
 bool entry_set_expiration (Cache * cache, Entry * ent, uint64_t expire_at_us);
 #endif /* CACHE_H */
