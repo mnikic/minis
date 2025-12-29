@@ -927,15 +927,31 @@ do_hget (Cache *cache, const char *key, const char *field, Buffer *out,
 {
   Entry *ent = entry_lookup_by_key (cache, key, now_us);
   if (!ent)
-    return out_nil (out);	// Was found, but expired and deleted
+    return out_nil (out);
   if (ent->type != T_HASH)
-    return out_nil (out);	// Wrong type. Maybe we do return out_err(out, ERR_TYPE, "WRONGTYPE..."); 
+    return out_err (out, ERR_TYPE,
+		    "WRONGTYPE Operation against a key holding the wrong kind of value");
 
   HashEntry *hash = hash_lookup (ent->hash, field);
   if (!hash)
     return out_nil (out);
 
   return out_str (out, hash->value);
+}
+
+static bool
+do_hexists (Cache *cache, const char *key, const char *field, Buffer *out,
+	    uint64_t now_us)
+{
+  Entry *ent = entry_lookup_by_key (cache, key, now_us);
+  if (!ent)
+    return out_int (out, 0);
+  if (ent->type != T_HASH)
+    return out_err (out, ERR_TYPE,
+		    "WRONGTYPE Operation against a key holding the wrong kind of value");
+
+  HashEntry *hash = hash_lookup (ent->hash, field);
+  return out_int (out, hash ? 1 : 0);
 }
 
 static bool
@@ -1153,6 +1169,10 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
   if (size == 2 && cmd_is (cmd[0], "hgetall"))
     {
       return do_hgetall (cache, cmd[1], out, now_us);
+    }
+  if (size == 3 && cmd_is (cmd[0], "hexists"))
+    {
+      return do_hexists (cache, cmd[1], cmd[2], out, now_us);
     }
 
   return out_err (out, ERR_UNKNOWN, "Unknown cmd");

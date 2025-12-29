@@ -145,7 +145,7 @@ $ {client_executable-abs_path} set str_key "some string"
 $ {client_executable-abs_path} hset str_key field value
 (err) 3 WRONGTYPE...
 $ {client_executable-abs_path} hget str_key field
-(nil)
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} hdel str_key field
 (int) 0
 $ {client_executable-abs_path} hgetall str_key
@@ -586,6 +586,21 @@ $ {client_executable-abs_path} pexpire ex2 100
 $ sleep 0.15
 $ {client_executable-abs_path} exists ex2
 (int) 0
+# Test HEXISTS
+$ {client_executable-abs_path} hset user:2000 name "John"
+(int) 1
+$ {client_executable-abs_path} hexists user:2000 name
+(int) 1
+$ {client_executable-abs_path} hexists user:2000 age
+(int) 0
+$ {client_executable-abs_path} hexists user:missing key
+(int) 0
+$ {client_executable-abs_path} set str_key "hello"
+(str) OK
+$ {client_executable-abs_path} hexists str_key field
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
+$ {client_executable-abs_path} mdel user:2000 str_key
+(int) 2
 '''
 
 
