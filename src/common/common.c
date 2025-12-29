@@ -20,7 +20,7 @@
 
 bool g_verbose_mode = false;
 
-inline uint64_t
+ALWAYS_INLINE uint64_t
 str_hash (const uint8_t *data, size_t len)
 {
   uint32_t seed = 0x811C9DC5;

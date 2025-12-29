@@ -143,14 +143,13 @@ $ {client_executable-abs_path} hdel car:1 whatever
 $ {client_executable-abs_path} set str_key "some string"
 (str) OK
 $ {client_executable-abs_path} hset str_key field value
-(err) 3 WRONGTYPE...
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} hget str_key field
 (err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} hdel str_key field
 (int) 0
 $ {client_executable-abs_path} hgetall str_key
-(arr) len=0
-(arr) end
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} del str_key
 (int) 1
 
@@ -347,7 +346,7 @@ $ {client_executable-abs_path} set mixkey normalvalue
 $ {client_executable-abs_path} get mixkey
 (str) normalvalue
 $ {client_executable-abs_path} zadd mixkey 1 member
-(err) 3 expect zset
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} del mixkey
 (int) 1
 $ {client_executable-abs_path} zadd mixkey 1 member

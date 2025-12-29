@@ -6,14 +6,15 @@
 #include <math.h>
 
 #include "cache/cache.h"
+#include "cache/entry.h"
 #include "cache/zset.h"
-#include "cache/hash.h"   // <--- Added for hash_set/hash_lookup
+#include "cache/hash.h"		// <--- Added for hash_set/hash_lookup
 #include "cache/persistence.h"
 #include "common/common.h"
 
 #define GREETING_KEY "greeting"
 #define LEADERBOARD_KEY "leaderboard"
-#define USER_HASH_KEY "user:100"  // <--- Added Key
+#define USER_HASH_KEY "user:100"	// <--- Added Key
 #define TEMP_KEY "temp"
 #define LONG_EXPIRED_KEY "long expired"
 #define RECENTLY_EXPIRED_KEY "recently expired"
@@ -34,9 +35,9 @@ find_entry (Cache *cache, const char *key)
       Entry *ent = container_of (node, Entry, node);
 #pragma GCC diagnostic pop
       if (strcmp (ent->key, key) == 0)
-    {
-      return ent;
-    }
+	{
+	  return ent;
+	}
     }
   return NULL;
 }
@@ -77,7 +78,7 @@ main (void)
   // D. Add Expiration
   msgf ("   -> Adding Expiring Key 'temp' (TTL 5000ms)");
   Entry *ent3 = entry_new_str (cache1, TEMP_KEY, "I will survive");
-  ent3->expire_at_us = 123456789;    // Arbitrary future timestamp
+  ent3->expire_at_us = 123456789;	// Arbitrary future timestamp
 
   msg ("   -> Adding Long Expired Key 'long expired'");
   Entry *ent4 =
@@ -86,7 +87,7 @@ main (void)
 
   msg ("   -> Adding Recently Expired Key 'recently expired'");
   Entry *ent5 = entry_new_str (cache1, RECENTLY_EXPIRED_KEY,
-                   "I won't get resurected either.");
+			       "I won't get resurected either.");
   ent5->expire_at_us = in_between_us;
 
   msgf ("=== 3. Saving to Disk ===");
@@ -178,7 +179,7 @@ main (void)
   HashEntry *h_missing = hash_lookup (res_hash->hash, "missing");
   (void) h_missing;
   assert (h_missing == NULL);
-  
+
   msgf ("   [PASS] Hash fields and values match.");
 
   // Verify Expiration
@@ -208,7 +209,7 @@ main (void)
   uint8_t byte;
   size_t ret = fread (&byte, 1, 1, file);
   (void) ret;
-  byte ^= 0xFF;            // Invert byte
+  byte ^= 0xFF;			// Invert byte
   fseek (file, 13, SEEK_SET);
   fwrite (&byte, 1, 1, file);
   fclose (file);

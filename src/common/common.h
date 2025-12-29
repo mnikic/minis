@@ -189,6 +189,13 @@ dump_stats (void)
 #endif // K_ENABLE_BENCHMARK
 uint64_t str_hash (const uint8_t * data, size_t len);
 
+static ALWAYS_INLINE uint64_t
+cstr_hash (const char *str)
+{
+  return str_hash ((const uint8_t *) str, strlen (str));
+}
+
+
 NORETURN COLD void die (const char *msg);
 
 COLD uint16_t parse_port (int argc, char *argv[]);
