@@ -591,6 +591,39 @@ process_snapshots (Cache *cache, uint64_t now_us)
     }
 }
 
+void
+save_sync (Cache *cache)
+{
+  if (g_data.snapshot_child_pid > 0)
+    {
+      msgf ("Killing active snapshot child %d to perform sync save...",
+	    g_data.snapshot_child_pid);
+      kill (g_data.snapshot_child_pid, SIGKILL);
+      int status;
+      waitpid (g_data.snapshot_child_pid, &status, 0);
+
+      g_data.snapshot_child_pid = 0;
+    }
+  msg ("Saving DB to disk (Synchronous)...");
+  uint64_t now_us = get_monotonic_usec ();
+  if (cache_save_to_file (cache, MINIS_DB_FILE, now_us))
+    {
+      msg ("DB saved successfully.");
+    }
+  else
+    {
+      msg ("ERROR: Failed to save DB on shutdown!");
+    }
+}
+
+void
+server_shutdown (Cache *cache, int listen_fd, int epfd)
+{
+  save_sync (cache);
+  dump_stats ();
+  cleanup_server_resources (cache, listen_fd, epfd);
+}
+
 int
 server_run (int port)
 {
@@ -633,8 +666,6 @@ server_run (int port)
       process_snapshots (cache, now_us);
       process_timers (cache, now_us);
     }
-
-  cleanup_server_resources (cache, listen_fd, epfd);
-  dump_stats ();
+  server_shutdown (cache, listen_fd, epfd);
   return 0;
 }
