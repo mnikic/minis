@@ -1,7 +1,7 @@
 /*
- * avl.h
+ * persistence.h
  *
- *  Created on: Jun 19, 2023
+ *  Created on: Jun 29, 2025
  *      Author: loshmi
  */
 
@@ -11,14 +11,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "cache/cache.h"
+#include "cache/minis.h"
 
-// Save the entire cache to a file (Atomic RDB style)
-bool cache_save_to_file (Cache * cache, const char *filename,
+// Save the entire cache to a file 
+bool cache_save_to_file (const Minis * minis, const char *filename,
 			 uint64_t now_us);
 
 // Load the cache from a file (clears existing data if needed)
-bool cache_load_from_file (Cache * cache, const char *filename,
+bool cache_load_from_file (Minis * minis, const char *filename,
 			   uint64_t now_us);
 
 #endif // PERSISTENCE_H_

@@ -31,6 +31,8 @@ typedef void (*MinisHashCb) (const char *field, const char *value, void *ctx);
 typedef void (*MinisZSetCb) (const char *member, size_t len, double score,
 			     void *ctx);
 
+typedef bool (*MinisOneValVisitor) (const char *key, void *ctx);
+
 // Lifecycle Management
 
 Minis *minis_init (void);
@@ -46,6 +48,10 @@ uint64_t minis_next_expiry (Minis * minis);
 
 MinisError minis_del (Minis * minis, const char *key, int *out_deleted,
 		      uint64_t now_us);
+MinisError
+minis_mdel (Minis * minis, const char **keys, size_t count,
+	    uint64_t * out_deleted, uint64_t now_us);
+
 MinisError minis_exists (Minis * minis, const char *key, int *out_exists,
 			 uint64_t now_us);
 MinisError minis_expire (Minis * minis, const char *key, int64_t ttl_ms,
@@ -54,5 +60,10 @@ MinisError minis_ttl (Minis * minis, const char *key, int64_t * out_ttl_ms,
 		      uint64_t now_us);
 MinisError minis_keys (Minis * minis, const char *pattern, MinisKeyCb cb,
 		       void *ctx, uint64_t now_us);
+
+// Persistence
+MinisError minis_save (Minis * minis, const char *filename, uint64_t now_us);
+
+MinisError minis_load (Minis * minis, const char *filename, uint64_t now_us);
 
 #endif // _MINIS_H_

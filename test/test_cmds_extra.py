@@ -600,6 +600,105 @@ $ {client_executable-abs_path} hexists str_key field
 (err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} mdel user:2000 str_key
 (int) 2
+# Test SET removes TTL (Persistence)
+$ {client_executable-abs_path} set set_ttl_rem val1
+(str) OK
+$ {client_executable-abs_path} pexpire set_ttl_rem 10000
+(int) 1
+# Verify TTL is active (positive integer)
+$ {client_executable-abs_path} pttl set_ttl_rem
+(int) 10000
+# Overwrite with SET
+$ {client_executable-abs_path} set set_ttl_rem val2
+(str) OK
+# Verify TTL is gone (-1 means persistent)
+$ {client_executable-abs_path} pttl set_ttl_rem
+(int) -1
+$ {client_executable-abs_path} del set_ttl_rem
+(int) 1
+
+# Test MSET removes TTL (Persistence)
+$ {client_executable-abs_path} set mset_ttl_rem val1
+(str) OK
+$ {client_executable-abs_path} pexpire mset_ttl_rem 10000
+(int) 1
+# Verify TTL is active
+$ {client_executable-abs_path} pttl mset_ttl_rem
+(int) 10000
+# Overwrite with MSET
+$ {client_executable-abs_path} mset mset_ttl_rem val2 other_k other_v
+(str) OK
+# Verify TTL is gone
+$ {client_executable-abs_path} pttl mset_ttl_rem
+(int) -1
+$ {client_executable-abs_path} mdel mset_ttl_rem other_k
+(int) 2
+# Test: SET overwrites complex types (ZSET/HASH)
+# Redis Rule: SET is destructive. It should replace a ZSET with a String.
+$ {client_executable-abs_path} zadd zset_to_kill 1 member
+(int) 1
+$ {client_executable-abs_path} set zset_to_kill "I am a string now"
+(str) OK
+$ {client_executable-abs_path} get zset_to_kill
+(str) I am a string now
+$ {client_executable-abs_path} zscore zset_to_kill member
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
+$ {client_executable-abs_path} del zset_to_kill
+(int) 1
+
+# Test: SET same value clears TTL (Idempotency)
+# Even if the value doesn't change, the TTL must be wiped.
+$ {client_executable-abs_path} set idem_key "myvalue"
+(str) OK
+$ {client_executable-abs_path} pexpire idem_key 5000
+(int) 1
+$ {client_executable-abs_path} pttl idem_key
+(int) 5000
+# Set to IDENTICAL value
+$ {client_executable-abs_path} set idem_key "myvalue"
+(str) OK
+# TTL should be gone (-1)
+$ {client_executable-abs_path} pttl idem_key
+(int) -1
+$ {client_executable-abs_path} del idem_key
+(int) 1
+
+# Test: MSET overwrites mixed types
+# Create a String and a ZSet
+$ {client_executable-abs_path} set str_key "orig"
+(str) OK
+$ {client_executable-abs_path} zadd zset_key 10 m1
+(int) 1
+# Clobber BOTH with MSET
+$ {client_executable-abs_path} mset str_key "new_str" zset_key "now_str"
+(str) OK
+$ {client_executable-abs_path} get str_key
+(str) new_str
+$ {client_executable-abs_path} get zset_key
+(str) now_str
+$ {client_executable-abs_path} mdel str_key zset_key
+(int) 2
+
+# Test: MSET with duplicate keys in command
+# "mset k1 v1 k1 v2" -> k1 should be v2
+$ {client_executable-abs_path} mset dupe_key val1 dupe_key val2
+(str) OK
+$ {client_executable-abs_path} get dupe_key
+(str) val2
+$ {client_executable-abs_path} del dupe_key
+(int) 1
+
+# Test: Set Empty String vs Null
+$ {client_executable-abs_path} set empty_str ""
+(str) OK
+$ {client_executable-abs_path} get empty_str
+(str) 
+$ {client_executable-abs_path} set null_like_str "NULL"
+(str) OK
+$ {client_executable-abs_path} get null_like_str
+(str) NULL
+$ {client_executable-abs_path} mdel empty_str null_like_str
+(int) 2
 '''
 
 

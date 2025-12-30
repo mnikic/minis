@@ -3,6 +3,7 @@
 
 #include "cache/hash.h"
 #include "cache/entry.h"
+#include "cache/heap.h"
 #include "minis_private.h"
 #include "common/macros.h"
 #include "common/common.h"

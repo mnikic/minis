@@ -11,10 +11,10 @@
 #include "cache/heap.h"
 #include "cache/entry.h"
 #include "cache/thread_pool.h"
+#include "cache/persistence.h"
 #include "common/common.h"
 #include "common/glob.h"
 #include "common/lock.h"
-
 
 Minis *
 minis_init (void)
@@ -72,34 +72,53 @@ minis_next_expiry (Minis *minis)
 }
 
 // --- Basic Operations ---
-
-MinisError
-minis_del (Minis *minis, const char *key, int *out_deleted, uint64_t now_us)
+static void
+minis_del_internal (Minis *minis, const char *key, int *out_deleted,
+		    uint64_t now_us)
 {
-  ENGINE_LOCK (&minis->lock);
-  Entry entry_key;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-  entry_key.key = (char *) key;
-#pragma GCC diagnostic pop
-  entry_key.node.hcode = cstr_hash (key);
-
+  Entry entry_key = entry_dummy (key);
   HNode *node = hm_pop (&minis->db, &entry_key.node, &entry_eq);
   int ret_val = 0;
 
   if (node)
     {
       Entry *entry = entry_fetch (node);
+      // If not expired, count as deleted
       if (!(entry->expire_at_us != 0 && entry->expire_at_us < now_us))
 	{
 	  ret_val = 1;
 	  minis->dirty_count++;
 	}
-      entry_del (minis, entry, (uint64_t) - 1);
+      entry_del (minis, entry, (uint64_t) - 1);	// -1 ensures strict free
     }
 
   if (out_deleted)
     *out_deleted = ret_val;
+}
+
+MinisError
+minis_del (Minis *minis, const char *key, int *out_deleted, uint64_t now_us)
+{
+  ENGINE_LOCK (&minis->lock);
+  minis_del_internal (minis, key, out_deleted, now_us);
+  ENGINE_UNLOCK (&minis->lock);
+  return MINIS_OK;
+}
+
+MinisError
+minis_mdel (Minis *minis, const char **keys, size_t count,
+	    uint64_t *out_deleted, uint64_t now_us)
+{
+  ENGINE_LOCK (&minis->lock);
+  uint64_t total = 0;
+  for (size_t i = 0; i < count; ++i)
+    {
+      int deleted = 0;
+      minis_del_internal (minis, keys[i], &deleted, now_us);
+      total += (uint64_t) deleted;
+    }
+  if (out_deleted)
+    *out_deleted = total;
   ENGINE_UNLOCK (&minis->lock);
   return MINIS_OK;
 }
@@ -194,4 +213,37 @@ minis_keys (Minis *minis, const char *pattern, MinisKeyCb cb, void *ctx,
   hm_scan (&minis->db, &cb_scan_keys, &kctx);
   ENGINE_UNLOCK (&minis->lock);
   return MINIS_OK;
+}
+
+MinisError
+minis_save (Minis *minis, const char *filename, uint64_t now_us)
+{
+  ENGINE_LOCK (&minis->lock);
+
+  bool success = cache_save_to_file (minis, filename, now_us);
+
+  if (success)
+    {
+      // Update dirty tracking so we know we are clean
+      minis->last_save_dirty_count = minis->dirty_count;
+    }
+
+  ENGINE_UNLOCK (&minis->lock);
+  return success ? MINIS_OK : MINIS_ERR_UNKNOWN;
+}
+
+MinisError
+minis_load (Minis *minis, const char *filename, uint64_t now_us)
+{
+  ENGINE_LOCK (&minis->lock);
+  bool success = cache_load_from_file (minis, filename, now_us);
+
+  // On load, dirty counts should match (we are in sync with disk)
+  if (success)
+    {
+      minis->last_save_dirty_count = minis->dirty_count;
+    }
+
+  ENGINE_UNLOCK (&minis->lock);
+  return success ? MINIS_OK : MINIS_ERR_NIL;	// NIL = File not found/empty
 }

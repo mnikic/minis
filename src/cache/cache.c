@@ -128,14 +128,9 @@ static bool
 do_mdel (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
 	 uint64_t now_us)
 {
-  int64_t total = 0;
-  for (size_t i = 0; i < nkeys; ++i)
-    {
-      int deleted = 0;
-      minis_del (cache, cmd[i + 1], &deleted, now_us);
-      total += deleted;
-    }
-  return out_int (out, total);
+  uint64_t total = 0;
+  minis_mdel (cache, cmd, nkeys, &total, now_us);
+  return out_int (out, (int64_t) total);
 }
 
 static bool
@@ -253,13 +248,33 @@ static bool
 do_mset (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
 	 uint64_t now_us)
 {
-  // MSET is atomic in Redis, but for this cache simpler loop is fine.
-  // Ideally minis_mset would handle the lock once.
-  for (size_t i = 0; i < nkeys; i = i + 2)
+  MinisError err = minis_mset (cache, cmd, nkeys, now_us);
+  if (err == MINIS_OK)
+    return out_ok (out);
+  return reply_with_error (out, err);
+}
+
+typedef struct
+{
+  Buffer *out;
+  bool result;
+} MgetVisitorCtx;
+
+static bool
+mget_visitor (const char *val, void *ctx)
+{
+  MgetVisitorCtx *mvc = (MgetVisitorCtx *) ctx;
+  if (!mvc->result)
+    return false;
+  if (val)
     {
-      minis_set (cache, cmd[i + 1], cmd[i + 2], now_us);
+      if (!out_str (mvc->out, val))
+	mvc->result = false;
     }
-  return out_ok (out);
+  else if (!out_nil (mvc->out))
+    mvc->result = false;
+
+  return mvc->result;
 }
 
 static bool
@@ -268,23 +283,9 @@ do_mget (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
 {
   if (!out_arr (out, nkeys))
     return false;
-
-  for (size_t i = 0; i < nkeys; ++i)
-    {
-      const char *val = NULL;
-      MinisError err = minis_get (cache, cmd[i + 1], &val, now_us);
-      if (err == MINIS_OK)
-	{
-	  if (!out_str (out, val))
-	    return false;
-	}
-      else
-	{
-	  if (!out_nil (out))
-	    return false;
-	}
-    }
-  return true;
+  MgetVisitorCtx ctx = {.out = out,.result = true };
+  minis_mget (cache, cmd, nkeys, mget_visitor, &ctx, now_us);
+  return ctx.result;
 }
 
 static bool
@@ -508,17 +509,17 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
   if (size == 2 && cmd_is (cmd[0], "keys"))
     return do_keys (cache, cmd, out, now_us);
   if (size > 2 && size % 2 == 1 && cmd_is (cmd[0], "mset"))
-    return do_mset (cache, cmd, size - 1, out, now_us);
+    return do_mset (cache, &cmd[1], size - 1, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "get"))
     return do_get (cache, cmd[1], out, now_us);
   if (size > 1 && cmd_is (cmd[0], "mget"))
-    return do_mget (cache, cmd, size - 1, out, now_us);
+    return do_mget (cache, cmd + 1, size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "set"))
     return do_set (cache, cmd, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "del"))
     return do_del (cache, cmd, out, now_us);
   if (size > 1 && cmd_is (cmd[0], "mdel"))
-    return do_mdel (cache, cmd, size - 1, out, now_us);
+    return do_mdel (cache, &cmd[1], size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "pexpire"))
     return do_expire (cache, cmd, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "pttl"))

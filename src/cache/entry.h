@@ -7,6 +7,8 @@
 
 #include "cache/hashtable.h"
 #include "cache/zset.h"
+#include "common/macros.h"
+#include "common/common.h"
 
 typedef struct Minis Minis;
 
@@ -33,6 +35,18 @@ typedef struct entry
 Entry *entry_new_zset (Minis * minis, const char *key);
 Entry *entry_new_str (Minis * minis, const char *key, const char *val);
 Entry *entry_new_hash (Minis * minis, const char *key);
+
+static ALWAYS_INLINE Entry
+entry_dummy (const char *key)
+{
+  Entry entry_key;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+  entry_key.key = (char *) key;
+#pragma GCC diagnostic pop
+  entry_key.node.hcode = cstr_hash (key);
+  return entry_key;
+}
 
 Entry *entry_fetch (HNode * node_to_fetch);
 Entry *fetch_entry_expiry_aware (Minis * minis, HNode * node,
