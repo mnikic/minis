@@ -5,13 +5,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.minisandroidtest"
+    namespace = "com.minis"
     compileSdk {
         version = release(36)
     }
 
     defaultConfig {
-        applicationId = "com.example.minisandroidtest"
+        applicationId = "com.minis"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
@@ -67,6 +67,12 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation("androidx.appcompat:appcompat:1.7.0")
+// 2. Standard UI components (likely needed for your Theme)
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.2.0")
+// 3. Core Android KTX (Kotlin Extensions - Optional but recommended)
+    implementation("androidx.core:core-ktx:1.15.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
