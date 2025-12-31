@@ -9,25 +9,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class Benchmark {
 
-  private static final int THREAD_COUNT = 10;
-  private static final int ITERATIONS_PER_THREAD = 100_000;
+  public static final int THREAD_COUNT = 1;
+  public static final int ITERATIONS_PER_THREAD = 10000;
 
-  public static void main(String[] args) throws Exception {
-    System.out.println("== Minis vs ConcurrentHashMap Benchmark ==");
-    System.out.printf("Threads: %d | Ops per Thread: %d | Total Ops: %d%n",
-        THREAD_COUNT, ITERATIONS_PER_THREAD, THREAD_COUNT * ITERATIONS_PER_THREAD * 3);
-
-    // --- 1. Java Benchmark ---
-    runJavaBench();
-
-    // --- 2. Minis Benchmark ---
-    // (Re-initialize Minis to ensure clean slate)
-    try (Minis minis = new Minis()) {
-      runMinisBench(minis);
-    }
-  }
-
-  private static void runJavaBench() throws InterruptedException {
+  public static void runJavaBench() throws InterruptedException {
     System.out.println("\n[Java ConcurrentHashMap] Warming up...");
     final ConcurrentHashMap<String, String> map = new ConcurrentHashMap<>();
 
@@ -42,7 +27,7 @@ public class Benchmark {
     printStats("Java ConcurrentHashMap", duration);
   }
 
-  private static void runMinisBench(Minis minis) throws InterruptedException {
+  public static void runMinisBench(Minis minis) throws InterruptedException {
     System.out.println("\n[Minis JNI] Warming up...");
 
     long start = System.nanoTime();
@@ -56,7 +41,7 @@ public class Benchmark {
     printStats("Minis JNI", duration);
   }
 
-  private static void printStats(String name, long durationNs) {
+  public static void printStats(String name, long durationNs) {
     double seconds = durationNs / 1_000_000_000.0;
     long totalOps = (long) THREAD_COUNT * ITERATIONS_PER_THREAD * 3; // Set + Get + Del
     long opsPerSec = (long) (totalOps / seconds);
