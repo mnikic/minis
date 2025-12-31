@@ -197,7 +197,7 @@ serialize_entry (Buffer *buf, Entry *entry)
 // ============================================================================
 
 static bool
-write_file_header (FILE *file_ptr, long *crc_offset)
+write_file_header (FILE *file_ptr, long *crc_offset, uint32_t item_count)
 {
   if (fwrite (MINIS_DB_MAGIC, 1, 4, file_ptr) != 4)
     return false;
@@ -208,7 +208,10 @@ write_file_header (FILE *file_ptr, long *crc_offset)
     return false;
 
   uint32_t ver = htonl (MINIS_DB_VERSION);
-  return fwrite (&ver, 4, 1, file_ptr) == 1;
+  if (fwrite (&ver, 4, 1, file_ptr) != 1)
+    return false;
+  uint32_t cnt = htonl (item_count);
+  return fwrite (&cnt, 4, 1, file_ptr) == 1;
 }
 
 static bool
@@ -222,7 +225,8 @@ patch_crc (FILE *file_ptr, long crc_offset, uint32_t crc)
 }
 
 static bool
-read_and_verify_header (FILE *file_ptr, uint32_t *expected_crc)
+read_and_verify_header (FILE *file_ptr, uint32_t *expected_crc,
+			uint32_t *out_item_count)
 {
   char magic[4];
   if (fread (magic, 1, 4, file_ptr) != 4
@@ -251,6 +255,11 @@ read_and_verify_header (FILE *file_ptr, uint32_t *expected_crc)
       return false;
     }
 
+  if (!read_u32_plain (file_ptr, out_item_count))
+    {
+      msgf ("Snapshot: failed to read item count");
+      return false;
+    }
   return true;
 }
 
@@ -524,8 +533,9 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
       return false;
     }
 
+  uint32_t item_count = (uint32_t) hm_size (&minis->db);
   long crc_offset;
-  if (!write_file_header (file_ptr, &crc_offset))
+  if (!write_file_header (file_ptr, &crc_offset, item_count))
     {
       cleanup_failed_save (file_ptr, tmp_filename);
       return false;
@@ -619,14 +629,27 @@ cache_load_from_file (Minis *minis, const char *filename, uint64_t now_us)
     }
 
   uint32_t expected_crc;
-  if (!read_and_verify_header (file_ptr, &expected_crc))
+  uint32_t item_count = 0;
+  if (!read_and_verify_header (file_ptr, &expected_crc, &item_count))
     {
       fclose (file_ptr);
       return false;
     }
+  msgf ("Snapshot: loading data (v%u). Number of items %lu.",
+	MINIS_DB_VERSION, item_count);
 
-  msgf ("Snapshot: loading data (v%u)...", MINIS_DB_VERSION);
-
+  if (item_count > 100)
+    {
+      msgf ("Snapshot: Pre-allocating for %u items...", item_count);
+      hm_destroy (&minis->db);
+      if (!hm_init (&minis->db, item_count))
+	{
+	  msgf ("Snapshot: Failed to allocate memory for %u items",
+		item_count);
+	  fclose (file_ptr);
+	  return false;
+	}
+    }
   uint32_t running_crc = 0;
 
   while (true)

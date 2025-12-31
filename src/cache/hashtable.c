@@ -4,9 +4,21 @@
 #include <string.h>
 
 #include "cache/hashtable.h"
+#include "common/macros.h"
 
 static const size_t k_resizing_work = 128;
 static const size_t k_init_size = 8;
+
+static ALWAYS_INLINE size_t
+next_pow2 (size_t n)
+{
+  if (n < k_init_size)
+    return k_init_size;
+  size_t pow = k_init_size;
+  while (pow < n)
+    pow *= 2;
+  return pow;
+}
 
 static inline size_t
 probe_distance (uint64_t hcode, size_t pos, size_t mask)
@@ -21,7 +33,6 @@ static bool
 h_init (HTab *htab, size_t n)
 {
   assert (n > 0 && ((n - 1) & n) == 0);
-  // **CHANGE 1:** Allocate array of HTabEntry structs
   htab->tab = (HTabEntry *) calloc (n, sizeof (HTabEntry));
   if (!htab->tab)
     return false;
@@ -30,10 +41,12 @@ h_init (HTab *htab, size_t n)
   return true;
 }
 
-void
-hm_init (HMap *hmap)
+bool
+hm_init (HMap *hmap, size_t initial_cap)
 {
   memset (hmap, 0, sizeof (*hmap));
+  size_t cap = next_pow2 (initial_cap);
+  return h_init (&hmap->ht1, cap);
 }
 
 // --- Map Logic (Incremental Resizing) ---
@@ -134,7 +147,6 @@ hm_start_resizing (HMap *hmap)
 
   // Init new ht1
   size_t new_cap = (hmap->ht2.mask + 1) * 2;
-  // **CHANGE 4:** Call h_init
   if (!h_init (&hmap->ht1, new_cap))
     {
       // Rollback
@@ -478,7 +490,7 @@ hm_iter_next (HMIter *iter)
 }
 
 size_t
-hm_size (HMap *hmap)
+hm_size (const HMap *hmap)
 {
   return hmap->ht1.size + hmap->ht2.size;
 }

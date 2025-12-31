@@ -233,7 +233,12 @@ entry_new_hash (Minis *minis, const char *key)
       entry_dispose_atomic (minis, ent);
       return NULL;
     }
-  hm_init (ent->hash);
+  // it will receive the default size if we pass in 0.
+  if (!hm_init (ent->hash, 0))
+    {
+      entry_dispose_atomic (minis, ent);
+      return NULL;
+    }
   return ent;
 }
 

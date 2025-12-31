@@ -22,7 +22,8 @@ minis_init (void)
   Minis *minis = calloc (1, sizeof (Minis));
   if (!minis)
     die ("Out of memory in minis_init");
-  hm_init (&minis->db);
+  if (!hm_init (&minis->db, 1))
+    die ("Out of memory in hm_init");
   thread_pool_init (&minis->tp, 4);
   heap_init (&minis->heap);
   ENGINE_LOCK_INIT (&minis->lock);

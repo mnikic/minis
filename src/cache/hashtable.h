@@ -52,12 +52,12 @@ HNode *hm_iter_next (HMIter * iter);
 // Callback for comparing nodes (return non-zero if equal)
 typedef int (*hnode_cmp_fn) (HNode *, HNode *);
 
-void hm_init (HMap * hmap);
+bool hm_init (HMap * hmap, size_t initial_cap);
 HNode *hm_lookup (HMap * hmap, HNode * key, hnode_cmp_fn cmp);
 void hm_insert (HMap * hmap, HNode * node, hnode_cmp_fn cmp);
 HNode *hm_pop (HMap * hmap, HNode * key, hnode_cmp_fn cmp);
 void hm_scan (HMap * hmap, void (*func) (HNode *, void *), void *arg);
-size_t hm_size (HMap * hmap);
+size_t hm_size (const HMap * hmap);
 void hm_destroy (HMap * hmap);
 
 // Helper to check if currently resizing

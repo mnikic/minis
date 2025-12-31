@@ -28,14 +28,14 @@ typedef struct
   size_t len;
 } HKey;
 
-// Initialize a zset
 void
 zset_init (ZSet *zset)
 {
   if (!zset)
     return;
   zset->tree = NULL;
-  hm_init (&zset->hmap);
+  // 0 yields default size
+  hm_init (&zset->hmap, 0);
 }
 
 static ZNode *
