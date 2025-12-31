@@ -17,6 +17,7 @@ import com.example.minisandroidtest.ui.theme.MinisAndroidTestTheme
 import com.minis.Minis
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -91,6 +92,12 @@ private fun testPersistenceIntegrity(storagePath: String, onUpdate: (String) -> 
             }
         }
         log("SUCCESS: Data survived the lifecycle!")
+        val file = File(path)
+        if (file.exists())
+            if (!file.delete())
+                log ("WARNING: Didn't manage to clean the file at $path")
+            else
+                log ("Successfully cleaned up the db dump.")
     } catch (e: Exception) {
         log("FAILURE: ${e.message}")
         e.printStackTrace()
@@ -160,6 +167,12 @@ private fun testConcurrentPersistence(storagePath: String, onUpdate: (String) ->
     }
 
     minis.close()
+    val file = File(path)
+    if (file.exists())
+        if (!file.delete())
+            log ("WARNING: Didn't manage to clean the file at $path")
+        else
+            log ("Successfully cleaned up the db dump.")
     log("Torture Test Complete. If app didn't freeze/crash, we passed.")
 }
 
