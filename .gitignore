@@ -15,6 +15,7 @@ build/
 *.exp
 
 # Precompiled Headers
+com_minis_Minis.h
 *.gch
 *.pch
 
