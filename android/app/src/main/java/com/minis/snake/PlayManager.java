@@ -35,6 +35,9 @@ public class PlayManager {
     private final Bitmap mouseBitmap;
     private final Bitmap headBitmap;
     private final Bitmap bodyBitmap;
+    private final Bitmap tailBitmap;
+
+    private final Bitmap bodyTurnBitmap;
     private final Paint paint = new Paint();
     private final Minis minis;
 
@@ -51,13 +54,16 @@ public class PlayManager {
     private long replayTick = 0;
     private int stateTimer = 0;
 
+    private final Rect destRect = new Rect();
+
     public PlayManager(Context context, Minis minis) {
         this.minis = minis;
         snake = new Snake(20, 12);
         mouseBitmap = BitmapFactory.decodeResource(context.getResources(), R.drawable.mouse);
-        headBitmap = BitmapFactory.decodeResource(context.getResources(), R.drawable.snake);
+        headBitmap = BitmapFactory.decodeResource(context.getResources(), R.drawable.snakehead);
         bodyBitmap = BitmapFactory.decodeResource(context.getResources(), R.drawable.snakebody);
-
+        tailBitmap = BitmapFactory.decodeResource(context.getResources(), R.drawable.snaketail);
+        bodyTurnBitmap = BitmapFactory.decodeResource(context.getResources(), R.drawable.snakebodyturn);
         // Load existing replay length
         String lenStr = minis.get(REPLAY_META_LENGTH);
         if (lenStr != null) maxRecordedTick = Long.parseLong(lenStr);
@@ -73,7 +79,7 @@ public class PlayManager {
 
         // If we have no data, maybe we just sit idle or start fresh
         if (maxRecordedTick == 0) {
-            // Optional: Handle case where DB is empty (just show empty board)
+            Log.d("Minis", "No max recorded tick, will sit idle.");
         }
     }
 
@@ -186,23 +192,28 @@ public class PlayManager {
     public void left() { if (currentState == State.PLAYING) snake.left(); }
     public void right() { if (currentState == State.PLAYING) snake.right(); }
 
+    // Reuse this Rect to avoid garbage collection inside the draw loop
+
     public void draw(Canvas canvas, float screenWidth, float screenHeight) {
-        // ... (Grid drawing logic is identical to before) ...
         int ROWS = 22;
         int COLS = 14;
         float blockSize = Math.min(screenWidth / COLS, screenHeight / ROWS);
         float offsetX = (screenWidth - (blockSize * COLS)) / 2;
         float offsetY = (screenHeight - (blockSize * ROWS)) / 2;
 
+        // Draw Background
         paint.setColor(Color.BLACK);
-        canvas.drawRect(offsetX, offsetY, offsetX + (COLS *blockSize), offsetY + (ROWS *blockSize), paint);
-        Rect destRect = new Rect();
+        canvas.drawRect(offsetX, offsetY, offsetX + (COLS * blockSize), offsetY + (ROWS * blockSize), paint);
+
         char[][] board = snake.getBoard();
+
         for (int r = 0; r < board.length; r++) {
             for (int c = 0; c < board[r].length; c++) {
                 float x = offsetX + (c * blockSize);
                 float y = offsetY + (r * blockSize);
                 char cell = board[r][c];
+
+                // 1. Draw Border
                 if (cell == Snake.BORDER) {
                     paint.setColor(Color.LTGRAY);
                     canvas.drawRect(x, y, x + blockSize, y + blockSize, paint);
@@ -210,33 +221,126 @@ public class PlayManager {
                     paint.setColor(Color.BLACK);
                     canvas.drawRect(x, y, x + blockSize, y + blockSize, paint);
                     paint.setStyle(Paint.Style.FILL);
+                    continue; // Skip the rest for border
                 }
-                if (cell == Snake.HEAD) {
-                    destRect.set((int)x, (int)y, (int)(x + blockSize), (int)(y + blockSize));
-                    canvas.drawBitmap(headBitmap, null, destRect, paint);
-                } else if (Snake.isSnake(cell)) {
-                    destRect.set((int)x, (int)y, (int)(x + blockSize*1.2), (int)(y + blockSize*1.2));
-                    canvas.drawBitmap(bodyBitmap, null, destRect, paint);
-                } else if (cell == Snake.PLUS) {
-                    destRect.set((int)x, (int)y, (int)(x + blockSize), (int)(y + blockSize));
-                    canvas.drawBitmap(mouseBitmap, null, destRect, paint);
-                } else if (cell == Snake.DEAD) {
-                    paint.setColor(Color.BLUE);
-                    canvas.drawRect(x, y, x + blockSize, y + blockSize, paint);
-                } else if (cell >= 48 && cell < 60) {
+
+                // 2. Draw Text Objects (Multipliers)
+                if (cell >= 48 && cell < 54) {
                     paint.setColor(0xFF795548);
                     canvas.drawRect(x, y, x + blockSize, y + blockSize, paint);
                     paint.setColor(Color.WHITE);
                     paint.setTextSize(blockSize * 0.7f);
-                    float textX = x + (blockSize * 0.1f);
-                    float textY = y + (blockSize * 0.75f);
-                    String text = (cell - 48) + "x";
-                    canvas.drawText(text, textX, textY, paint);
+                    canvas.drawText((cell - 48) + "x", x + (blockSize * 0.1f), y + (blockSize * 0.75f), paint);
+                    continue;
+                }
+
+                // 3. Draw Game Objects (Head, Body, Tail, Food)
+                Bitmap bitmapToDraw = null;
+                float rotationAngle = 0f;
+
+                // We slightly oversize the snake body parts (1.05x) to ensure they visually connect without gaps
+                float scaleFactor = 1.0f;
+
+                switch (cell) {
+                    case Snake.HEAD:
+                        bitmapToDraw = headBitmap;
+                        // No rotation for head as requested
+                        break;
+
+                    case Snake.PLUS:
+                        bitmapToDraw = mouseBitmap;
+                        break;
+
+                    case Snake.DEAD:
+                        paint.setColor(Color.BLUE);
+                        canvas.drawRect(x, y, x + blockSize, y + blockSize, paint);
+                        break;
+
+                    // --- BODY SEGMENTS (Vertical default) ---
+                    case Snake.BODY_V: // '|'
+                        bitmapToDraw = bodyBitmap;
+                        rotationAngle = 0;
+                        scaleFactor = 1.1f; // Slight overlap
+                        break;
+                    case Snake.BODY_H: // '-'
+                        bitmapToDraw = bodyBitmap;
+                        rotationAngle = 90;
+                        scaleFactor = 1.1f;
+                        break;
+
+                    // --- TURNS (L-shape default: Bottom-Right) ---
+                    case Snake.TURN_DL: // '7' (Connects Left & Bottom)
+                        bitmapToDraw = bodyTurnBitmap;
+                        rotationAngle = 0;
+                        scaleFactor = 1.1f;
+                        break;
+
+                    case Snake.TURN_UL: // 'J' (Connects Left & Top)
+                        bitmapToDraw = bodyTurnBitmap;
+                        rotationAngle = 90; // Rotate 90 CW to move Bottom->Left, Left->Top
+                        scaleFactor = 1.1f;
+                        break;
+
+                    case Snake.TURN_UR: // 'L' (Connects Right & Top)
+                        bitmapToDraw = bodyTurnBitmap;
+                        rotationAngle = 180; // Rotate 180 to flip completely
+                        scaleFactor = 1.1f;
+                        break;
+
+                    case Snake.TURN_DR: // 'F' (Connects Right & Bottom)
+                        bitmapToDraw = bodyTurnBitmap;
+                        rotationAngle = 270; // Rotate 270 CW (or -90) to move Left->Bottom
+                        scaleFactor = 1.1f;
+                        break;
+                    // --- TAILS (Pointing Up default) ---
+                    case Snake.TAIL_U: // '^'
+                        bitmapToDraw = tailBitmap;
+                        rotationAngle = 0;
+                        break;
+                    case Snake.TAIL_R: // '>'
+                        bitmapToDraw = tailBitmap;
+                        rotationAngle = 90;
+                        break;
+                    case Snake.TAIL_D: // 'v'
+                        bitmapToDraw = tailBitmap;
+                        rotationAngle = 180;
+                        break;
+                    case Snake.TAIL_L: // '<'
+                        bitmapToDraw = tailBitmap;
+                        rotationAngle = 270;
+                        break;
+                }
+
+                // Execute the Draw
+                if (bitmapToDraw != null) {
+                    // Calculate destination rect with scaling
+                    float adjustment = (blockSize * scaleFactor - blockSize) / 2;
+                    destRect.set(
+                            (int)(x - adjustment),
+                            (int)(y - adjustment),
+                            (int)(x + blockSize + adjustment),
+                            (int)(y + blockSize + adjustment)
+                    );
+
+                    // If rotation is needed, save canvas, rotate, draw, restore
+                    if (rotationAngle != 0) {
+                        canvas.save();
+                        // Rotate around the center of the current cell
+                        canvas.rotate(rotationAngle, x + blockSize / 2, y + blockSize / 2);
+                        canvas.drawBitmap(bitmapToDraw, null, destRect, paint);
+                        canvas.restore();
+                    } else {
+                        canvas.drawBitmap(bitmapToDraw, null, destRect, paint);
+                    }
                 }
             }
         }
 
-        // HUD
+        // --- HUD AND OVERLAYS ---
+        drawHud(canvas, screenWidth, screenHeight);
+    }
+
+    private void drawHud(Canvas canvas, float screenWidth, float screenHeight) {
         paint.setColor(Color.WHITE);
         paint.setTextSize(60);
         canvas.drawText(SCORE_LABEL + score, 50, 100, paint);
@@ -245,12 +349,9 @@ public class PlayManager {
         if (currentState == State.GAME_OVER) {
             paint.setColor(Color.RED);
             paint.setTextSize(100);
-            // Centered text calculation (optional improvement)
             float textWidth = paint.measureText(GAME_VER_LABEL);
             canvas.drawText(GAME_VER_LABEL, (screenWidth - textWidth) / 2, screenHeight / 2, paint);
-
         } else if (currentState == State.ATTRACT) {
-            // BLINK LOGIC: Every 500ms, toggle visibility
             if ((System.currentTimeMillis() / 500) % 2 == 0) {
                 paint.setColor(Color.YELLOW);
                 paint.setTextSize(80);
