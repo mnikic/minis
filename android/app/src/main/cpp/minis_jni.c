@@ -19,8 +19,6 @@
     #define LOGE(...) do { fprintf(stderr, "ERROR: "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
 #endif
 
-// --- 1. The Context Wrapper ---
-// This lets us control the thread without modifying the core Minis struct.
 typedef struct {
     Minis* minis;            // The actual DB engine
     pthread_t bg_thread;     // The maintenance thread handle
@@ -37,8 +35,6 @@ get_us (void) {
 // --- 2. The Safe Background Thread ---
 static void* maintenance_thread(void* arg) {
     MinisContext *ctx = (MinisContext*)arg; // We receive the Context, not just Minis
-    int ticks = 0;
-
     // Check the flag on every loop iteration
     while (ctx->is_running) {
 
@@ -51,13 +47,8 @@ static void* maintenance_thread(void* arg) {
 
         uint64_t now = get_us ();
 
-        if (ticks % 10 == 0) {
-            LOGI("Minis Tick: Running Eviction at %lu", now);
-        }
-
         // Safe because nativeFree waits for us to finish before destroying the lock
         minis_evict(ctx->minis, now);
-        ticks++;
     }
     LOGI("Minis Background Thread Stopped Cleanly.");
     return NULL;

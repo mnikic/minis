@@ -55,6 +55,7 @@ Mkfile.old
 dkms.conf
 
 # IDEs
+android/.kotlin
 compile_commands.json
 .cproject
 .project

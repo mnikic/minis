@@ -125,12 +125,18 @@ minis_mdel (Minis *minis, const char **keys, size_t count,
 }
 
 MinisError
-minis_exists (Minis *minis, const char *key, int *out_exists, uint64_t now_us)
+minis_exists (Minis *minis, const char **keys, size_t nkeys,
+	      int64_t *out_exists, uint64_t now_us)
 {
   ENGINE_LOCK (&minis->lock);
-  Entry *ent = entry_lookup (minis, key, now_us);
+  int64_t hits = 0;
+  for (size_t i = 0; i < nkeys; ++i)
+    if (entry_lookup (minis, keys[i], now_us))
+      hits++;
+
   if (out_exists)
-    *out_exists = ent ? 1 : 0;
+    *out_exists = hits;
+
   ENGINE_UNLOCK (&minis->lock);
   return MINIS_OK;
 }

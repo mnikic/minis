@@ -147,7 +147,7 @@ $ {client_executable-abs_path} hset str_key field value
 $ {client_executable-abs_path} hget str_key field
 (err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} hdel str_key field
-(int) 0
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} hgetall str_key
 (err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} del str_key

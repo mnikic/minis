@@ -210,7 +210,7 @@ main (void)
   size_t ret = fread (&byte, 1, 1, file);
   (void) ret;
   byte ^= 0xFF;			// Invert byte
-  fseek (file, 13, SEEK_SET);
+  fseek (file, 23, SEEK_SET);
   fwrite (&byte, 1, 1, file);
   fclose (file);
 

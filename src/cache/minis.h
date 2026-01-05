@@ -52,8 +52,10 @@ MinisError
 minis_mdel (Minis * minis, const char **keys, size_t count,
 	    uint64_t * out_deleted, uint64_t now_us);
 
-MinisError minis_exists (Minis * minis, const char *key, int *out_exists,
-			 uint64_t now_us);
+
+MinisError
+minis_exists (Minis * minis, const char **keys, size_t nkeys,
+	      int64_t * out_exists, uint64_t now_us);
 MinisError minis_expire (Minis * minis, const char *key, int64_t ttl_ms,
 			 int *out_set, uint64_t now_us);
 MinisError minis_ttl (Minis * minis, const char *key, int64_t * out_ttl_ms,

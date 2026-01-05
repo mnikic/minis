@@ -23,9 +23,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import kotlin.concurrent.Volatile
 // --- CONFIGURATION ---
-const val BATCH_SIZE = 20
+const val BATCH_SIZE = 200
 const val THREAD_COUNT = 1
-const val ITEMS_PER_THREAD = 100_000
+const val ITEMS_PER_THREAD = 3_000_000
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -124,7 +124,7 @@ private fun testConcurrentPersistence(storagePath: String, onUpdate: (String) ->
         while (keepRunning) {
             minis.set("stress:$i", "data_$i")
             i++
-            if (i % 10000 == 0) log( "db contains $i items now")
+            if (i % 100000 == 0) log( "db contains $i items now")
             if (i % 1000 == 0) Thread.yield() // Be nice to the CPU
         }
     })
@@ -228,10 +228,10 @@ suspend fun runBatchBenchmark(onUpdate: (String) -> Unit) {
 
     // --- 1. JAVA BENCHMARK (Baseline) ---
     log("\n[Java ConcurrentHashMap] Running...")
-    val javaMap = ConcurrentHashMap<String, String>()
+    val javaMap = HashMap<String, String>()
 
     val javaStart = System.nanoTime()
-
+    var aha = 0;
     runBatchWorkload(THREAD_COUNT, ITEMS_PER_THREAD, BATCH_SIZE) { i, j ->
         // Simulating a batch by running a tight loop
         // Java has no native "MSET", so this is the fastest way it can go.
@@ -247,9 +247,14 @@ suspend fun runBatchBenchmark(onUpdate: (String) -> Unit) {
         // 2. "MGET" equivalent loop
         for (b in 0 until BATCH_SIZE) {
             val key = prefix + (j + b)
-            javaMap[key]
+            val value = javaMap[key]
+            if (i % 10 == 0) {
+                log ("value == $value")
+                aha++;
+            }
         }
 
+        log ("aha was $aha")
         // 3. "MDEL" equivalent loop
         for (b in 0 until BATCH_SIZE) {
             val key = prefix + (j + b)
@@ -257,6 +262,8 @@ suspend fun runBatchBenchmark(onUpdate: (String) -> Unit) {
         }
     }
 
+    log ("Java map has ${javaMap.size} items.")
+    javaMap.clear()
     val javaDuration = System.nanoTime() - javaStart
     val javaSec = javaDuration / 1_000_000_000.0
     val javaOps = (totalItemsProcessed / javaSec).toLong()

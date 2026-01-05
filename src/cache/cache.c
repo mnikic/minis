@@ -65,7 +65,7 @@ reply_with_error (Buffer *out, MinisError err)
     }
 }
 
-// --- Lifecycle Wrappers ---
+// Lifecycle Wrappers
 
 Cache *
 cache_init (void)
@@ -91,7 +91,7 @@ cache_next_expiry (Cache *cache)
   return minis_next_expiry (cache);
 }
 
-// --- Server Control Commands ---
+// Server Control Commands
 
 static bool
 do_ping (Cache *cache, const char **args, size_t arg_count, Buffer *out)
@@ -114,7 +114,7 @@ do_config (Cache *cache, const char **args, size_t arg_count, Buffer *out)
   return out_arr (out, 0);
 }
 
-// --- Key Operations ---
+// Key Operations
 
 static bool
 do_del (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
@@ -137,14 +137,11 @@ static bool
 do_exists (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
 	   uint64_t now_us)
 {
-  int64_t hits = 0;
-  for (size_t i = 0; i < nkeys; ++i)
-    {
-      int exists = 0;
-      minis_exists (cache, cmd[i + 1], &exists, now_us);
-      hits += exists;
-    }
-  return out_int (out, hits);
+  int64_t hits;
+  MinisError err = minis_exists (cache, cmd, nkeys, &hits, now_us);
+  if (err == MINIS_OK)
+    return out_int (out, hits);
+  return reply_with_error (out, err);
 }
 
 static bool
@@ -223,8 +220,6 @@ do_keys (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   return ctx.result;
 }
 
-// --- String Operations ---
-
 static bool
 do_get (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 {
@@ -299,7 +294,7 @@ do_incr (Cache *cache, const char *key, int64_t delta, Buffer *out,
   return reply_with_error (out, err);
 }
 
-// --- Hash Operations ---
+// Hash Operations
 
 static bool
 do_hset (Cache *cache, const char *key, const char *field, const char *value,
@@ -328,14 +323,11 @@ do_hdel (Cache *cache, const char **cmd, size_t argc, Buffer *out,
 	 uint64_t now_us)
 {
   int total = 0;
-  // Start at 2 because: [0]=HDEL, [1]=KEY, [2...]=Fields
-  for (size_t i = 2; i < argc; i++)
-    {
-      int deleted = 0;
-      minis_hdel (cache, cmd[1], cmd[i], &deleted, now_us);
-      total += deleted;
-    }
-  return out_int (out, total);
+  MinisError err =
+    minis_hdel (cache, cmd[1], cmd + 2, argc - 2, &total, now_us);
+  if (err == MINIS_OK)
+    return out_int (out, total);
+  return reply_with_error (out, err);
 }
 
 static bool
@@ -373,8 +365,6 @@ do_hgetall (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 
   return minis_hgetall (cache, key, cb_hash_visitor, out, now_us) == MINIS_OK;
 }
-
-// --- ZSet Operations ---
 
 static bool
 do_zadd (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
@@ -430,8 +420,6 @@ cb_zquery (const char *name, size_t len, double score, void *arg)
     }
 }
 
-// In cache.c
-
 static bool
 do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
@@ -467,7 +455,7 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
       return out_arr_end (out, patch_idx, (size_t) ctx.count * 2);
     }
 
-  // --- PATH 2: RESP PROTOCOL (Double Pass: Count -> Write) ---
+  // RESP PROTOCOL (Double Pass: Count -> Write)
   // RESP cannot easily patch headers because they are variable length text (*10\r\n vs *9\r\n)
 
   // Pass 1: Count Only
@@ -477,7 +465,6 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 
   if (err == MINIS_ERR_NIL)
     {
-      // Handle NIL logic specific to buffer state if needed, or just array 0
       return out_arr (out, 0);
     }
   if (err != MINIS_OK)
@@ -487,7 +474,7 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   if (!out_arr (out, (size_t) ctx.count * 2))
     return false;
 
-  // Pass 2: Write Data
+  // Write Data
   ctx.count_only = false;
   // Reset count if you want, though irrelevant for writing
   minis_zquery (cache, cmd[1], score, cmd[3], offset, limit,
@@ -495,8 +482,6 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 
   return true;
 }
-
-// --- Main Dispatcher ---
 
 bool
 cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
@@ -551,7 +536,7 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
       return do_incr (cache, cmd[1], -delta, out, now_us);
     }
   if (size >= 2 && cmd_is (cmd[0], "exists"))
-    return do_exists (cache, cmd, size - 1, out, now_us);
+    return do_exists (cache, cmd + 1, size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "hget"))
     return do_hget (cache, cmd[1], cmd[2], out, now_us);
   if (size == 4 && cmd_is (cmd[0], "hset"))

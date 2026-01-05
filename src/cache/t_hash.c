@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "common/common.h"
 #include "common/lock.h"
 #include "cache/minis.h"
 #include "cache/entry.h"
@@ -64,12 +65,12 @@ minis_hget (Minis *minis, const char *key, const char *field,
 }
 
 MinisError
-minis_hdel (Minis *minis, const char *key, const char *field,
-	    int *out_deleted, uint64_t now_us)
+minis_hdel (Minis *minis, const char *key, const char **fields,
+	    size_t field_count, int *out_deleted, uint64_t now_us)
 {
   ENGINE_LOCK (&minis->lock);
   Entry *ent = entry_lookup (minis, key, now_us);
-  if (!ent || ent->type != T_HASH)
+  if (!ent)
     {
       if (out_deleted)
 	*out_deleted = 0;
@@ -77,16 +78,27 @@ minis_hdel (Minis *minis, const char *key, const char *field,
       return MINIS_OK;		// Not an error to delete missing
     }
 
-  int val = hash_del (ent->hash, field);
-  if (val > 0)
+  if (ent->type != T_HASH)
     {
-      minis->dirty_count++;
-      if (hm_size (ent->hash) == 0)
-	entry_dispose_atomic (minis, ent);
+      if (out_deleted)
+	*out_deleted = 0;
+      ENGINE_UNLOCK (&minis->lock);
+      return MINIS_ERR_TYPE;
     }
 
+  int total = 0;
+  for (size_t i = 0; i < field_count; i++)
+    {
+      int val = hash_del (ent->hash, fields[i]);
+      if (val > 0)
+	minis->dirty_count++;
+      total += val;
+    }
+  if (hm_size (ent->hash) == 0)
+    entry_dispose_atomic (minis, ent);
+
   if (out_deleted)
-    *out_deleted = val;
+    *out_deleted = total;
   ENGINE_UNLOCK (&minis->lock);
   return MINIS_OK;
 }
@@ -136,7 +148,7 @@ minis_hlen (Minis *minis, const char *key, size_t *out_count, uint64_t now_us)
 }
 
 MinisError
-minis_hgetall (Minis *minis, const char *key, MinisHashCb cb, void *ctx,
+minis_hgetall (Minis *minis, const char *key, MinisHashCb func, void *ctx,
 	       uint64_t now_us)
 {
   ENGINE_LOCK (&minis->lock);
@@ -158,7 +170,7 @@ minis_hgetall (Minis *minis, const char *key, MinisHashCb cb, void *ctx,
   while ((node = hm_iter_next (&iter)))
     {
       HashEntry *hash_entry = fetch_hash_entry (node);
-      cb (hash_entry->field, hash_entry->value, ctx);
+      func (hash_entry->field, hash_entry->value, ctx);
     }
   ENGINE_UNLOCK (&minis->lock);
   return MINIS_OK;
