@@ -187,12 +187,32 @@ dump_stats (void)
 #define TIME_STMT(label, stmt) (stmt)
 
 #endif // K_ENABLE_BENCHMARK
-uint64_t str_hash (const uint8_t * data, size_t len);
+
+#define FNV_OFFSET 14695981039346656037ULL
+#define FNV_PRIME 1099511628211ULL
+
+static ALWAYS_INLINE uint64_t
+str_hash (const uint8_t *data, size_t len)
+{
+  uint64_t hash = FNV_OFFSET;
+  for (size_t i = 0; i < len; i++)
+    {
+      hash ^= data[i];		// XOR first (Mixes the bits)
+      hash *= FNV_PRIME;	// Multiply second (Scrambles them)
+    }
+  return hash;
+}
 
 static ALWAYS_INLINE uint64_t
 cstr_hash (const char *str)
 {
   return str_hash ((const uint8_t *) str, strlen (str));
+}
+
+static ALWAYS_INLINE int
+cmp_int (const void *first, const void *second)
+{
+  return (*(const int *) first - *(const int *) second);
 }
 
 

@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "cache/entry.h"
+#include "cache/hash.h"
 #include "minis_private.h"
 
 typedef struct Minis Minis;
@@ -25,13 +27,13 @@ typedef enum
 typedef void (*MinisKeyCb) (const char *key, void *ctx);
 
 // For HGETALL
-typedef void (*MinisHashCb) (const char *field, const char *value, void *ctx);
+typedef bool (*MinisHashCb) (const HashEntry * entry, void *ctx);
 
 // For ZQUERY
 typedef void (*MinisZSetCb) (const char *member, size_t len, double score,
 			     void *ctx);
 
-typedef bool (*MinisOneValVisitor) (const char *key, void *ctx);
+typedef bool (*MinisOneEntryVisitor) (const Entry * entry, void *ctx);
 
 // Lifecycle Management
 

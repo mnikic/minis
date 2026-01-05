@@ -12,8 +12,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MinisAndroidTest">
 
-        <activity android:name=".snake.SnakeActivity"
-            android:exported="true">
+        <activity
+            android:name="com.example.minisandroidtest.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.MinisAndroidTest">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -21,11 +24,9 @@
         </activity>
 
         <activity
-            android:name=".MainActivity"
-            android:exported="false" 
-            android:label="@string/app_name"
-            android:theme="@style/Theme.MinisAndroidTest" />
-            
+            android:name=".snake.SnakeActivity"
+            android:exported="false" />
+
     </application>
 
 </manifest>

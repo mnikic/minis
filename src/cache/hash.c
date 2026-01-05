@@ -5,7 +5,7 @@
 #include "cache/hash.h"
 #include "cache/hashtable.h"
 #include "common/macros.h"
-#include "common/common.h"	// Assuming str_hash is here
+#include "common/common.h"
 
 // Helper to convert HNode back to HashEntry
 HashEntry *
@@ -17,14 +17,12 @@ fetch_hash_entry (HNode *node)
 #pragma GCC diagnostic pop
 }
 
-// Equality callback for the hashtable logic
-static int
-hash_entry_eq (HNode *lhs, HNode *rhs)
+// Comparator: HNode vs Raw Key String
+bool
+hash_entry_eq_str (HNode *node, const void *key)
 {
-  HashEntry *lhe = fetch_hash_entry (lhs);
-  HashEntry *rhe = fetch_hash_entry (rhs);
-
-  return lhs->hcode == rhs->hcode && strcmp (lhe->field, rhe->field) == 0;
+  HashEntry *hent = fetch_hash_entry (node);
+  return strcmp (hent->field, (const char *) key) == 0;
 }
 
 HashEntry *
@@ -33,14 +31,10 @@ hash_lookup (HMap *hmap, const char *field)
   if (!hmap)
     return NULL;
 
-  HashEntry key;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-  key.field = (char *) field;
-  key.node.hcode = str_hash ((uint8_t *) field, strlen (field));
-#pragma GCC diagnostic pop
+  uint64_t hcode = cstr_hash (field);
+  // Correctly uses new signature: key + hcode passed separately
+  HNode *node = hm_lookup (hmap, field, hcode, &hash_entry_eq_str);
 
-  HNode *node = hm_lookup (hmap, &key.node, &hash_entry_eq);
   if (!node)
     return NULL;
 
@@ -52,27 +46,28 @@ hash_set (HMap *hmap, const char *field, const char *value)
 {
   HashEntry *ent = hash_lookup (hmap, field);
 
-  // 1. Update existing field
+  // 1. UPDATE EXISTING
   if (ent)
     {
       if (strcmp (ent->value, value) == 0)
-	return 0;		// Value matches, no update needed
+	return 0;
 
       free (ent->value);
-      ent->value = calloc (strlen (value) + 1, sizeof (char));
+      // Optimization: malloc is faster than calloc when we overwrite immediately
+      ent->value = malloc (strlen (value) + 1);
       if (ent->value)
 	strcpy (ent->value, value);
 
-      return 0;			// Updated, not added
+      return 0;			// 0 indicates update
     }
 
-  // 2. Insert new field
-  ent = calloc (1, sizeof (HashEntry));
+  // 2. INSERT NEW
+  ent = malloc (sizeof (HashEntry));
   if (!ent)
-    return 0;			// OOM check
+    return 0;
 
-  ent->field = calloc (strlen (field) + 1, sizeof (char));
-  ent->value = calloc (strlen (value) + 1, sizeof (char));
+  ent->field = malloc (strlen (field) + 1);
+  ent->value = malloc (strlen (value) + 1);
 
   if (!ent->field || !ent->value)
     {
@@ -87,10 +82,11 @@ hash_set (HMap *hmap, const char *field, const char *value)
   strcpy (ent->field, field);
   strcpy (ent->value, value);
 
-  ent->node.hcode = str_hash ((const uint8_t *) field, strlen (field));
+  ent->node.hcode = cstr_hash (field);
 
-  hm_insert (hmap, &ent->node, &hash_entry_eq);
-  return 1;
+  // Correctly passes 'field' as the lookup key for duplicate checking
+  hm_insert (hmap, &ent->node, field, &hash_entry_eq_str);
+  return 1;			// 1 indicates new insertion
 }
 
 // Helper callback for destroying nodes
@@ -107,17 +103,8 @@ cb_hash_entry_destroy (HNode *node, void *arg)
 int
 hash_del (HMap *hmap, const char *field)
 {
-  HashEntry query;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-  query.field = (char *) field;
-  query.node.hcode = str_hash ((uint8_t *) field, strlen (field));
-#pragma GCC diagnostic pop
-
-  // You need to expose a helper that pops from ent->hash using hash_entry_eq
-  // similar to how we did zset_pop
-  HNode *popped = hm_pop (hmap, &query.node, &hash_entry_eq);
-
+  // Correctly uses new signature
+  HNode *popped = hm_pop (hmap, field, cstr_hash (field), &hash_entry_eq_str);
   if (popped)
     {
       cb_hash_entry_destroy (popped, NULL);

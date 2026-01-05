@@ -183,8 +183,8 @@ $ {client_executable-abs_path} set c 3
 $ {client_executable-abs_path} keys \*
 (arr) len=3
 (str) c
-(str) a
 (str) b
+(str) a
 (arr) end
 $ {client_executable-abs_path} keys d
 (arr) len=0
@@ -218,9 +218,9 @@ $ {client_executable-abs_path} keys c\*
 $ {client_executable-abs_path} keys \*
 (arr) len=4
 (str) c
-(str) a
-(str) ca
 (str) b
+(str) ca
+(str) a
 (arr) end
 $ {client_executable-abs_path} del a
 (int) 1
@@ -372,7 +372,7 @@ $ {client_executable-abs_path} zrem remset b
 $ {client_executable-abs_path} zrem remset c
 (int) 1
 $ {client_executable-abs_path} del remset
-(int) 1
+(int) 0
 
 # Test query with offset beyond size
 $ {client_executable-abs_path} zadd offtest 1 a

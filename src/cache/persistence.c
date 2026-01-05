@@ -11,6 +11,8 @@
 #include <string.h>
 #include <arpa/inet.h>
 
+#include "cache/hashtable.h"
+#include "cache/minis_private.h"
 #include "common/common.h"
 #include "io/buffer.h"
 #include "cache/minis.h"
@@ -516,6 +518,40 @@ cleanup_failed_save (FILE *file_ptr, char *tmp_filename)
   unlink (tmp_filename);
 }
 
+static bool
+save_shard_to_file (Buffer *buf, const Shard *shard, uint32_t *running_crc,
+		    FILE *file_ptr, uint64_t now_us)
+{
+  HMIter iter;
+  hm_iter_init (&shard->db, &iter);
+
+  HNode *node;
+  while ((node = hm_iter_next (&iter)) != NULL)
+    {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+      Entry *entry = container_of (node, Entry, node);
+#pragma GCC diagnostic pop
+      if (!entry
+	  || (entry->expire_at_us != 0 && entry->expire_at_us < now_us))
+	continue;
+
+      buf_clear (buf);
+
+      if (!serialize_entry (buf, entry))
+	{
+	  msgf ("Snapshot: entry too large, skipping: %s", entry->key);
+	  continue;
+	}
+
+      *running_crc = crc32_update (*running_crc, buf->data, buf->length);
+
+      if (fwrite (buf->data, 1, buf->length, file_ptr) != buf->length)
+	return false;
+    }
+  return true;
+}
+
 // ============================================================================
 // Main Save Function
 // ============================================================================
@@ -533,9 +569,16 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
       return false;
     }
 
-  uint32_t item_count = (uint32_t) hm_size (&minis->db);
+  size_t item_count = 0;
+  for (int i = 0; i < NUM_SHARDS; ++i)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+    item_count += hm_size ((HMap *) & minis->shards[i].db);
+#pragma GCC diagnostic pop
+
+
   long crc_offset;
-  if (!write_file_header (file_ptr, &crc_offset, item_count))
+  if (!write_file_header (file_ptr, &crc_offset, (uint32_t) item_count))
     {
       cleanup_failed_save (file_ptr, tmp_filename);
       return false;
@@ -552,38 +595,14 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
     }
 
   Buffer buf = buf_init (raw_mem, buf_cap);
-  HMIter iter;
-  hm_iter_init (&minis->db, &iter);
-
-  HNode *node;
-  while ((node = hm_iter_next (&iter)) != NULL)
-    {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      Entry *entry = container_of (node, Entry, node);
-#pragma GCC diagnostic pop
-      if (!entry
-	  || (entry->expire_at_us != 0 && entry->expire_at_us < now_us))
-	continue;
-
-      buf_clear (&buf);
-
-      if (!serialize_entry (&buf, entry))
-	{
-	  msgf ("Snapshot: entry too large, skipping: %s", entry->key);
-	  continue;
-	}
-
-      running_crc = crc32_update (running_crc, buf.data, buf.length);
-
-      if (fwrite (buf.data, 1, buf.length, file_ptr) != buf.length)
-	{
-	  free (raw_mem);
-	  cleanup_failed_save (file_ptr, tmp_filename);
-	  return false;
-	}
-    }
-
+  for (int i = 0; i < NUM_SHARDS; ++i)
+    if (!save_shard_to_file
+	(&buf, &minis->shards[i], &running_crc, file_ptr, now_us))
+      {
+	free (raw_mem);
+	cleanup_failed_save (file_ptr, tmp_filename);
+	return false;
+      }
   free (raw_mem);
 
   if (!patch_crc (file_ptr, crc_offset, running_crc))
@@ -641,13 +660,16 @@ cache_load_from_file (Minis *minis, const char *filename, uint64_t now_us)
   if (item_count > 100)
     {
       msgf ("Snapshot: Pre-allocating for %u items...", item_count);
-      hm_destroy (&minis->db);
-      if (!hm_init (&minis->db, item_count))
+      uint32_t per_shard = (item_count / NUM_SHARDS) + 1;
+      for (int i = 0; i < NUM_SHARDS; i++)
 	{
-	  msgf ("Snapshot: Failed to allocate memory for %u items",
-		item_count);
-	  fclose (file_ptr);
-	  return false;
+	  hm_destroy (&minis->shards[i].db);	// Clear existing
+	  if (!hm_init (&minis->shards[i].db, per_shard))
+	    {
+	      msgf ("Snapshot: Failed to init shard %d", i);
+	      fclose (file_ptr);
+	      return false;
+	    }
 	}
     }
   uint32_t running_crc = 0;
