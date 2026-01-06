@@ -208,7 +208,7 @@ minis_mdel (Minis *minis, const char **keys, size_t count,
       int shard_id = get_shard_id (keys[i]);
       if (!(shard_map & (1 << shard_id)))
 	{
-	  shard_map |= (1 << shard_id);
+	  shard_map |= (uint16_t)(1 << shard_id);
 	  shards_to_lock[num_shards++] = shard_id;
 	}
     }
