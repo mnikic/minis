@@ -39,16 +39,23 @@ public class MinisInstrumentedTest {
     @Test
     public void testHashOperations() {
         try (var db = new Minis()) {
-            db.hset("user:100", "name", "John Doe");
-            db.hset("user:100", "email", "john@example.com");
-            assertEquals (0, db.hset("user:100", "name", "John Doe"));
-            assertEquals("John Doe", db.hget("user:100", "name"));
-            assertEquals("john@example.com", db.hget("user:100", "email"));
-            assertEquals (2, db.hlen("user:100"));
+            String key = "user:100";
+            String nameField = "name";
+            String emailField = "email";
 
-            var allData = db.hgetall("user:100");
-            assertEquals("John Doe", allData.get("name"));
-            assertEquals("john@example.com", allData.get("email"));
+            db.hset(key, nameField, "John Doe");
+            db.hset(key, emailField, "john@example.com");
+
+            assertEquals (0, db.hset(key, nameField, "John Doe"));
+            assertEquals("John Doe", db.hget(key, nameField));
+            assertEquals("john@example.com", db.hget(key, emailField));
+            assertEquals (2, db.hlen(key));
+
+            var allData = db.hgetall(key);
+            assertEquals("John Doe", allData.get(nameField));
+            assertEquals("john@example.com", allData.get(emailField));
+
+            assertEquals (2, db.hdel(key, new String[]{nameField, emailField}));
         }
     }
 
