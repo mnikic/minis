@@ -255,7 +255,6 @@ public class PlayManager {
                         canvas.drawRect(x, y, x + blockSize, y + blockSize, paint);
                         break;
 
-                    // --- BODY SEGMENTS (Base: Vertical) ---
                     case Snake.BODY_V: // '|'
                         bitmapToDraw = bodyBitmap;
                         rotationAngle = 0;
@@ -265,7 +264,6 @@ public class PlayManager {
                         rotationAngle = 90;
                         break;
 
-                    // --- TURNS (Base: Connects Bottom & Left) ---
 
                     case Snake.TURN_DL: // '7' (Bottom-Left)
                         bitmapToDraw = bodyTurnBitmap;
@@ -288,7 +286,6 @@ public class PlayManager {
                         break;
 
 
-                    // --- TAILS (Base: Tip Points Down / Moving Up) ---
 
                     case Snake.TAIL_U: // Snake moving Up (Tail below body)
                         bitmapToDraw = tailBitmap;
@@ -337,13 +334,14 @@ public class PlayManager {
             }
         }
 
-        // --- HUD AND OVERLAYS ---
         drawHud(canvas, screenWidth, screenHeight);
     }
 
     private void drawHud(Canvas canvas, float screenWidth, float screenHeight) {
-        paint.setColor(Color.WHITE);
+        paint.setColor(Color.BLUE);
         paint.setTextSize(60);
+        canvas.drawRect(50, 0, 300, 200, paint);
+        paint.setColor(Color.WHITE);
         canvas.drawText(SCORE_LABEL + score, 50, 100, paint);
         canvas.drawText(LVL_LABEL + level, 50, 180, paint);
 
