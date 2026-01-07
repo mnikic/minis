@@ -25,6 +25,12 @@ typedef struct {
     volatile int is_running; // The "Stop" flag
 } MinisContext;
 
+static ALWAYS_INLINE void
+throw_exception(JNIEnv *env, const char *className, const char *msg) {
+    jclass exClass = (*env)->FindClass(env, className);
+    if (exClass) (*env)->ThrowNew(env, exClass, msg);
+}
+
 static ALWAYS_INLINE uint64_t
 get_us (void) {
     struct timespec tvs = { 0, 0 };
@@ -114,20 +120,49 @@ Java_com_minis_Minis_nativeSet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKe
     (*env)->ReleaseStringUTFChars(env, jVal, val);
 }
 
+// New Context: holds a temporary C-buffer
+typedef struct {
+    char *value_copy; // We will malloc here inside lock
+} JniGetCtx;
+
+static bool
+jni_get_visitor_fast(const Entry *ent, void *ctx)
+{
+    JniGetCtx *jctx = (JniGetCtx *)ctx;
+    if (ent && ent->val) {
+        // Fast copy inside lock. 
+        // Much faster than JNI NewStringUTF.
+        jctx->value_copy = strdup(ent->val); 
+    }
+    return true;
+}
+
 JNIEXPORT jstring JNICALL
-Java_com_minis_Minis_nativeGet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey) {
-    Minis *minis = GET_MINIS(ptr); // Unwrap
-    const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
-    const char *val = NULL;
-
-    MinisError err = minis_get(minis, key, &val, get_us());
-
+Java_com_minis_Minis_nativeGet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey)
+{
+    Minis *minis = GET_MINIS(ptr);
+    const char *key = (*env)->GetStringUTFChars(env, jKey, NULL);
+    
+    JniGetCtx ctx = { .value_copy = NULL };
+    
+    // 1. LOCK -> COPY -> UNLOCK
+    // This critical section is now extremely short (just a malloc/memcpy)
+    MinisError err = minis_get(minis, key, jni_get_visitor_fast, &ctx, get_us());
+    
     (*env)->ReleaseStringUTFChars(env, jKey, key);
 
-    if (err == MINIS_OK && val != NULL) {
-        return (*env)->NewStringUTF(env, val);
+    jstring result = NULL;
+
+    if (err == MINIS_OK && ctx.value_copy) {
+        // 2. Heavy JNI allocation happens OUTSIDE the lock
+        // Other threads can now use the shard!
+        result = (*env)->NewStringUTF(env, ctx.value_copy);
+        free(ctx.value_copy); // Clean up temp buffer
+    } else if (err == MINIS_ERR_TYPE) {
+         // handle error...
     }
-    return NULL;
+
+    return result;
 }
 
 JNIEXPORT jint JNICALL
@@ -198,21 +233,22 @@ typedef struct {
 
 // The Visitor that writes to a Java Array
 static bool
-jni_mget_visitor(const char *val, void *ctx) {
+jni_mget_visitor(const Entry *ent, void *ctx) {
     JniMGetContext *jctx = (JniMGetContext*) ctx;
 
-    if (val) {
-        // Create a Java String from the C pointer
-        jstring jVal = (*jctx->env)->NewStringUTF(jctx->env, val);
-        // Put it directly into the array
+    const char *valStr = NULL;
+    if (ent && ent->type == T_STR) {
+        valStr = ent->val;
+    }
+    if (valStr) {
+        jstring jVal = (*jctx->env)->NewStringUTF(jctx->env, valStr);
         (*jctx->env)->SetObjectArrayElement(jctx->env, jctx->jArray, jctx->index, jVal);
-        // Clean up local ref
         (*jctx->env)->DeleteLocalRef(jctx->env, jVal);
     }
-    // If val is NULL, we do nothing. The array index is already null by default.
+    // Else: We do nothing. The JNI Object Array is initialized with NULLs by default.
 
     jctx->index++;
-    return true; // Always continue in JNI (unless OOM, but hard to detect here)
+    return true; 
 }
 
 // --- JNI MGET Implementation ---

@@ -8,12 +8,6 @@
 #include "common/macros.h"
 #include "common/common.h"
 
-static int
-hnode_same (HNode *lhs, HNode *rhs)
-{
-  return lhs == rhs;
-}
-
 Entry *
 entry_fetch (HNode *node_to_fetch)
 {
@@ -21,6 +15,13 @@ entry_fetch (HNode *node_to_fetch)
 #pragma GCC diagnostic ignored "-Wcast-align"
   return container_of (node_to_fetch, Entry, node);
 #pragma GCC diagnostic pop
+}
+
+bool
+entry_eq_str (HNode *node, const void *key)
+{
+  Entry *ent = entry_fetch (node);
+  return strcmp (ent->key, (const char *) key) == 0;
 }
 
 bool
@@ -64,27 +65,31 @@ entry_destroy_internal (Entry *ent)
 {
   if (!ent)
     return;
+
   switch (ent->type)
     {
     case T_ZSET:
-      zset_dispose (ent->zset);
+      if (ent->zset)
+	{
+	  zset_dispose (ent->zset);
+	  free (ent->zset);
+	}
       break;
     case T_HASH:
-      hash_dispose (ent->hash);
+      if (ent->hash)
+	{
+	  hash_dispose (ent->hash);
+	  free (ent->hash);
+	}
       break;
     case T_STR:
-      // fallsthrough
+      if (ent->val)
+	free (ent->val);
+      break;
     default:
       break;
     }
-  if (ent->key)
-    free (ent->key);
-  if (ent->val)
-    free (ent->val);
-  if (ent->hash)
-    free (ent->hash);
-  if (ent->zset)
-    free (ent->zset);
+
   free (ent);
 }
 
@@ -101,16 +106,19 @@ entry_del (Minis *minis, Entry *ent, uint64_t now_us)
 
   const size_t k_large_container_size = 10000;
   bool too_big = false;
+
   switch (ent->type)
     {
     case T_ZSET:
-      too_big = hm_size (&ent->zset->hmap) > k_large_container_size;
+      if (ent->zset)
+	too_big = hm_size (&ent->zset->hmap) > k_large_container_size;
       break;
     case T_HASH:
-      too_big = hm_size (ent->hash) > k_large_container_size;
+      if (ent->hash)
+	too_big = hm_size (ent->hash) > k_large_container_size;
       break;
     case T_STR:
-      // fallsthrough
+      // Fallthrough
     default:
       break;
     }
@@ -124,7 +132,12 @@ entry_del (Minis *minis, Entry *ent, uint64_t now_us)
 void
 entry_dispose_atomic (Minis *minis, Entry *ent)
 {
-  HNode *removed = hm_pop (&minis->db, &ent->node, &hnode_same);
+  int shard_id = get_shard_id (ent->key);
+
+  uint64_t hcode = cstr_hash (ent->key);
+  HNode *removed =
+    hm_pop (&minis->shards[shard_id].db, ent->key, hcode, &entry_eq_str);
+
   if (removed)
     {
       entry_del (minis, ent, (uint64_t) - 1);
@@ -143,27 +156,13 @@ fetch_entry_expiry_aware (Minis *minis, HNode *node, uint64_t now_us)
   return entry;
 }
 
-int
-entry_eq (HNode *lhs, HNode *rhs)
-{
-  Entry *lentry = entry_fetch (lhs);
-  Entry *rentry = entry_fetch (rhs);
-  return lhs->hcode == rhs->hcode
-    && (lentry && rentry && lentry->key && rentry->key
-	&& strcmp (lentry->key, rentry->key) == 0);
-}
-
 Entry *
-entry_lookup (Minis *minis, const char *key, uint64_t now_us)
+entry_lookup (Minis *minis, int shard_id, const char *key, uint64_t now_us)
 {
-  Entry entry_key;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-  entry_key.key = (char *) key;
-#pragma GCC diagnostic pop
-  entry_key.node.hcode = cstr_hash (key);
+  uint64_t hcode = cstr_hash (key);
+  HNode *node =
+    hm_lookup (&minis->shards[shard_id].db, key, hcode, &entry_eq_str);
 
-  HNode *node = hm_lookup (&minis->db, &entry_key.node, &entry_eq);
   if (!node)
     return NULL;
 
@@ -173,20 +172,22 @@ entry_lookup (Minis *minis, const char *key, uint64_t now_us)
 static Entry *
 entry_new (Minis *minis, const char *key, EntryType type)
 {
-  Entry *ent = calloc (1, sizeof (Entry));
+  size_t klen = strlen (key);
+
+  Entry *ent = malloc (sizeof (Entry) + klen + 1);
   if (!ent)
     return NULL;
-  ent->key = calloc (strlen (key) + 1, sizeof (char));
-  if (!ent->key)
-    {
-      free (ent);
-      return NULL;
-    }
-  strcpy (ent->key, key);
-  ent->node.hcode = str_hash ((const uint8_t *) key, strlen (key));
+  memcpy (ent->key, key, klen + 1);
+
+  ent->node.hcode = cstr_hash (key);
   ent->type = type;
   ent->heap_idx = (size_t) -1;
-  hm_insert (&minis->db, &ent->node, &entry_eq);
+  ent->expire_at_us = 0;
+
+  ent->val = NULL;
+  hm_insert (&minis->shards[get_shard_id (key)].db, &ent->node, key,
+	     &entry_eq_str);
+
   return ent;
 }
 
@@ -196,6 +197,7 @@ entry_new_zset (Minis *minis, const char *key)
   Entry *ent = entry_new (minis, key, T_ZSET);
   if (!ent)
     return NULL;
+
   ent->zset = calloc (1, sizeof (ZSet));
   if (!ent->zset)
     {
@@ -211,13 +213,15 @@ entry_new_str (Minis *minis, const char *key, const char *val)
   Entry *ent = entry_new (minis, key, T_STR);
   if (!ent)
     return NULL;
-  ent->val = calloc (strlen (val) + 1, sizeof (char));
+
+  size_t vlen = strlen (val);
+  ent->val = malloc (vlen + 1);
   if (!ent->val)
     {
       entry_dispose_atomic (minis, ent);
       return NULL;
     }
-  strcpy (ent->val, val);
+  memcpy (ent->val, val, vlen + 1);
   return ent;
 }
 
@@ -227,13 +231,14 @@ entry_new_hash (Minis *minis, const char *key)
   Entry *ent = entry_new (minis, key, T_HASH);
   if (!ent)
     return NULL;
+
   ent->hash = calloc (1, sizeof (HMap));
   if (!ent->hash)
     {
       entry_dispose_atomic (minis, ent);
       return NULL;
     }
-  // it will receive the default size if we pass in 0.
+
   if (!hm_init (ent->hash, 0))
     {
       entry_dispose_atomic (minis, ent);
@@ -245,7 +250,7 @@ entry_new_hash (Minis *minis, const char *key)
 Entry *
 fetch_or_create (Minis *minis, const char *key, uint64_t now_us)
 {
-  Entry *entry = entry_lookup (minis, key, now_us);
+  Entry *entry = entry_lookup (minis, get_shard_id (key), key, now_us);
   if (!entry)
     return entry_new_hash (minis, key);
   return entry;

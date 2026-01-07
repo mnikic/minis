@@ -8,8 +8,9 @@
 
 MinisError minis_hset (Minis * minis, const char *key, const char *field,
 		       const char *value, int *out_added, uint64_t now_us);
-MinisError minis_hget (Minis * minis, const char *key, const char *field,
-		       const char **out_val, uint64_t now_us);
+MinisError
+minis_hget (Minis * minis, const char *key, const char *field,
+	    MinisHashCb func, void *ctx, uint64_t now_us);
 MinisError
 minis_hdel (Minis * minis, const char *key, const char **fields,
 	    size_t field_count, int *out_deleted, uint64_t now_us);

@@ -7,6 +7,7 @@
 
 #include "cache/cache.h"
 #include "cache/entry.h"
+#include "cache/minis_private.h"
 #include "cache/zset.h"
 #include "cache/hash.h"		// <--- Added for hash_set/hash_lookup
 #include "cache/persistence.h"
@@ -26,7 +27,8 @@ static Entry *
 find_entry (Cache *cache, const char *key)
 {
   HMIter iter;
-  hm_iter_init (&cache->db, &iter);
+  int shard_id = get_shard_id(key);
+  hm_iter_init (&cache->shards[shard_id].db, &iter);
   HNode *node;
   while ((node = hm_iter_next (&iter)) != NULL)
     {

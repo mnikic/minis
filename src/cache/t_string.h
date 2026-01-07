@@ -7,14 +7,12 @@
 
 #include "cache/minis.h"
 
-// --- String Operations ---
-
-MinisError
-minis_get (Minis * minis, const char *key, const char **out_val,
-	   uint64_t now_us);
-MinisError
-minis_mget (Minis * minis, const char **keys, size_t count,
-	    MinisOneValVisitor visitor, void *ctx, uint64_t now_us);
+MinisError minis_get (Minis * minis, const char *key,
+		      MinisOneEntryVisitor visitor, void *ctx,
+		      uint64_t now_us);
+MinisError minis_mget (Minis * minis, const char **keys, size_t count,
+		       MinisOneEntryVisitor visitor, void *ctx,
+		       uint64_t now_us);
 
 
 MinisError

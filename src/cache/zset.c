@@ -1,8 +1,6 @@
 /*
  * zset.c
  *
- * Created on: Jun 19, 2023
- * Author: loshmi
  */
 
 #include <assert.h>
@@ -20,13 +18,11 @@
 
 #define EPSILON 1e-9
 
-// a helper structure for the hashtable lookup
 typedef struct
 {
-  HNode node;
   const char *name;
   size_t len;
-} HKey;
+} ZSetLookupKey;
 
 void
 zset_init (ZSet *zset)
@@ -34,7 +30,6 @@ zset_init (ZSet *zset)
   if (!zset)
     return;
   zset->tree = NULL;
-  // 0 yields default size
   hm_init (&zset->hmap, 0);
 }
 
@@ -56,24 +51,17 @@ load_znode_from_tree (AVLNode *tree)
 #pragma GCC diagnostic pop
 }
 
-static int
-hcmp (HNode *node, HNode *key)
+static bool
+znode_eq (HNode *node, const void *key_ptr)
 {
-  if (node->hcode != key->hcode)
-    {
-      return false;
-    }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-  ZNode *znode = container_of (node, ZNode, hmap);
-  HKey *hkey = container_of (key, HKey, node);
-#pragma GCC diagnostic pop
+  ZNode *znode = load_znode_from_hnode (node);
+  const ZSetLookupKey *lookup = (const ZSetLookupKey *) key_ptr;
 
-  if (znode->len != hkey->len)
+  if (znode->len != lookup->len)
     {
       return false;
     }
-  return 0 == memcmp (znode->name, hkey->name, znode->len);
+  return memcmp (znode->name, lookup->name, znode->len) == 0;
 }
 
 static ZNode *
@@ -86,6 +74,7 @@ znode_new (const char *name, size_t len, double score)
     }
   memset (node, 0, sizeof (ZNode) + len);
   avl_init (&node->tree);
+
   node->hmap.hcode = str_hash ((const uint8_t *) name, len);
   node->score = score;
   node->len = len;
@@ -104,7 +93,7 @@ static bool
 zless1 (AVLNode *lhs, double score, const char *name, size_t len)
 {
   ZNode *z_node = load_znode_from_tree (lhs);
-  if (fabs (z_node->score - score) > EPSILON)	// Not equal within epsilon
+  if (fabs (z_node->score - score) > EPSILON)
     {
       return z_node->score < score;
     }
@@ -124,7 +113,6 @@ zless (AVLNode *lhs, AVLNode *rhs)
   return zless1 (lhs, zrght->score, zrght->name, zrght->len);
 }
 
-// insert into the AVL tree
 static void
 tree_add (ZSet *zset, ZNode *node)
 {
@@ -149,7 +137,6 @@ tree_add (ZSet *zset, ZNode *node)
     }
 }
 
-// update the score of an existing node (AVL tree reinsertion)
 static void
 zset_update (ZSet *zset, ZNode *node, double score)
 {
@@ -163,7 +150,6 @@ zset_update (ZSet *zset, ZNode *node, double score)
   tree_add (zset, node);
 }
 
-// add a new (score, name) tuple, or update the score of the existing tuple
 // Returns: 1 = added new, 0 = updated existing, -1 = error
 int
 zset_add (ZSet *zset, const char *name, size_t len, double score)
@@ -185,12 +171,14 @@ zset_add (ZSet *zset, const char *name, size_t len, double score)
     {
       return -1;
     }
-  hm_insert (&zset->hmap, &node->hmap, &hcmp);
+
+  ZSetLookupKey lookup_key = {.name = name,.len = len };
+  hm_insert (&zset->hmap, &node->hmap, &lookup_key, &znode_eq);
+
   tree_add (zset, node);
   return 1;
 }
 
-// lookup by name
 ZNode *
 zset_lookup (ZSet *zset, const char *name, size_t len)
 {
@@ -199,11 +187,11 @@ zset_lookup (ZSet *zset, const char *name, size_t len)
       return NULL;
     }
 
-  HKey key;
-  key.node.hcode = str_hash ((const uint8_t *) name, len);
-  key.name = name;
-  key.len = len;
-  HNode *found = hm_lookup (&zset->hmap, &key.node, &hcmp);
+  // Use stack-allocated lookup key to avoid malloc
+  ZSetLookupKey lookup_key = {.name = name,.len = len };
+  uint64_t hcode = str_hash ((const uint8_t *) name, len);
+
+  HNode *found = hm_lookup (&zset->hmap, &lookup_key, hcode, &znode_eq);
   if (!found)
     {
       return NULL;
@@ -211,7 +199,6 @@ zset_lookup (ZSet *zset, const char *name, size_t len)
   return load_znode_from_hnode (found);
 }
 
-// deletion by name
 ZNode *
 zset_pop (ZSet *zset, const char *name, size_t len)
 {
@@ -220,11 +207,10 @@ zset_pop (ZSet *zset, const char *name, size_t len)
       return NULL;
     }
 
-  HKey key;
-  key.node.hcode = str_hash ((const uint8_t *) name, len);
-  key.name = name;
-  key.len = len;
-  HNode *found = hm_pop (&zset->hmap, &key.node, &hcmp);
+  ZSetLookupKey lookup_key = {.name = name,.len = len };
+  uint64_t hcode = str_hash ((const uint8_t *) name, len);
+
+  HNode *found = hm_pop (&zset->hmap, &lookup_key, hcode, &znode_eq);
   if (!found)
     {
       return NULL;
@@ -234,7 +220,6 @@ zset_pop (ZSet *zset, const char *name, size_t len)
   return node;
 }
 
-// find the (score, name) tuple that is greater or equal to the argument.
 ZNode *
 zset_query (ZSet *zset, double score, const char *name, size_t len)
 {
@@ -253,14 +238,13 @@ zset_query (ZSet *zset, double score, const char *name, size_t len)
 	}
       else
 	{
-	  found = cur;		// candidate
+	  found = cur;
 	  cur = cur->left;
 	}
     }
   return found ? load_znode_from_tree (found) : NULL;
 }
 
-// offset into the succeeding or preceding node.
 ZNode *
 znode_offset (ZNode *node, int64_t offset)
 {
@@ -274,65 +258,43 @@ znode_del (ZNode *node)
   free (node);
 }
 
-// Helper to iteratively dispose of the AVL tree nodes using a stack.
-// This replaces the recursive tree_dispose.
 static void
 tree_dispose_iterative (AVLNode *root)
 {
   if (!root)
-    {
-      return;
-    }
+    return;
 
   size_t total_nodes = root->cnt;
   if (total_nodes == 0)
-    {
-      // This should not happen if root is not NULL, but serves as a safeguard.
-      return;
-    }
+    return;
 
-  // Allocate stack on the heap. We store AVLNode pointers.
   AVLNode **stack = (AVLNode **) malloc (total_nodes * sizeof (AVLNode *));
   if (!stack)
-    {
-      // Handle allocation failure if necessary (e.g., error log or exit)
-      return;
-    }
-  size_t top = 0;		// Stack pointer
-
+    return;
+  size_t top = 0;
   AVLNode *cur = root;
-
-  stack[top++] = root;		// Push root
+  stack[top++] = root;
 
   while (top > 0)
     {
-      cur = stack[--top];	// Pop
+      cur = stack[--top];
 
-      // Push children onto the stack before deleting the current node
       if (cur->right)
-	{
-	  stack[top++] = cur->right;
-	}
+	stack[top++] = cur->right;
       if (cur->left)
-	{
-	  stack[top++] = cur->left;
-	}
+	stack[top++] = cur->left;
 
-      // Now delete the node
       znode_del (load_znode_from_tree (cur));
     }
 
   free (stack);
 }
 
-// destroy the zset
 void
 zset_dispose (ZSet *zset)
 {
   if (!zset)
-    {
-      return;
-    }
+    return;
 
   tree_dispose_iterative (zset->tree);
   hm_destroy (&zset->hmap);

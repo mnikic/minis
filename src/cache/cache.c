@@ -8,6 +8,7 @@
 #include <math.h>
 #include <stdint.h>
 
+#include "cache/hash.h"
 #include "io/out.h"
 #include "io/proto_defs.h"
 #include "io/buffer.h"
@@ -164,7 +165,7 @@ do_ttl (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   return out_int (out, ttl_val);
 }
 
-// --- Visitor Callbacks for Arrays ---
+// Visitor Callbacks for Arrays
 
 typedef struct
 {
@@ -220,13 +221,35 @@ do_keys (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   return ctx.result;
 }
 
+typedef struct
+{
+  Buffer *out;
+  bool result;
+} GetVstCtx;
+
+static bool
+single_get_visitor (const Entry *ent, void *ctx)
+{
+  GetVstCtx *vctx = (GetVstCtx *) ctx;
+  if (ent)
+    {
+      if (!out_str (vctx->out, ent->val))
+	{
+	  vctx->result = false;
+	}
+    }
+  else
+    vctx->result = out_nil (vctx->out);
+  return vctx->result;
+}
+
 static bool
 do_get (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 {
-  const char *val = NULL;
-  MinisError err = minis_get (cache, key, &val, now_us);
+  GetVstCtx ctx = {.out = out,.result = true };
+  MinisError err = minis_get (cache, key, single_get_visitor, &ctx, now_us);
   if (err == MINIS_OK)
-    return out_str (out, val);
+    return ctx.result;
   return reply_with_error (out, err);
 }
 
@@ -256,14 +279,14 @@ typedef struct
 } MgetVisitorCtx;
 
 static bool
-mget_visitor (const char *val, void *ctx)
+mget_visitor (const Entry *ent, void *ctx)
 {
   MgetVisitorCtx *mvc = (MgetVisitorCtx *) ctx;
   if (!mvc->result)
     return false;
-  if (val)
+  if (ent)
     {
-      if (!out_str (mvc->out, val))
+      if (!out_str (mvc->out, ent->val))
 	mvc->result = false;
     }
   else if (!out_nil (mvc->out))
@@ -308,13 +331,17 @@ do_hset (Cache *cache, const char *key, const char *field, const char *value,
 }
 
 static bool
+hget_visitor (const HashEntry *entry, void *arg)
+{
+  Buffer *out = (Buffer *) arg;
+  return out_str (out, entry->value);
+}
+
+static bool
 do_hget (Cache *cache, const char *key, const char *field, Buffer *out,
 	 uint64_t now_us)
 {
-  const char *val = NULL;
-  MinisError err = minis_hget (cache, key, field, &val, now_us);
-  if (err == MINIS_OK)
-    return out_str (out, val);
+  MinisError err = minis_hget (cache, key, field, hget_visitor, out, now_us);
   return reply_with_error (out, err);
 }
 
@@ -341,12 +368,29 @@ do_hexists (Cache *cache, const char *key, const char *field, Buffer *out,
   return reply_with_error (out, err);
 }
 
-static void
-cb_hash_visitor (const char *field, const char *val, void *arg)
+typedef struct
 {
-  Buffer *out = (Buffer *) arg;
-  out_str (out, field);
-  out_str (out, val);
+  Buffer *out;
+  bool result;
+} HashVisitorCtx;
+
+static bool
+cb_hash_visitor (const HashEntry *entry, void *arg)
+{
+  HashVisitorCtx *ctx = (HashVisitorCtx *) arg;
+  if (!ctx->result)
+    return false;
+  if (!out_str (ctx->out, entry->field))
+    {
+      ctx->result = false;
+      return false;
+    }
+  if (!out_str (ctx->out, entry->value))
+    {
+      ctx->result = false;
+      return false;
+    }
+  return true;
 }
 
 static bool
@@ -362,8 +406,9 @@ do_hgetall (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 
   if (!out_arr (out, count * 2))
     return false;
-
-  return minis_hgetall (cache, key, cb_hash_visitor, out, now_us) == MINIS_OK;
+  HashVisitorCtx ctx = {.out = out,.result = true };
+  minis_hgetall (cache, key, cb_hash_visitor, &ctx, now_us);
+  return ctx.result;
 }
 
 static bool
