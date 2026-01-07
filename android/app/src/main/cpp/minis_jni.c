@@ -7,7 +7,9 @@
 
 #include "cache/minis.h" // Your Core Public API
 #include "cache/t_string.h"
+#include "cache/hash.h" // Ensure you include hash.h for HashEntry definition
 #include "common/macros.h"
+#include "cache/t_hash.h"
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -64,6 +66,8 @@ static void* maintenance_thread(void* arg) {
 
 JNIEXPORT jlong JNICALL
 Java_com_minis_Minis_nativeInit(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
     // 1. Allocate the Context Wrapper
     MinisContext *ctx = malloc(sizeof(MinisContext));
 
@@ -84,6 +88,8 @@ Java_com_minis_Minis_nativeInit(JNIEnv *env, jobject thiz) {
 
 JNIEXPORT void JNICALL
 Java_com_minis_Minis_nativeFree(JNIEnv *env, jobject thiz, jlong ptr) {
+    (void) env;
+    (void) thiz;
     MinisContext *ctx = (MinisContext *) ptr;
     if (ctx) {
         LOGI("Stopping Minis...");
@@ -109,6 +115,7 @@ Java_com_minis_Minis_nativeFree(JNIEnv *env, jobject thiz, jlong ptr) {
 
 JNIEXPORT void JNICALL
 Java_com_minis_Minis_nativeSet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey, jstring jVal) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr); // Unwrap
 
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
@@ -140,6 +147,7 @@ jni_get_visitor_fast(const Entry *ent, void *ctx)
 JNIEXPORT jstring JNICALL
 Java_com_minis_Minis_nativeGet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey)
 {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr);
     const char *key = (*env)->GetStringUTFChars(env, jKey, NULL);
     
@@ -167,6 +175,7 @@ Java_com_minis_Minis_nativeGet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKe
 
 JNIEXPORT jint JNICALL
 Java_com_minis_Minis_nativeDel(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr); // Unwrap
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
 
@@ -179,6 +188,7 @@ Java_com_minis_Minis_nativeDel(JNIEnv *env, jobject thiz, jlong ptr, jstring jKe
 
 JNIEXPORT jint JNICALL
 Java_com_minis_Minis_nativePexpire(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey, jlong ttlMs) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr); // Unwrap
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
 
@@ -191,6 +201,7 @@ Java_com_minis_Minis_nativePexpire(JNIEnv *env, jobject thiz, jlong ptr, jstring
 
 JNIEXPORT jlong JNICALL
 Java_com_minis_Minis_nativePttl(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr); // Unwrap
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
 
@@ -203,6 +214,7 @@ Java_com_minis_Minis_nativePttl(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
 
 JNIEXPORT jboolean JNICALL
 Java_com_minis_Minis_nativeSave(JNIEnv *env, jobject thiz, jlong ptr, jstring jPath) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr); // Unwrap
     const char *path = (*env)->GetStringUTFChars(env, jPath, 0);
 
@@ -214,6 +226,7 @@ Java_com_minis_Minis_nativeSave(JNIEnv *env, jobject thiz, jlong ptr, jstring jP
 
 JNIEXPORT jboolean JNICALL
 Java_com_minis_Minis_nativeLoad(JNIEnv *env, jobject thiz, jlong ptr, jstring jPath) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr); // Unwrap
     const char *path = (*env)->GetStringUTFChars(env, jPath, 0);
 
@@ -255,6 +268,7 @@ jni_mget_visitor(const Entry *ent, void *ctx) {
 
 JNIEXPORT jobjectArray JNICALL
 Java_com_minis_Minis_nativeMGet(JNIEnv *env, jobject thiz, jlong ptr, jobjectArray jKeys) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr); // (Using the context wrapper from before)
     jsize count = (*env)->GetArrayLength(env, jKeys);
 
@@ -292,6 +306,7 @@ Java_com_minis_Minis_nativeMGet(JNIEnv *env, jobject thiz, jlong ptr, jobjectArr
 
 JNIEXPORT jlong JNICALL
 Java_com_minis_Minis_nativeMDel(JNIEnv *env, jobject thiz, jlong ptr, jobjectArray jKeys) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr);
     jsize count = (*env)->GetArrayLength(env, jKeys);
 
@@ -346,6 +361,7 @@ Java_com_minis_Minis_nativeMDel(JNIEnv *env, jobject thiz, jlong ptr, jobjectArr
 
 JNIEXPORT void JNICALL
 Java_com_minis_Minis_nativeMSet(JNIEnv *env, jobject thiz, jlong ptr, jobjectArray jKeyVals) {
+    (void) thiz;
     Minis *minis = GET_MINIS(ptr);
     jsize count = (*env)->GetArrayLength(env, jKeyVals);
 
@@ -401,4 +417,208 @@ Java_com_minis_Minis_nativeMSet(JNIEnv *env, jobject thiz, jlong ptr, jobjectArr
 
     free(cKeyVals);
     free(jStrings);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_minis_Minis_nativeHSet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey, jstring jField, jstring jValue) {
+    (void) thiz;
+    Minis *minis = GET_MINIS(ptr);
+    
+    const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
+    const char *field = (*env)->GetStringUTFChars(env, jField, 0);
+    const char *value = (*env)->GetStringUTFChars(env, jValue, 0);
+
+    int added = 0;
+    MinisError err = minis_hset(minis, key, field, value, &added, get_us());
+
+    (*env)->ReleaseStringUTFChars(env, jKey, key);
+    (*env)->ReleaseStringUTFChars(env, jField, field);
+    (*env)->ReleaseStringUTFChars(env, jValue, value);
+
+    if (err == MINIS_ERR_OOM) {
+        throw_exception(env, "java/lang/OutOfMemoryError", "Minis OOM in HSET");
+        return 0;
+    }
+    if (err == MINIS_ERR_TYPE) {
+        throw_exception(env, "com/minis/MinisException", "WRONGTYPE Operation against a key holding the wrong kind of value");
+        return 0;
+    }
+
+    return (jint)added;
+}
+
+// Struct to hold context for HGET visitor
+typedef struct {
+    JNIEnv *env;
+    jstring result;
+} JniHGetCtx;
+
+// Specific Visitor for HGET (Single Field)
+static bool jni_hget_visitor(const HashEntry *entry, void *arg) {
+    JniHGetCtx *ctx = (JniHGetCtx *)arg;
+    if (entry && entry->value) {
+        ctx->result = (*ctx->env)->NewStringUTF(ctx->env, entry->value);
+    }
+    return true; // Stop after one? actually hget only calls visitor once.
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_minis_Minis_nativeHGet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey, jstring jField) {
+    (void) thiz;
+    Minis *minis = GET_MINIS(ptr);
+    const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
+    const char *field = (*env)->GetStringUTFChars(env, jField, 0);
+
+    JniHGetCtx ctx = { .env = env, .result = NULL };
+    
+    // Using the Visitor version of hget you implemented earlier
+    MinisError err = minis_hget(minis, key, field, jni_hget_visitor, &ctx, get_us());
+
+    (*env)->ReleaseStringUTFChars(env, jKey, key);
+    (*env)->ReleaseStringUTFChars(env, jField, field);
+
+    if (err == MINIS_ERR_NIL) return NULL;
+    if (err == MINIS_ERR_TYPE) {
+        throw_exception(env, "com/minis/MinisException", "WRONGTYPE Operation against a key holding the wrong kind of value");
+    }
+    
+    return ctx.result;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_minis_Minis_nativeHDel(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey, jobjectArray jFields) {
+    (void) thiz;
+    Minis *minis = GET_MINIS(ptr);
+    const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
+    
+    jsize count = (*env)->GetArrayLength(env, jFields);
+    
+    // Prepare C array of fields
+    const char **cFields = malloc(sizeof(char*) * count);
+    jstring *jStrRefs = malloc(sizeof(jstring) * count); // Keep refs to release later
+    
+    if (!cFields || !jStrRefs) {
+         if (cFields) free(cFields);
+         if (jStrRefs) free(jStrRefs);
+         (*env)->ReleaseStringUTFChars(env, jKey, key);
+         return 0; // OOM
+    }
+
+    for(int i=0; i<count; i++) {
+        jstring js = (jstring)(*env)->GetObjectArrayElement(env, jFields, i);
+        jStrRefs[i] = js;
+        cFields[i] = (*env)->GetStringUTFChars(env, js, 0);
+    }
+
+    int deleted = 0;
+    MinisError err = minis_hdel(minis, key, cFields, count, &deleted, get_us());
+
+    // Cleanup
+    for(int i=0; i<count; i++) {
+        (*env)->ReleaseStringUTFChars(env, jStrRefs[i], cFields[i]);
+        (*env)->DeleteLocalRef(env, jStrRefs[i]);
+    }
+    free(cFields);
+    free(jStrRefs);
+    (*env)->ReleaseStringUTFChars(env, jKey, key);
+
+    if (err == MINIS_ERR_TYPE) {
+        throw_exception(env, "com/minis/MinisException", "WRONGTYPE Operation against a key holding the wrong kind of value");
+    }
+
+    return (jint)deleted;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_minis_Minis_nativeHExists(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey, jstring jField) {
+    (void) thiz;
+    Minis *minis = GET_MINIS(ptr);
+    const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
+    const char *field = (*env)->GetStringUTFChars(env, jField, 0);
+
+    int exists = 0;
+    MinisError err = minis_hexists(minis, key, field, &exists, get_us());
+
+    (*env)->ReleaseStringUTFChars(env, jKey, key);
+    (*env)->ReleaseStringUTFChars(env, jField, field);
+
+    if (err == MINIS_ERR_TYPE) {
+        throw_exception(env, "com/minis/MinisException", "WRONGTYPE Operation against a key holding the wrong kind of value");
+    }
+    return (jboolean)(exists == 1);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_minis_Minis_nativeHLen(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey) {
+    (void) thiz;
+    Minis *minis = GET_MINIS(ptr);
+    const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
+
+    size_t len = 0;
+    MinisError err = minis_hlen(minis, key, &len, get_us());
+
+    (*env)->ReleaseStringUTFChars(env, jKey, key);
+
+    if (err == MINIS_ERR_NIL) return 0;
+    if (err == MINIS_ERR_TYPE) {
+        throw_exception(env, "com/minis/MinisException", "WRONGTYPE Operation against a key holding the wrong kind of value");
+    }
+    return (jlong)len;
+}
+
+typedef struct {
+    JNIEnv *env;
+    jobject hashMap;
+    jmethodID putMethod;
+} JniHGetAllCtx;
+
+static bool jni_hgetall_visitor(const HashEntry *entry, void *arg) {
+    JniHGetAllCtx *ctx = (JniHGetAllCtx *)arg;
+    
+    jstring jField = (*ctx->env)->NewStringUTF(ctx->env, entry->field);
+    jstring jValue = (*ctx->env)->NewStringUTF(ctx->env, entry->value);
+
+    // map.put(field, value)
+    (*ctx->env)->CallObjectMethod(ctx->env, ctx->hashMap, ctx->putMethod, jField, jValue);
+
+    // Clean up local references to prevent JNI table overflow in large loops
+    (*ctx->env)->DeleteLocalRef(ctx->env, jField);
+    (*ctx->env)->DeleteLocalRef(ctx->env, jValue);
+    
+    return true;
+}
+
+JNIEXPORT jobject JNICALL
+Java_com_minis_Minis_nativeHGetall(JNIEnv *env, jobject thiz, jlong ptr, jstring jKey) {
+    (void) thiz;
+    Minis *minis = GET_MINIS(ptr);
+    const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
+
+    // 1. Create a new java.util.HashMap
+    jclass mapClass = (*env)->FindClass(env, "java/util/HashMap");
+    jmethodID initMethod = (*env)->GetMethodID(env, mapClass, "<init>", "()V");
+    jobject hashMap = (*env)->NewObject(env, mapClass, initMethod);
+    
+    // 2. Get the Map.put method ID
+    jmethodID putMethod = (*env)->GetMethodID(env, mapClass, "put", 
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+
+    JniHGetAllCtx ctx = {
+        .env = env,
+        .hashMap = hashMap,
+        .putMethod = putMethod
+    };
+
+    MinisError err = minis_hgetall(minis, key, jni_hgetall_visitor, &ctx, get_us());
+
+    (*env)->ReleaseStringUTFChars(env, jKey, key);
+
+    if (err == MINIS_ERR_TYPE) {
+        throw_exception(env, "com/minis/MinisException", "WRONGTYPE Operation against a key holding the wrong kind of value");
+        return NULL;
+    }
+    // Note: If key is missing (NIL), minis_hgetall usually returns NIL or just doesn't call visitor.
+    // In both cases, we return an empty Map, which is standard Redis client behavior.
+
+    return hashMap;
 }

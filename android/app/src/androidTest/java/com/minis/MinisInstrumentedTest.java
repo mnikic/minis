@@ -37,6 +37,22 @@ public class MinisInstrumentedTest {
     }
 
     @Test
+    public void testHashOperations() {
+        try (var db = new Minis()) {
+            db.hset("user:100", "name", "John Doe");
+            db.hset("user:100", "email", "john@example.com");
+            assertEquals (0, db.hset("user:100", "name", "John Doe"));
+            assertEquals("John Doe", db.hget("user:100", "name"));
+            assertEquals("john@example.com", db.hget("user:100", "email"));
+            assertEquals (2, db.hlen("user:100"));
+
+            var allData = db.hgetall("user:100");
+            assertEquals("John Doe", allData.get("name"));
+            assertEquals("john@example.com", allData.get("email"));
+        }
+    }
+
+    @Test
     public void testPersistenceLifecycle() {
         String path = getDbPath("persistence_test.rdb");
         int itemCount = 50000;

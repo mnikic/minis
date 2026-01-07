@@ -1,6 +1,6 @@
 package com.minis;
 
-import java.io.File;
+import java.util.Map;
 
 public class Minis implements AutoCloseable {
     // This holds the pointer to the C 'Minis' struct
@@ -29,8 +29,6 @@ public class Minis implements AutoCloseable {
             throw new IllegalStateException("Minis DB is closed");
         }
     }
-
-    // --- Public API ---
 
     public void set(String key, String value) {
         checkHandle();
@@ -104,7 +102,73 @@ public class Minis implements AutoCloseable {
         return nativeLoad(this.nativeHandle, absolutePath);
     }
 
-    // --- Native Definitions (The Bridge) ---
+    public int hset (String key, String field, String value) {
+        checkHandle();
+        return nativeHSet(this.nativeHandle, key, field, value);
+    }
+
+    public String hget (String key, String field) {
+        checkHandle();
+        return nativeHGet(this.nativeHandle, key, field);
+    }
+
+    public int hdel (String key, String[] fields) {
+        checkHandle();
+        return nativeHDel(this.nativeHandle, key, fields);
+    }
+
+    public Map<String, String> hgetall (String key) {
+        checkHandle();
+        return nativeHGetall(this.nativeHandle, key);
+    }
+
+    public boolean hexists(String key, String field) {
+        checkHandle();
+        return nativeHExists(this.nativeHandle, key, field);
+    }
+
+    /**
+     * Returns the number of fields contained in the hash stored at key.
+     */
+    public long hlen(String key) {
+        checkHandle();
+        return nativeHLen (this.nativeHandle, key);
+    }
+
+    /**
+     * Sets field in the hash stored at key to value.
+     * @return 1 if field is a new field in the hash and value was set. 0 if field already existed and was updated.
+     */
+    private native int nativeHSet(long ptr, String key, String field, String value);
+
+    /**
+     * Returns the value associated with field in the hash stored at key.
+     * @return The value or null if field or key does not exist.
+     */
+    private native String nativeHGet(long ptr, String key, String field);
+
+    /**
+     * Removes the specified fields from the hash stored at key.
+     * @return The number of fields that were removed.
+     */
+    private native int nativeHDel(long ptr, String key, String[] fields);
+
+    /**
+     * Returns all fields and values of the hash stored at key.
+     * @return A Map containing all field-value pairs.
+     */
+    private native Map<String, String> nativeHGetall(long ptr, String key);
+
+    /**
+     * Returns if field is an existing field in the hash stored at key.
+     */
+    private native boolean nativeHExists(long ptr, String key, String field);
+
+    /**
+     * Returns the number of fields contained in the hash stored at key.
+     */
+    private native long nativeHLen(long ptr, String key);
+
     private native long nativeInit();
 
     private native void nativeFree(long ptr);
