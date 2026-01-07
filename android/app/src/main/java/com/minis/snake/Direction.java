@@ -1,6 +1,6 @@
 package com.minis.snake;
 
-enum Direction {
+public enum Direction {
     UP(new int[] { -1, 0 }, "u"),
     DOWN(new int[] { 1, 0 }, "d"),
     LEFT(new int[] { 0, -1 }, "l"),
@@ -11,8 +11,8 @@ enum Direction {
         this.text = text;
     }
 
-    private int[] delta;
-    private String text;
+    private final int[] delta;
+    private final String text;
 
     public int[] getDelta() {
         return delta;

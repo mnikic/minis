@@ -57,8 +57,7 @@ public class PositionSelector {
 
     public int[] randomUnoccupiedPosition() {
         int position = random.nextInt(limit + 1);
-        int[] result = new int[] { positions[position] / width, positions[position] % width };
-        return result;
+        return new int[] { positions[position] / width, positions[position] % width };
     }
 
     public void reset() {

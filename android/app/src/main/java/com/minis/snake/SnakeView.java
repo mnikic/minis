@@ -7,15 +7,16 @@ import android.os.Looper;
 import android.util.AttributeSet;
 import android.view.View;
 
+import androidx.annotation.NonNull;
+
 public class SnakeView extends View {
 
     private PlayManager playManager;
-    private Handler handler = new Handler(Looper.getMainLooper());
+    private final Handler handler = new Handler(Looper.getMainLooper());
 
-    // CHANGED: Run at ~60 FPS so PlayManager can count frames
     private static final long FRAME_DELAY = 16;
 
-    private Runnable gameLoop = new Runnable() {
+    private final Runnable gameLoop = new Runnable() {
         @Override
         public void run() {
             if (playManager != null) {
@@ -36,7 +37,7 @@ public class SnakeView extends View {
     }
 
     @Override
-    protected void onDraw(Canvas canvas) {
+    protected void onDraw(@NonNull Canvas canvas) {
         super.onDraw(canvas);
         if (playManager != null) {
             playManager.draw(canvas, getWidth(), getHeight());

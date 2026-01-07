@@ -21,14 +21,11 @@ public class SnakeActivity extends AppCompatActivity {
         dbPath = getFilesDir().getAbsolutePath() + "/snake.db";
         minis = new Minis();
         minis.load(dbPath);
-        // 1. Init Logic
         playManager = new PlayManager(this, minis);
 
-        // 2. Setup View
         SnakeView snakeView = findViewById(R.id.snakeView);
         snakeView.setPlayManager(playManager);
 
-        // 3. Connect Buttons (This is your new KeyHandler)
         findViewById(R.id.btnUp).setOnClickListener(v -> playManager.up());
         findViewById(R.id.btnDown).setOnClickListener(v -> playManager.down());
         findViewById(R.id.btnLeft).setOnClickListener(v -> playManager.left());
