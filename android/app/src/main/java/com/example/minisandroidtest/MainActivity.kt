@@ -23,9 +23,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import kotlin.concurrent.Volatile
 // --- CONFIGURATION ---
-const val BATCH_SIZE = 200
-const val THREAD_COUNT = 1
-const val ITEMS_PER_THREAD = 3_000_000
+const val BATCH_SIZE = 1
+const val THREAD_COUNT = 3
+const val ITEMS_PER_THREAD = 6_000_000
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -185,7 +185,7 @@ fun BenchmarkScreen(modifier: Modifier = Modifier, storagePath: String) {
         scope.launch(Dispatchers.Default) {
             // A. Run Persistence Test
             //testPersistenceIntegrity(storagePath) { outputText = it }
-            testConcurrentPersistence(storagePath){ outputText = it }
+           // testConcurrentPersistence(storagePath){ outputText = it }
 
             // Add a visual separator
             outputText += "\n\n------------------------\n\n"
@@ -228,7 +228,7 @@ suspend fun runBatchBenchmark(onUpdate: (String) -> Unit) {
 
     // --- 1. JAVA BENCHMARK (Baseline) ---
     log("\n[Java ConcurrentHashMap] Running...")
-    val javaMap = HashMap<String, String>()
+    val javaMap = ConcurrentHashMap<String, String>()
 
     val javaStart = System.nanoTime()
     var aha = 0;
@@ -249,16 +249,16 @@ suspend fun runBatchBenchmark(onUpdate: (String) -> Unit) {
             val key = prefix + (j + b)
             val value = javaMap[key]
             if (i % 10 == 0) {
-                log ("value == $value")
+                //log ("value == $value")
                 aha++;
             }
         }
 
-        log ("aha was $aha")
+        //log ("aha was $aha")
         // 3. "MDEL" equivalent loop
         for (b in 0 until BATCH_SIZE) {
             val key = prefix + (j + b)
-            javaMap.remove(key)
+            //javaMap.remove(key)
         }
     }
 
