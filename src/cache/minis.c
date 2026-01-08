@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <stdint.h>
 #include <assert.h>
+#include <stdatomic.h>
 
 #include "cache/hashtable.h"
 #include "cache/heap.h"
@@ -28,12 +29,12 @@ minis_init (void)
     {
       if (!hm_init (&minis->shards[i].db, 1))
 	die ("Out of memory in hm_init");
-      ENGINE_LOCK_INIT (&minis->shards[i].lock);	// Init Shard Lock
+      ENGINE_LOCK_INIT (&minis->shards[i].lock);
     }
 
   thread_pool_init (&minis->tp, 4);
   heap_init (&minis->heap);
-  ENGINE_LOCK_INIT (&minis->heap_lock);	// Init Heap Lock
+  ENGINE_LOCK_INIT (&minis->heap_lock);
   return minis;
 }
 
@@ -102,11 +103,10 @@ minis_evict (Minis *minis, uint64_t now_us)
 	break;
 
       // Lock Shard (Outer Lock) and Verify
-      int shard_id = get_shard_id (key_copy);
-      lock_shard (minis, shard_id);
+      Shard *shard = lock_shard_for_key (minis, key_copy);
 
       // Re-lookup entry. It might have been deleted by user between steps 2 and 3.
-      Entry *victim = entry_lookup (minis, shard_id, key_copy, now_us);
+      Entry *victim = entry_lookup (minis, shard, key_copy, now_us);
 
       if (victim && victim->expire_at_us != 0
 	  && victim->expire_at_us <= now_us)
@@ -115,7 +115,7 @@ minis_evict (Minis *minis, uint64_t now_us)
 	  nworks++;
 	}
 
-      unlock_shard (minis, shard_id);
+      unlock_shard (shard);
       free (key_copy);
     }
 }
@@ -134,12 +134,11 @@ minis_next_expiry (Minis *minis)
 }
 
 // Internal helper for DEL (Assumes Shard Lock is HELD)
-static void
-minis_del_internal_locked (Minis *minis, const int shard_id, const char *key,
-			   int *out_deleted, uint64_t now_us)
+static int
+minis_del_internal_locked (Minis *minis, Shard *shard, const char *key,
+			   uint64_t now_us)
 {
-  HNode *node =
-    hm_pop (&minis->shards[shard_id].db, key, cstr_hash (key), &entry_eq_str);
+  HNode *node = hm_pop (&shard->db, key, cstr_hash (key), &entry_eq_str);
   int ret_val = 0;
 
   if (node)
@@ -148,25 +147,21 @@ minis_del_internal_locked (Minis *minis, const int shard_id, const char *key,
       if (!(entry->expire_at_us != 0 && entry->expire_at_us < now_us))
 	{
 	  ret_val = 1;
-	  minis->dirty_count++;	// Atomic inc preferred, but standard int ok for approx stats
+	  __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
 	}
       // This will lock Heap internally to remove TTL record
       entry_del (minis, entry, (uint64_t) - 1);
     }
 
-  if (out_deleted)
-    *out_deleted = ret_val;
+  return ret_val;
 }
 
 MinisError
 minis_del (Minis *minis, const char *key, int *out_deleted, uint64_t now_us)
 {
-  int shard_id = get_shard_id (key);
-  lock_shard (minis, shard_id);
-
-  minis_del_internal_locked (minis, shard_id, key, out_deleted, now_us);
-
-  unlock_shard (minis, shard_id);
+  Shard *shard = lock_shard_for_key (minis, key);
+  *out_deleted = minis_del_internal_locked (minis, shard, key, now_us);
+  unlock_shard (shard);
   return MINIS_OK;
 }
 
@@ -196,47 +191,23 @@ MinisError
 minis_mdel (Minis *minis, const char **keys, size_t count,
 	    uint64_t *out_deleted, uint64_t now_us)
 {
-  // Collect all unique Shard IDs
-  int shards_to_lock[NUM_SHARDS];
-  size_t num_shards = 0;
-
-  // Bitmap to quickly check uniqueness (since max 16 shards)
-  uint16_t shard_map = 0;
-
-  for (size_t i = 0; i < count; i++)
-    {
-      int shard_id = get_shard_id (keys[i]);
-      if (!(shard_map & (1 << shard_id)))
-	{
-	  shard_map |= (uint16_t)(1 << shard_id);
-	  shards_to_lock[num_shards++] = shard_id;
-	}
-    }
-
-  // Sort Shard IDs to avoid deadlock (0, 1, 5, 12...)
-  qsort (shards_to_lock, num_shards, sizeof (int), cmp_int);
-
-  // Lock them in order
-  for (size_t i = 0; i < num_shards; i++)
-    lock_shard (minis, shards_to_lock[i]);
+  int shards[NUM_SHARDS];
+  size_t n_locked = lock_shards_batch (minis, keys, count, 1, shards);
 
   uint64_t total = 0;
   for (size_t i = 0; i < count; ++i)
     {
-      int deleted = 0;
       int shard_id = get_shard_id (keys[i]);
-      // Safe because we hold locks for ALL involved shards
-      minis_del_internal_locked (minis, shard_id, keys[i], &deleted, now_us);
+      int deleted =
+	minis_del_internal_locked (minis, &minis->shards[shard_id], keys[i],
+				   now_us);
       total += (uint64_t) deleted;
     }
 
-  // Unlock (Order doesn't strictly matter here, but reverse is polite)
-  for (size_t i = num_shards - 1; i < num_shards; i--)
-    unlock_shard (minis, shards_to_lock[i]);
+  unlock_shards_batch (minis, shards, n_locked);
 
   if (out_deleted)
     *out_deleted = total;
-
   return MINIS_OK;
 }
 
@@ -254,11 +225,10 @@ minis_exists (Minis *minis, const char **keys, size_t nkeys,
   int64_t hits = 0;
   for (size_t i = 0; i < nkeys; ++i)
     {
-      int shard_id = get_shard_id (keys[i]);
-      lock_shard (minis, shard_id);
-      if (entry_lookup (minis, shard_id, keys[i], now_us))
+      Shard *shard = lock_shard_for_key (minis, keys[i]);
+      if (entry_lookup (minis, shard, keys[i], now_us))
 	hits++;
-      unlock_shard (minis, shard_id);
+      unlock_shard (shard);
     }
 
   if (out_exists)
@@ -271,20 +241,18 @@ MinisError
 minis_expire (Minis *minis, const char *key, int64_t ttl_ms, int *out_set,
 	      uint64_t now_us)
 {
-  int shard_id = get_shard_id (key);
-  lock_shard (minis, shard_id);
-
-  Entry *ent = entry_lookup (minis, shard_id, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key);
+  Entry *ent = entry_lookup (minis, shard, key, now_us);
   int success = 0;
   if (ent)
     {
       // This internally locks Heap. Safe order: Shard -> Heap.
       entry_set_ttl (minis, now_us, ent, ttl_ms);
-      minis->dirty_count++;
+      __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
       success = 1;
     }
 
-  unlock_shard (minis, shard_id);
+  unlock_shard (shard);
 
   if (out_set)
     *out_set = success;
@@ -295,10 +263,8 @@ MinisError
 minis_ttl (Minis *minis, const char *key, int64_t *out_ttl_ms,
 	   uint64_t now_us)
 {
-  int shard_id = get_shard_id (key);
-  lock_shard (minis, shard_id);
-
-  Entry *ent = entry_lookup (minis, shard_id, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key);
+  Entry *ent = entry_lookup (minis, shard, key, now_us);
   if (!ent)
     {
       *out_ttl_ms = -2;
@@ -312,7 +278,7 @@ minis_ttl (Minis *minis, const char *key, int64_t *out_ttl_ms,
       *out_ttl_ms = (int64_t) ((ent->expire_at_us - now_us) / 1000);
     }
 
-  unlock_shard (minis, shard_id);
+  unlock_shard (shard);
   return MINIS_OK;
 }
 
@@ -333,9 +299,10 @@ minis_keys (Minis *minis, const char *pattern, MinisKeyCb cb, void *ctx,
   // is not an atomic snapshot, which is standard for high-perf databases.
   for (int i = 0; i < NUM_SHARDS; ++i)
     {
-      lock_shard (minis, i);
+      Shard *shard = &minis->shards[i];
+      lock_shard (shard);
       hm_scan (&minis->shards[i].db, &cb_scan_keys, &kctx);
-      unlock_shard (minis, i);
+      unlock_shard (shard);
     }
   return MINIS_OK;
 }
@@ -344,13 +311,12 @@ MinisError
 minis_save (Minis *minis, const char *filename, uint64_t now_us)
 {
   for (int i = 0; i < NUM_SHARDS; i++)
-    lock_shard (minis, i);
+    lock_shard (&minis->shards[i]);
+
   bool success = cache_save_to_file (minis, filename, now_us);
-  if (success)
-    minis->last_save_dirty_count = minis->dirty_count;
 
   for (int i = 0; i < NUM_SHARDS; i++)
-    unlock_shard (minis, i);
+    unlock_shard (&minis->shards[i]);
 
   return success ? MINIS_OK : MINIS_ERR_UNKNOWN;
 }
@@ -360,12 +326,22 @@ minis_load (Minis *minis, const char *filename, uint64_t now_us)
 {
   // Load is exclusive (usually startup), but let's lock for safety.
   for (int i = 0; i < NUM_SHARDS; i++)
-    lock_shard (minis, i);
+    lock_shard (&minis->shards[i]);
+
   bool success = cache_load_from_file (minis, filename, now_us);
-  if (success)
-    minis->last_save_dirty_count = minis->dirty_count;
 
   for (int i = 0; i < NUM_SHARDS; i++)
-    unlock_shard (minis, i);
+    unlock_shard (&minis->shards[i]);
+
   return success ? MINIS_OK : MINIS_ERR_NIL;
+}
+
+uint64_t
+minis_dirty_count (Minis *minis)
+{
+  uint64_t count = 0;
+  for (int i = 0; i < NUM_SHARDS; ++i)
+    count +=
+      __atomic_load_n (&minis->shards[i].dirty_count, __ATOMIC_RELAXED);
+  return count;
 }

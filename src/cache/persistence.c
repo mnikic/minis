@@ -571,11 +571,12 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
 
   size_t item_count = 0;
   for (int i = 0; i < NUM_SHARDS; ++i)
+    {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
-    item_count += hm_size ((HMap *) & minis->shards[i].db);
+      item_count += hm_size ((HMap *) & minis->shards[i].db);
 #pragma GCC diagnostic pop
-
+    }
 
   long crc_offset;
   if (!write_file_header (file_ptr, &crc_offset, (uint32_t) item_count))

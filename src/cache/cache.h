@@ -24,5 +24,6 @@ uint64_t cache_next_expiry (Cache * cache);
 // The Main Entry Point for the Server
 bool cache_execute (Cache * cache, const char **cmd, size_t size,
 		    Buffer * out, uint64_t now_us);
+uint64_t cache_dirty_count (Cache * cache);
 
 #endif /* CACHE_H */

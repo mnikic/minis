@@ -139,9 +139,7 @@ entry_dispose_atomic (Minis *minis, Entry *ent)
     hm_pop (&minis->shards[shard_id].db, ent->key, hcode, &entry_eq_str);
 
   if (removed)
-    {
-      entry_del (minis, ent, (uint64_t) - 1);
-    }
+    entry_del (minis, ent, (uint64_t) - 1);
 }
 
 Entry *
@@ -157,11 +155,10 @@ fetch_entry_expiry_aware (Minis *minis, HNode *node, uint64_t now_us)
 }
 
 Entry *
-entry_lookup (Minis *minis, int shard_id, const char *key, uint64_t now_us)
+entry_lookup (Minis *minis, Shard *shard, const char *key, uint64_t now_us)
 {
   uint64_t hcode = cstr_hash (key);
-  HNode *node =
-    hm_lookup (&minis->shards[shard_id].db, key, hcode, &entry_eq_str);
+  HNode *node = hm_lookup (&shard->db, key, hcode, &entry_eq_str);
 
   if (!node)
     return NULL;
@@ -250,7 +247,8 @@ entry_new_hash (Minis *minis, const char *key)
 Entry *
 fetch_or_create (Minis *minis, const char *key, uint64_t now_us)
 {
-  Entry *entry = entry_lookup (minis, get_shard_id (key), key, now_us);
+  Entry *entry =
+    entry_lookup (minis, &minis->shards[get_shard_id (key)], key, now_us);
   if (!entry)
     return entry_new_hash (minis, key);
   return entry;

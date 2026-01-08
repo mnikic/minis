@@ -6,6 +6,7 @@
 #include <stdbool.h>
 
 #include "cache/hashtable.h"
+#include "cache/minis_private.h"
 #include "cache/zset.h"
 #include "common/macros.h"
 #include "common/common.h"
@@ -48,7 +49,7 @@ Entry *fetch_entry_expiry_aware (Minis * minis, HNode * node,
 Entry *fetch_or_create (Minis * minis, const char *key, uint64_t now_us);
 Entry *fetch_entry_from_heap_ref (size_t *ref);
 
-Entry *entry_lookup (Minis * minis, int shard_id, const char *key,
+Entry *entry_lookup (Minis * minis, Shard * shard, const char *key,
 		     uint64_t now_us);
 
 bool entry_set_ttl (Minis * minis, uint64_t now_us, Entry * ent,

@@ -114,7 +114,7 @@ rdb_save_background (Cache *cache, uint64_t now_us)
     return;			// Already saving
 
   g_data.last_snapshot_time = now_us;
-  g_data.last_snapshot_mod_count_at_fork = cache->dirty_count;
+  g_data.last_snapshot_mod_count_at_fork = cache_dirty_count (cache);
 
   pid_t child_pid = fork ();
 
@@ -569,7 +569,8 @@ process_snapshots (Cache *cache, uint64_t now_us)
   if (g_data.snapshot_child_pid != 0)
     return;
 
-  uint64_t dirty_diff = cache->dirty_count - g_data.last_snapshot_mod_count;
+  uint64_t dirty_diff =
+    cache_dirty_count (cache) - g_data.last_snapshot_mod_count;
   uint64_t time_diff_sec = (now_us - g_data.last_snapshot_time) / 1000000;
 
   // Optimization: If nothing changed, don't check rules

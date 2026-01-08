@@ -70,4 +70,6 @@ MinisError minis_save (Minis * minis, const char *filename, uint64_t now_us);
 
 MinisError minis_load (Minis * minis, const char *filename, uint64_t now_us);
 
+uint64_t minis_dirty_count (Minis * minis);
+
 #endif // _MINIS_H_

@@ -595,3 +595,9 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
 
   return out_err (out, ERR_UNKNOWN, "Unknown cmd");
 }
+
+uint64_t
+cache_dirty_count (Cache *cache)
+{
+  return minis_dirty_count (cache);
+}
