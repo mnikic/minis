@@ -138,7 +138,6 @@ flush_now:
 	{
 	  // Slot partially sent
 	  slot->sent += (uint32_t) bytes_left;
-	  bytes_left = 0;
 	  return IO_WAIT;	// We stopped in the middle -> Socket Full
 	}
     }

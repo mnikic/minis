@@ -56,7 +56,7 @@
 #include "common/macros.h"
 
 #define MAX_EVENTS 256
-#define K_IDLE_TIMEOUT_SEC 300UL	// in seconds
+#define K_IDLE_TIMEOUT_SEC 300ULL	// in seconds
 
 static struct
 {
@@ -126,7 +126,7 @@ rdb_save_background (Cache *cache, uint64_t now_us)
 
   if (child_pid == 0)
     {
-      bool status = cache_save_to_file (cache, MINIS_DB_FILE, now_us);
+      bool status = cache_save (cache, MINIS_DB_DIR, now_us);
       msgf ("Background saving terminated with success in %llu ms.",
 	    (get_monotonic_usec () - g_data.last_snapshot_time) / 1000);
       _exit (status ? 0 : 1);
@@ -511,7 +511,6 @@ next_timer_ms (Cache *cache, uint64_t now_us)
   uint64_t from_cache = cache_next_expiry (cache);
   if (from_cache != (uint64_t) - 1 && from_cache < next_us)
     next_us = from_cache;
-  // 3. NEW: Check Snapshot Schedule
   // Only schedule if interval is set and no child is currently running
   if (SNAPSHOT_INTERVAL_US > 0 && g_data.snapshot_child_pid == 0)
     {
@@ -540,9 +539,9 @@ init_cache (uint64_t now_us)
 {
   Cache *cache = cache_init ();
 
-  if (cache_load_from_file (cache, MINIS_DB_FILE, now_us))
+  if (cache_load (cache, MINIS_DB_DIR, now_us))
     {
-      msgf ("[Minis] DB loaded from %s in %llu ms.", MINIS_DB_FILE,
+      msgf ("[Minis] DB loaded from directory %s in %llu ms.", MINIS_DB_DIR,
 	    (get_monotonic_usec () - now_us) / 1000);
     }
   else
@@ -550,12 +549,12 @@ init_cache (uint64_t now_us)
       if (errno != ENOENT)
 	{
 	  msgf ("[Minis] Warning: Failed to load %s (Starting empty).",
-		MINIS_DB_FILE);
+		MINIS_DB_DIR);
 	}
       else
 	{
 	  msgf ("[Minis] No existing DB found. Starting fresh.",
-		MINIS_DB_FILE);
+		MINIS_DB_DIR);
 	}
     }
   return cache;
@@ -616,7 +615,7 @@ save_sync (Cache *cache)
     }
   msg ("Saving DB to disk (Synchronous)...");
   uint64_t now_us = get_monotonic_usec ();
-  if (cache_save_to_file (cache, MINIS_DB_FILE, now_us))
+  if (cache_save (cache, MINIS_DB_DIR, now_us))
     {
       msg ("DB saved successfully.");
     }

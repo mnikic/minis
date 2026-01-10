@@ -66,9 +66,11 @@ MinisError minis_keys (Minis * minis, const char *pattern, MinisKeyCb cb,
 		       void *ctx, uint64_t now_us);
 
 // Persistence
-MinisError minis_save (Minis * minis, const char *filename, uint64_t now_us);
+MinisError minis_save (Minis * minis, const char *base_dir, uint64_t now_us);
+MinisError minis_load (Minis * minis, const char *base_dir, uint64_t now_us);
 
-MinisError minis_load (Minis * minis, const char *filename, uint64_t now_us);
+void minis_incremental_save (Minis * minis, const char *base_dir,
+			     uint64_t now_us);
 
 uint64_t minis_dirty_count (Minis * minis);
 

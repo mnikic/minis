@@ -1,14 +1,16 @@
-#ifndef _MINIS_PRIVATE_H_
-#define _MINIS_PRIVATE_H_
+#ifndef MINIS_PRIVATE_H_
+#define MINIS_PRIVATE_H_
 
-// Include internal dependencies needed for the struct layout
+#include <stdint.h>
+#include <stdlib.h>
+
 #include "cache/hashtable.h"
 #include "cache/heap.h"
 #include "cache/thread_pool.h"
 #include "common/lock.h"
 #include "common/macros.h"
 #include "common/common.h"
-#include <stdint.h>
+
 
 #define NUM_SHARDS 16
 #define SHARD_MASK 15
@@ -20,7 +22,7 @@ typedef struct
   ENGINE_LOCK_T lock;
   uint64_t dirty_count;
 }
-__attribute__((aligned (64))) Shard;
+__attribute__((aligned (CACHE_LINE_SIZE))) Shard;
 
 struct Minis
 {
@@ -57,14 +59,6 @@ unlock_shard (Shard *shard)
 {
   (void) shard;
   ENGINE_UNLOCK (&shard->lock);
-}
-
-static ALWAYS_INLINE void
-unlock_shard_for_key (struct Minis *minis, const char *key)
-{
-  (void) minis;
-  (void) key;
-  ENGINE_UNLOCK (&minis->shards[get_shard_id (key)].lock);
 }
 
 static ALWAYS_INLINE void
@@ -121,7 +115,8 @@ lock_shards_batch (struct Minis *minis, const char **keys, size_t count,
 
 // 2. UNLOCK (Reverse Order)
 static ALWAYS_INLINE void
-unlock_shards_batch (struct Minis *minis, int *shards, size_t num_shards)
+unlock_shards_batch (struct Minis *minis, const int *shards,
+		     size_t num_shards)
 {
 #ifdef MINIS_EMBEDDED
   // Unlock in reverse order of acquisition
@@ -131,4 +126,4 @@ unlock_shards_batch (struct Minis *minis, int *shards, size_t num_shards)
 #endif
 }
 
-#endif // _MINIS_PRIVATE_H_
+#endif // MINIS_PRIVATE_H_

@@ -38,7 +38,6 @@ Conn *connpool_get (ConnPool * pool, int file_desc);
 // Replaces connpool_remove + free
 void connpool_release (ConnPool * pool, Conn * conn);
 
-// Fast lookup (unchanged interface, faster internals)
 HOT static ALWAYS_INLINE Conn *
 connpool_lookup (ConnPool *pool, int file_desc)
 {

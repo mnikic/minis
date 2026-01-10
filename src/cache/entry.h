@@ -1,5 +1,5 @@
-#ifndef _ENTRY_H_
-#define _ENTRY_H_
+#ifndef ENTRY_H_
+#define ENTRY_H_
 
 #include <stdint.h>
 #include <stddef.h>
@@ -46,7 +46,6 @@ Entry *entry_new_hash (Minis * minis, const char *key);
 Entry *entry_fetch (HNode * node_to_fetch);
 Entry *fetch_entry_expiry_aware (Minis * minis, HNode * node,
 				 uint64_t now_us);
-Entry *fetch_or_create (Minis * minis, const char *key, uint64_t now_us);
 Entry *fetch_entry_from_heap_ref (size_t *ref);
 
 Entry *entry_lookup (Minis * minis, Shard * shard, const char *key,
@@ -61,4 +60,4 @@ void entry_del (Minis * minis, Entry * ent, uint64_t now_us);
 void entry_dispose_atomic (Minis * minis, Entry * ent);
 bool entry_eq_str (HNode * node, const void *key);
 
-#endif // _ENTRY_H_
+#endif // ENTRY_H_

@@ -308,32 +308,48 @@ minis_keys (Minis *minis, const char *pattern, MinisKeyCb cb, void *ctx,
 }
 
 MinisError
-minis_save (Minis *minis, const char *filename, uint64_t now_us)
+minis_save (Minis *minis, const char *base_dir, uint64_t now_us)
 {
+  if (!ensure_directory (base_dir))
+    return MINIS_ERR_UNKNOWN;	// Failed to create dir
+
+  bool all_success = true;
   for (int i = 0; i < NUM_SHARDS; i++)
-    lock_shard (&minis->shards[i]);
+    {
+      lock_shard (&minis->shards[i]);
 
-  bool success = cache_save_to_file (minis, filename, now_us);
+      char filepath[512];
+      snprintf (filepath, sizeof (filepath), "%s/shard_%d.mdb", base_dir, i);
+      if (!minis_save_shard_file (&minis->shards[i], filepath, now_us))
+	all_success = false;
+      else
+	minis->shards[i].dirty_count = 0;
 
-  for (int i = 0; i < NUM_SHARDS; i++)
-    unlock_shard (&minis->shards[i]);
+      unlock_shard (&minis->shards[i]);
+    }
 
-  return success ? MINIS_OK : MINIS_ERR_UNKNOWN;
+  return all_success ? MINIS_OK : MINIS_ERR_UNKNOWN;
 }
 
 MinisError
-minis_load (Minis *minis, const char *filename, uint64_t now_us)
+minis_load (Minis *minis, const char *base_dir, uint64_t now_us)
 {
-  // Load is exclusive (usually startup), but let's lock for safety.
   for (int i = 0; i < NUM_SHARDS; i++)
     lock_shard (&minis->shards[i]);
 
-  bool success = cache_load_from_file (minis, filename, now_us);
+  int loaded_shards = 0;
+  for (int i = 0; i < NUM_SHARDS; i++)
+    {
+      char filepath[512];
+      snprintf (filepath, sizeof (filepath), "%s/shard_%d.mdb", base_dir, i);
+      if (cache_load_from_file (minis, filepath, i, now_us))
+	loaded_shards++;
+    }
 
   for (int i = 0; i < NUM_SHARDS; i++)
     unlock_shard (&minis->shards[i]);
 
-  return success ? MINIS_OK : MINIS_ERR_NIL;
+  return loaded_shards > 0 ? MINIS_OK : MINIS_ERR_NIL;
 }
 
 uint64_t
@@ -344,4 +360,45 @@ minis_dirty_count (Minis *minis)
     count +=
       __atomic_load_n (&minis->shards[i].dirty_count, __ATOMIC_RELAXED);
   return count;
+}
+
+void
+minis_incremental_save_step (Minis *minis, const char *base_dir,
+			     uint64_t now_us)
+{
+  // We can be smart here:
+  // 1. Iterate all shards
+  // 2. Or find the "dirtiest" shard and only save that one to spread I/O load
+
+  for (int i = 0; i < NUM_SHARDS; ++i)
+    {
+      Shard *shard = &minis->shards[i];
+
+      uint64_t dirty =
+	__atomic_load_n (&shard->dirty_count, __ATOMIC_RELAXED);
+      if (dirty == 0)
+	continue;
+
+      // Try to lock. If contended, maybe we skip it this time?
+      // Or just block if we want to guarantee consistency.
+      lock_shard (shard);
+
+      // Check again inside lock
+      if (shard->dirty_count > 0)
+	{
+	  char path[256];
+	  snprintf (path, sizeof (path), "%s/shard_%d.minis", base_dir, i);
+
+	  if (minis_save_shard_file (shard, path, now_us))
+	    {
+	      // Reset dirty ONLY if save succeeded
+	      shard->dirty_count = 0;
+	    }
+	}
+
+      unlock_shard (shard);
+
+      // Sleep 10ms between shards to let the UI breathe?
+      // usleep(10000); 
+    }
 }

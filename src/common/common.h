@@ -7,12 +7,13 @@
 #ifndef COMMON_H_
 #define COMMON_H_
 
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <arpa/inet.h>
 #include <string.h>
-#include <sys/types.h>
 
 #include "common/macros.h"
 
@@ -31,7 +32,7 @@
 
 #define DEFAULT_PORT 1234
 
-#define MINIS_DB_FILE      "dump.mdb"
+#define MINIS_DB_DIR "shards"
 #define MINIS_DB_MAGIC     "M1NI"
 #define MINIS_DB_VERSION   1
 
@@ -257,6 +258,15 @@ HOT static ALWAYS_INLINE uint64_t
 ntohll (uint64_t number)
 {
   return ntoh_u64 (number);
+}
+
+COLD static ALWAYS_INLINE bool
+ensure_directory (const char *path)
+{
+  struct stat stt = { 0 };
+  if (stat (path, &stt) == -1)
+    return mkdir (path, 0700) == 0;
+  return S_ISDIR (stt.st_mode);
 }
 
 #endif /* COMMON_H_ */

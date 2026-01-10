@@ -26,5 +26,4 @@ AVLNode *avl_fix (AVLNode * node);
 AVLNode *avl_del (AVLNode * node);
 AVLNode *avl_offset (AVLNode * node, int64_t offset);
 
-
 #endif /* AVL_H_ */

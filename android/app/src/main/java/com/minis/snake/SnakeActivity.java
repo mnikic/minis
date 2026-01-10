@@ -18,7 +18,7 @@ public class SnakeActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_snake);
 
-        dbPath = getFilesDir().getAbsolutePath() + "/snake.db";
+        dbPath = getFilesDir().getAbsolutePath() + "/shards";
         minis = new Minis();
         minis.load(dbPath);
         playManager = new PlayManager(this, minis);

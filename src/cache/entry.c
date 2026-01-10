@@ -245,16 +245,6 @@ entry_new_hash (Minis *minis, const char *key)
 }
 
 Entry *
-fetch_or_create (Minis *minis, const char *key, uint64_t now_us)
-{
-  Entry *entry =
-    entry_lookup (minis, &minis->shards[get_shard_id (key)], key, now_us);
-  if (!entry)
-    return entry_new_hash (minis, key);
-  return entry;
-}
-
-Entry *
 fetch_entry_from_heap_ref (size_t *ref)
 {
 #pragma GCC diagnostic push

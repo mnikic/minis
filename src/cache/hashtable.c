@@ -404,7 +404,7 @@ hm_iter_next (HMIter *iter)
 }
 
 size_t
-hm_size (HMap *hmap)
+hm_size (const HMap *hmap)
 {
   return hmap->ht1.size + hmap->ht2.size;
 }

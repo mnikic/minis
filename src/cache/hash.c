@@ -7,7 +7,6 @@
 #include "common/macros.h"
 #include "common/common.h"
 
-// Helper to convert HNode back to HashEntry
 HashEntry *
 fetch_hash_entry (HNode *node)
 {
@@ -17,7 +16,6 @@ fetch_hash_entry (HNode *node)
 #pragma GCC diagnostic pop
 }
 
-// Comparator: HNode vs Raw Key String
 bool
 hash_entry_eq_str (HNode *node, const void *key)
 {
@@ -32,7 +30,6 @@ hash_lookup (HMap *hmap, const char *field)
     return NULL;
 
   uint64_t hcode = cstr_hash (field);
-  // Correctly uses new signature: key + hcode passed separately
   HNode *node = hm_lookup (hmap, field, hcode, &hash_entry_eq_str);
 
   if (!node)
@@ -46,22 +43,19 @@ hash_set (HMap *hmap, const char *field, const char *value)
 {
   HashEntry *ent = hash_lookup (hmap, field);
 
-  // 1. UPDATE EXISTING
   if (ent)
     {
       if (strcmp (ent->value, value) == 0)
 	return 0;
 
       free (ent->value);
-      // Optimization: malloc is faster than calloc when we overwrite immediately
       ent->value = malloc (strlen (value) + 1);
       if (ent->value)
 	strcpy (ent->value, value);
 
-      return 0;			// 0 indicates update
+      return 0;
     }
 
-  // 2. INSERT NEW
   ent = malloc (sizeof (HashEntry));
   if (!ent)
     return 0;
@@ -84,12 +78,10 @@ hash_set (HMap *hmap, const char *field, const char *value)
 
   ent->node.hcode = cstr_hash (field);
 
-  // Correctly passes 'field' as the lookup key for duplicate checking
   hm_insert (hmap, &ent->node, field, &hash_entry_eq_str);
-  return 1;			// 1 indicates new insertion
+  return 1;
 }
 
-// Helper callback for destroying nodes
 static void
 cb_hash_entry_destroy (HNode *node, void *arg)
 {
@@ -103,7 +95,6 @@ cb_hash_entry_destroy (HNode *node, void *arg)
 int
 hash_del (HMap *hmap, const char *field)
 {
-  // Correctly uses new signature
   HNode *popped = hm_pop (hmap, field, cstr_hash (field), &hash_entry_eq_str);
   if (popped)
     {

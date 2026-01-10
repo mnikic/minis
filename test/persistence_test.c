@@ -104,7 +104,7 @@ main (void)
 
   msgf ("=== 4. Loading from Disk (New Cache) ===");
   Cache *cache2 = cache_init ();
-  if (!cache_load_from_file (cache2, FILENAME, new_now_us))
+  if (!cache_load_from_file (cache2, FILENAME, -1, new_now_us))
     {
       msg ("Load failed!");
       exit (1);
@@ -218,7 +218,7 @@ main (void)
 
   msgf ("   -> File tampered. Attempting load...");
   Cache *cache_bad = cache_init ();
-  if (cache_load_from_file (cache_bad, FILENAME, now_us))
+  if (cache_load_from_file (cache_bad, FILENAME, -1, now_us))
     {
       msg ("   [FAIL] Loader accepted corrupted file!");
       exit (1);

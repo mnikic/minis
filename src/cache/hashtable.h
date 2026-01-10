@@ -58,7 +58,7 @@ HNode *hm_lookup (HMap * hmap, const void *key, uint64_t hcode, h_cmp_fn cmp);
 void hm_insert (HMap * hmap, HNode * node, const void *key, h_cmp_fn cmp);
 HNode *hm_pop (HMap * hmap, const void *key, uint64_t hcode, h_cmp_fn cmp);
 void hm_scan (HMap * hmap, void (*func) (HNode *, void *), void *arg);
-size_t hm_size (HMap * hmap);
+size_t hm_size (const HMap * hmap);
 void hm_destroy (HMap * hmap);
 
 // Helper to check if currently resizing

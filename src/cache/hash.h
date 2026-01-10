@@ -5,8 +5,8 @@
  *      Author: loshmi
  */
 
-#ifndef  _HASH_H_
-#define   _HASH_H_
+#ifndef  HASH_H_
+#define   HASH_H_
 
 #include "cache/hashtable.h"
 
@@ -27,4 +27,4 @@ int hash_del (HMap * hmap, const char *field);
 
 void hash_dispose (HMap * hmap);
 
-#endif // _HASH_H_
+#endif // HASH_H_

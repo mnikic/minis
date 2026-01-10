@@ -19,6 +19,7 @@
 #include "cache/entry.h"
 #include "cache/zset.h"
 #include "cache/hash.h"
+#include "cache/persistence.h"
 
 // ============================================================================
 // CRC32 Utilities
@@ -40,7 +41,7 @@ crc32_update (uint32_t crc, const uint8_t *buf, size_t len)
 }
 
 // ============================================================================
-// Read Helpers (with CRC tracking)
+// Read/Write Helpers (Unchanged)
 // ============================================================================
 
 static bool
@@ -78,10 +79,6 @@ read_u32_plain (FILE *file_ptr, uint32_t *out)
   return true;
 }
 
-// ============================================================================
-// Write Helpers
-// ============================================================================
-
 static bool
 out_raw_str (Buffer *buf, const char *str, size_t len)
 {
@@ -96,7 +93,7 @@ out_typed_str (Buffer *buf, const char *str)
 }
 
 // ============================================================================
-// ZSet Serialization
+// Serialization Primitives (Unchanged logic)
 // ============================================================================
 
 static bool
@@ -104,7 +101,6 @@ serialize_znode (Buffer *buf, AVLNode *node)
 {
   if (!node)
     return true;
-
   if (!serialize_znode (buf, node->left))
     return false;
 
@@ -128,11 +124,9 @@ serialize_zset (Buffer *buf, ZSet *zset)
 {
   if (!buf_append_byte (buf, T_ZSET))
     return false;
-
   uint32_t count = (zset && zset->tree) ? zset->tree->cnt : 0;
   if (!buf_append_u32 (buf, count))
     return false;
-
   return count > 0 ? serialize_znode (buf, zset->tree) : true;
 }
 
@@ -141,13 +135,10 @@ serialize_hash (Buffer *buf, HMap *hmap)
 {
   if (!buf_append_byte (buf, T_HASH))
     return false;
-
-  // Write the number of fields
   uint32_t count = (uint32_t) hm_size (hmap);
   if (!buf_append_u32 (buf, count))
     return false;
 
-  // Iterate over the hash map
   HMIter iter;
   hm_iter_init (hmap, &iter);
   HNode *node;
@@ -157,20 +148,13 @@ serialize_hash (Buffer *buf, HMap *hmap)
 #pragma GCC diagnostic ignored "-Wcast-align"
       HashEntry *hash_entry = container_of (node, HashEntry, node);
 #pragma GCC diagnostic pop
-
-      // Write Field
       if (!out_raw_str (buf, hash_entry->field, strlen (hash_entry->field)))
 	return false;
-      // Write Value
       if (!out_raw_str (buf, hash_entry->value, strlen (hash_entry->value)))
 	return false;
     }
   return true;
 }
-
-// ============================================================================
-// Entry Serialization
-// ============================================================================
 
 static bool
 serialize_entry (Buffer *buf, Entry *entry)
@@ -195,7 +179,7 @@ serialize_entry (Buffer *buf, Entry *entry)
 }
 
 // ============================================================================
-// File Header Operations
+// File Format Helpers
 // ============================================================================
 
 static bool
@@ -221,7 +205,6 @@ patch_crc (FILE *file_ptr, long crc_offset, uint32_t crc)
 {
   if (fseek (file_ptr, crc_offset, SEEK_SET) != 0)
     return false;
-
   uint32_t net_crc = htonl (crc);
   return fwrite (&net_crc, 4, 1, file_ptr) == 1;
 }
@@ -505,22 +488,32 @@ load_one_entry (FILE *file_ptr, uint64_t now_us, Minis *minis, uint32_t *crc,
   return false;
 }
 
-// ============================================================================
-// Cleanup Helper
-// ============================================================================
-
 static void
-cleanup_failed_save (FILE *file_ptr, char *tmp_filename)
+cleanup_failed_save (FILE *file_ptr, const char *tmp_filename)
 {
   msgf ("Snapshot: write error: %s", strerror (errno));
   if (file_ptr)
     fclose (file_ptr);
-  unlink (tmp_filename);
+  if (tmp_filename)
+    unlink (tmp_filename);
 }
 
+// ============================================================================
+// CORE SERIALIZATION LOGIC (Refactored)
+// ============================================================================
+
+/**
+ * Serializes all entries in a single Shard to the file stream.
+ * * @param buf Scratch buffer (caller owns logic to reuse/clear it)
+ * @param shard The locked shard to save
+ * @param running_crc Pointer to accumulate CRC
+ * @param file_ptr Destination file stream
+ * @param now_us Current time for expiry filtering
+ */
 static bool
-save_shard_to_file (Buffer *buf, const Shard *shard, uint32_t *running_crc,
-		    FILE *file_ptr, uint64_t now_us)
+save_shard_entries_to_stream (Buffer *buf, const Shard *shard,
+			      uint32_t *running_crc, FILE *file_ptr,
+			      uint64_t now_us)
 {
   HMIter iter;
   hm_iter_init (&shard->db, &iter);
@@ -532,6 +525,8 @@ save_shard_to_file (Buffer *buf, const Shard *shard, uint32_t *running_crc,
 #pragma GCC diagnostic ignored "-Wcast-align"
       Entry *entry = container_of (node, Entry, node);
 #pragma GCC diagnostic pop
+
+      // Skip expired or invalid entries
       if (!entry
 	  || (entry->expire_at_us != 0 && entry->expire_at_us < now_us))
 	continue;
@@ -552,9 +547,70 @@ save_shard_to_file (Buffer *buf, const Shard *shard, uint32_t *running_crc,
   return true;
 }
 
-// ============================================================================
-// Main Save Function
-// ============================================================================
+bool
+minis_save_shard_file (const Shard *shard, const char *filename,
+		       uint64_t now_us)
+{
+  char tmp_filename[256];
+  snprintf (tmp_filename, sizeof (tmp_filename), "%s.tmp", filename);
+
+  FILE *file_ptr = fopen (tmp_filename, "wb");
+  if (!file_ptr)
+    {
+      msgf ("Snapshot: failed to open temp file: %s", tmp_filename);
+      return false;
+    }
+
+  long crc_offset;
+  uint32_t item_count = (uint32_t) hm_size (&shard->db);
+
+  if (!write_file_header (file_ptr, &crc_offset, item_count))
+    {
+      cleanup_failed_save (file_ptr, tmp_filename);
+      return false;
+    }
+
+  size_t buf_cap = K_MAX_MSG + 1024;
+  uint8_t *raw_mem = malloc (buf_cap);
+  if (!raw_mem)
+    {
+      cleanup_failed_save (file_ptr, tmp_filename);
+      return false;
+    }
+  Buffer buf = buf_init (raw_mem, buf_cap);
+
+  uint32_t running_crc = 0;
+  if (!save_shard_entries_to_stream
+      (&buf, shard, &running_crc, file_ptr, now_us))
+    {
+      free (raw_mem);
+      cleanup_failed_save (file_ptr, tmp_filename);
+      return false;
+    }
+  free (raw_mem);
+  if (!patch_crc (file_ptr, crc_offset, running_crc))
+    {
+      cleanup_failed_save (file_ptr, tmp_filename);
+      return false;
+    }
+
+  fseek (file_ptr, 0, SEEK_END);
+  if (fflush (file_ptr) != 0 || fsync (fileno (file_ptr)) != 0)
+    {
+      cleanup_failed_save (file_ptr, tmp_filename);
+      return false;
+    }
+  fclose (file_ptr);
+
+  if (rename (tmp_filename, filename) != 0)
+    {
+      msgf ("Snapshot: rename failed: %s", strerror (errno));
+      unlink (tmp_filename);
+      return false;
+    }
+
+  return true;
+}
 
 bool
 cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
@@ -569,43 +625,43 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
       return false;
     }
 
-  size_t item_count = 0;
+  // 1. Calculate Total Count
+  size_t total_count = 0;
   for (int i = 0; i < NUM_SHARDS; ++i)
-    {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-      item_count += hm_size ((HMap *) & minis->shards[i].db);
-#pragma GCC diagnostic pop
-    }
+    total_count += hm_size (&minis->shards[i].db);
 
   long crc_offset;
-  if (!write_file_header (file_ptr, &crc_offset, (uint32_t) item_count))
+  if (!write_file_header (file_ptr, &crc_offset, (uint32_t) total_count))
     {
       cleanup_failed_save (file_ptr, tmp_filename);
       return false;
     }
 
-  uint32_t running_crc = 0;
+  // 2. Init Scratch Buffer
   size_t buf_cap = K_MAX_MSG + 1024;
   uint8_t *raw_mem = malloc (buf_cap);
   if (!raw_mem)
     {
-      msgf ("Snapshot: failed to allocate buffer");
       cleanup_failed_save (file_ptr, tmp_filename);
       return false;
     }
-
   Buffer buf = buf_init (raw_mem, buf_cap);
+
+  // 3. Loop ALL shards and dump to same stream
+  uint32_t running_crc = 0;
   for (int i = 0; i < NUM_SHARDS; ++i)
-    if (!save_shard_to_file
-	(&buf, &minis->shards[i], &running_crc, file_ptr, now_us))
-      {
-	free (raw_mem);
-	cleanup_failed_save (file_ptr, tmp_filename);
-	return false;
-      }
+    {
+      if (!save_shard_entries_to_stream
+	  (&buf, &minis->shards[i], &running_crc, file_ptr, now_us))
+	{
+	  free (raw_mem);
+	  cleanup_failed_save (file_ptr, tmp_filename);
+	  return false;
+	}
+    }
   free (raw_mem);
 
+  // 4. Finalize
   if (!patch_crc (file_ptr, crc_offset, running_crc))
     {
       cleanup_failed_save (file_ptr, tmp_filename);
@@ -613,13 +669,11 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
     }
 
   fseek (file_ptr, 0, SEEK_END);
-
   if (fflush (file_ptr) != 0 || fsync (fileno (file_ptr)) != 0)
     {
       cleanup_failed_save (file_ptr, tmp_filename);
       return false;
     }
-
   fclose (file_ptr);
 
   if (rename (tmp_filename, filename) != 0)
@@ -632,21 +686,13 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
   return true;
 }
 
-// ============================================================================
-// Main Load Function
-// ============================================================================
-
 bool
-cache_load_from_file (Minis *minis, const char *filename, uint64_t now_us)
+cache_load_from_file (Minis *minis, const char *filename, int shard_id_hint,
+		      uint64_t now_us)
 {
   FILE *file_ptr = fopen (filename, "rb");
   if (!file_ptr)
-    {
-      if (errno == ENOENT)
-	return false;		// Fresh start
-      msgf ("Snapshot: failed to open file: %s", strerror (errno));
-      return false;
-    }
+    return false;
 
   uint32_t expected_crc;
   uint32_t item_count = 0;
@@ -655,50 +701,68 @@ cache_load_from_file (Minis *minis, const char *filename, uint64_t now_us)
       fclose (file_ptr);
       return false;
     }
-  msgf ("Snapshot: loading data (v%u). Number of items %lu.",
-	MINIS_DB_VERSION, item_count);
 
-  if (item_count > 100)
+  if (item_count > 0)
     {
-      msgf ("Snapshot: Pre-allocating for %u items...", item_count);
-      uint32_t per_shard = (item_count / NUM_SHARDS) + 1;
-      for (int i = 0; i < NUM_SHARDS; i++)
+      if (shard_id_hint == -1)
 	{
-	  hm_destroy (&minis->shards[i].db);	// Clear existing
-	  if (!hm_init (&minis->shards[i].db, per_shard))
+	  uint32_t per_shard = (item_count / NUM_SHARDS) + 1;
+	  for (int i = 0; i < NUM_SHARDS; i++)
 	    {
-	      msgf ("Snapshot: Failed to init shard %d", i);
-	      fclose (file_ptr);
-	      return false;
+	      if (hm_size (&minis->shards[i].db) == 0)
+		{		// ONLY IF EMPTY
+		  hm_destroy (&minis->shards[i].db);
+		  hm_init (&minis->shards[i].db, per_shard);
+		}
+	    }
+	}
+      else if (shard_id_hint >= 0 && shard_id_hint < NUM_SHARDS)
+	{
+	  Shard *target_shard = &minis->shards[shard_id_hint];
+	  if (hm_size (&target_shard->db) == 0)
+	    {
+	      msgf ("Snapshot: Shard %d pre-allocating for %u items.",
+		    shard_id_hint, item_count);
+	      hm_destroy (&target_shard->db);
+	      if (!hm_init (&target_shard->db, item_count))
+		{
+		  fclose (file_ptr);
+		  return false;
+		}
+	    }
+	  else
+	    {
+	      msgf
+		("Snapshot: Shard %d not empty (detected migration). Skipping pre-alloc.",
+		 shard_id_hint);
 	    }
 	}
     }
-  uint32_t running_crc = 0;
 
+  // --------------------------------------------------
+
+  uint32_t running_crc = 0;
   while (true)
     {
       bool is_eof = false;
+      // load_one_entry internally hashes the key. 
+      // If shard_id_hint is correct, the key will naturally fall into that shard.
       if (!load_one_entry (file_ptr, now_us, minis, &running_crc, &is_eof))
 	{
-	  // Logic error encountered (printed inside helper)
 	  fclose (file_ptr);
 	  return false;
 	}
       if (is_eof)
-	{
-	  break;		// Clean exit
-	}
+	break;
     }
 
+  bool result = true;
   if (running_crc != expected_crc)
     {
       msgf ("Snapshot: CRC mismatch! Expected %08x, got %08x",
 	    expected_crc, running_crc);
-      fclose (file_ptr);
-      return false;
+      result = false;
     }
-
   fclose (file_ptr);
-  msgf ("Snapshot: load complete.");
-  return true;
+  return result;
 }

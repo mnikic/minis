@@ -26,4 +26,7 @@ bool cache_execute (Cache * cache, const char **cmd, size_t size,
 		    Buffer * out, uint64_t now_us);
 uint64_t cache_dirty_count (Cache * cache);
 
+bool cache_load (Cache * cache, const char *dir, uint64_t now_us);
+bool cache_save (Cache * cache, const char *dir, uint64_t now_us);
+
 #endif /* CACHE_H */

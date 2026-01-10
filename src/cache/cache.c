@@ -601,3 +601,15 @@ cache_dirty_count (Cache *cache)
 {
   return minis_dirty_count (cache);
 }
+
+bool
+cache_load (Cache *cache, const char *dir, uint64_t now_us)
+{
+  return minis_load (cache, dir, now_us) == MINIS_OK;
+}
+
+bool
+cache_save (Cache *cache, const char *dir, uint64_t now_us)
+{
+  return minis_save (cache, dir, now_us) == MINIS_OK;
+}
