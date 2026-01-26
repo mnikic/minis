@@ -362,43 +362,62 @@ minis_dirty_count (Minis *minis)
   return count;
 }
 
+typedef struct {
+    int id;
+    uint64_t dirty;
+} ShardDirtyInfo;
+
+static int compare_dirty_desc(const void *first, const void *second) {
+    uint64_t dirta = ((const ShardDirtyInfo *)first)->dirty;
+    uint64_t dirtb = ((const ShardDirtyInfo *)second)->dirty;
+    // Descending order (dirtiest first)
+    return (dirta > dirtb) ? -1 : ((dirta < dirtb) ? 1 : 0);
+}
+
 void
-minis_incremental_save_step (Minis *minis, const char *base_dir,
-			     uint64_t now_us)
+minis_incremental_save_step (Minis *minis, const char *base_dir, uint64_t now_us)
 {
-  // We can be smart here:
-  // 1. Iterate all shards
-  // 2. Or find the "dirtiest" shard and only save that one to spread I/O load
+  ShardDirtyInfo info[NUM_SHARDS];
+  uint_fast8_t count = 0;
 
-  for (int i = 0; i < NUM_SHARDS; ++i)
+  for (int i = 0; i < NUM_SHARDS; ++i) {
+      uint64_t dirt = __atomic_load_n (&minis->shards[i].dirty_count, __ATOMIC_RELAXED);
+      if (dirt > 0) {
+          info[count].id = i;
+          info[count].dirty = dirt;
+          count++;
+      }
+  }
+
+  if (count == 0) return;
+
+  qsort(info, count, sizeof(ShardDirtyInfo), compare_dirty_desc);
+
+  for (int i = 0; i < count; ++i)
     {
-      Shard *shard = &minis->shards[i];
+      int shard_id = info[i].id;
+      Shard *shard = &minis->shards[shard_id];
 
-      uint64_t dirty =
-	__atomic_load_n (&shard->dirty_count, __ATOMIC_RELAXED);
-      if (dirty == 0)
-	continue;
-
-      // Try to lock. If contended, maybe we skip it this time?
-      // Or just block if we want to guarantee consistency.
+      // OPTIMIZATION: Try-Lock mechanism?
+      // For now, blocking lock is fine because we want to ensure data safety.
+      // If you want strictly non-blocking UI, use trylock and skip if busy.
+      // But usually, just taking the lock is safer for data persistence.
       lock_shard (shard);
 
-      // Check again inside lock
+      // Re-check dirty inside lock (someone else might have saved or it changed)
       if (shard->dirty_count > 0)
-	{
-	  char path[256];
-	  snprintf (path, sizeof (path), "%s/shard_%d.minis", base_dir, i);
+        {
+          char path[512];
+          snprintf (path, sizeof (path), "%s/shard_%d.mds", base_dir, shard_id);
 
-	  if (minis_save_shard_file (shard, path, now_us))
-	    {
-	      // Reset dirty ONLY if save succeeded
-	      shard->dirty_count = 0;
-	    }
-	}
+          if (minis_save_shard_file (shard, path, now_us))
+              shard->dirty_count = 0;
+        }
 
       unlock_shard (shard);
-
-      // Sleep 10ms between shards to let the UI breathe?
-      // usleep(10000); 
+      
+      // No sleep needed. 
+      // We release the lock immediately, so other threads can jump in here 
+      // before we lock the next shard. The OS scheduler handles fairness.
     }
 }

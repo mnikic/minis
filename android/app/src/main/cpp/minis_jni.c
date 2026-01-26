@@ -25,6 +25,7 @@ typedef struct {
     Minis* minis;            // The actual DB engine
     pthread_t bg_thread;     // The maintenance thread handle
     volatile int is_running; // The "Stop" flag
+    char *base_path;         // NEW: Directory for background saving
 } MinisContext;
 
 static ALWAYS_INLINE void
@@ -41,28 +42,38 @@ get_us (void) {
 }
 
 static void* maintenance_thread(void* arg) {
-    MinisContext *ctx = (MinisContext*)arg; // We receive the Context, not just Minis
-    // Check the flag on every loop iteration
-    while (ctx->is_running) {
+    MinisContext *ctx = (MinisContext*)arg;
+    
+    int ticks = 0;
 
-        // We sleep in small chunks so we can check 'is_running' frequently
-        // (Sleeping 100ms is fine for this benchmark)
+    while (ctx->is_running) {
+        // 10Hz Heartbeat (100ms)
         usleep(100000);
 
-        // Double check flag after waking up before doing work
         if (!ctx->is_running) break;
 
         uint64_t now = get_us ();
 
-        // Safe because nativeFree waits for us to finish before destroying the lock
+        // Task A: Eviction (Run every 100ms)
+        // This is fast CPU work.
         minis_evict(ctx->minis, now);
+
+        // Task B: Incremental Persistence (Run every 1 second)
+        // We don't want to hammer the disk check every 100ms.
+        if (++ticks % 10 == 0) {
+            if (ctx->base_path) {
+                // This function is "smart" - it sorts by dirtiness 
+                // and releases locks between shards. Safe to run here.
+                minis_incremental_save (ctx->minis, ctx->base_path, now);
+            }
+        }
     }
     LOGI("Minis Background Thread Stopped Cleanly.");
     return NULL;
 }
 
 JNIEXPORT jlong JNICALL
-Java_com_minis_Minis_nativeInit(JNIEnv *env, jobject thiz) {
+Java_com_minis_Minis_nativeInit(JNIEnv *env, jobject thiz, jstring jBasePath) {
     (void)env;
     (void)thiz;
     MinisContext *ctx = malloc(sizeof(MinisContext));
@@ -70,9 +81,17 @@ Java_com_minis_Minis_nativeInit(JNIEnv *env, jobject thiz) {
     ctx->minis = minis_init();
     ctx->is_running = 1;
 
+    // Save the path for the background thread
+    const char *path = (*env)->GetStringUTFChars(env, jBasePath, 0);
+    ctx->base_path = strdup(path);
+    (*env)->ReleaseStringUTFChars(env, jBasePath, path);
+
     if (pthread_create(&ctx->bg_thread, NULL, maintenance_thread, ctx) != 0) {
         LOGE("Failed to create background thread");
-        // Handle error cleanup if needed
+        free(ctx->base_path);
+        minis_free(ctx->minis);
+        free(ctx);
+        return 0;
     }
 
     return (jlong) ctx;
@@ -88,10 +107,23 @@ Java_com_minis_Minis_nativeFree(JNIEnv *env, jobject thiz, jlong ptr) {
 
         ctx->is_running = 0;
         pthread_join(ctx->bg_thread, NULL);
+        
+        if (ctx->base_path) free(ctx->base_path);
         minis_free(ctx->minis);
 
         free(ctx);
         LOGI("Minis Stopped.");
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_minis_Minis_nativeSync(JNIEnv *env, jobject thiz, jlong ptr) {
+    (void) env;
+    (void) thiz;
+    MinisContext *ctx = (MinisContext *) ptr;
+    if (ctx && ctx->base_path) {
+        // Trigger the logic immediately without waiting for the thread tick
+        minis_incremental_save (ctx->minis, ctx->base_path, get_us());
     }
 }
 
