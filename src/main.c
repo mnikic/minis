@@ -9,7 +9,9 @@
 #include "common/common.h"
 #include <stdint.h>
 #include <stdio.h>
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L	// For daemon(), sigaction, etc.
+#endif
 
 #include <stdlib.h>
 #include <unistd.h>
