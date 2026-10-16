@@ -553,6 +553,30 @@ do_pop (Cache *cache, const char **cmd, size_t size, bool front,
   return true;
 }
 
+// LRANGE key start stop
+static bool
+do_lrange (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+{
+  int64_t start = 0;
+  int64_t stop = 0;
+  if (!str2int (cmd[2], &start) || !str2int (cmd[3], &stop))
+    return out_err (out, ERR_ARG, ERR_NOT_INT);
+
+  ListReplyCtx ctx = {.out = out,.array = true };
+  size_t before = buf_len (out);
+  MinisError err =
+    minis_lrange (cache, cmd[1], start, stop, cb_list_reply, &ctx, now_us);
+  if (err == MINIS_ERR_OOM)
+    return false;
+  if (err != MINIS_OK && err != MINIS_ERR_NIL)
+    return reply_with_error (out, err);
+
+  // Missing key or empty range
+  if (buf_len (out) == before)
+    return out_arr (out, 0);
+  return true;
+}
+
 static bool
 do_llen (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 {
@@ -749,6 +773,8 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
     return do_pop (cache, cmd, size, true, out, now_us);
   if ((size == 2 || size == 3) && cmd_is (cmd[0], "rpop"))
     return do_pop (cache, cmd, size, false, out, now_us);
+  if (size == 4 && cmd_is (cmd[0], "lrange"))
+    return do_lrange (cache, cmd, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "llen"))
     return do_llen (cache, cmd[1], out, now_us);
   if (size >= 2 && cmd_is (cmd[0], "exists"))

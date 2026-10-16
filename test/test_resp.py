@@ -465,6 +465,77 @@ class TestListPushPop(MinisTestCase):
         self.assertEqual(self.r.rpop("intentengine:ai_retries"), '{"n": 1}')
 
 
+def ref_lrange(values, start, stop):
+    """LRANGE as Redis defines it"""
+    n = len(values)
+    if start < 0:
+        start = max(start + n, 0)
+    if stop < 0:
+        stop += n
+    stop = min(stop, n - 1)
+    return values[start:stop + 1] if start <= stop else []
+
+
+class TestListRange(MinisTestCase):
+    VALUES = [f"e{i}" for i in range(10)]
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        r = redis.Redis(port=cls.server.port, decode_responses=True)
+        r.rpush("lr", *cls.VALUES)
+        r.close()
+
+    def test_all_ranges(self):
+        bounds = list(range(-12, 13)) + [-(2**63), 2**63 - 1]
+        for start in bounds:
+            for stop in bounds:
+                with self.subTest(start=start, stop=stop):
+                    self.assertEqual(self.r.lrange("lr", start, stop),
+                                     ref_lrange(self.VALUES, start, stop))
+
+    def test_whole_list(self):
+        self.assertEqual(self.r.lrange("lr", 0, -1), self.VALUES)
+
+    def test_does_not_remove(self):
+        # leadgrep peeks at the keyword queue this way
+        self.r.lrange("lr", 0, 4)
+        self.assertEqual(self.r.llen("lr"), 10)
+
+    def test_missing_key(self):
+        self.assertEqual(self.r.lrange("lr_missing", 0, -1), [])
+
+    def test_wrong_type(self):
+        self.r.set("lr_str", "v")
+        with self.assertRaisesRegex(redis.ResponseError, "WRONGTYPE"):
+            self.r.lrange("lr_str", 0, -1)
+
+    def test_bad_index(self):
+        for args in (("x", "1"), ("0", "1.5"), ("", "1")):
+            with self.subTest(args=args):
+                with self.assertRaisesRegex(redis.ResponseError,
+                                            "not an integer"):
+                    self.r.execute_command("LRANGE", "lr", *args)
+
+    def test_after_pushes_at_both_ends(self):
+        # Range over a wrapped ring buffer
+        self.r.rpush("lr_wrap", "c", "d")
+        self.r.lpush("lr_wrap", "b", "a")
+        self.r.lpop("lr_wrap")
+        self.r.rpush("lr_wrap", "e")
+        self.assertEqual(self.r.lrange("lr_wrap", 0, -1), ["b", "c", "d", "e"])
+        self.assertEqual(self.r.lrange("lr_wrap", -2, -1), ["d", "e"])
+
+    def test_range_too_big_for_reply(self):
+        big = "x" * 100_000
+        for _ in range(3):
+            self.r.rpush("lr_big", big)
+        with self.assertRaises(redis.RedisError):
+            self.r.lrange("lr_big", 0, -1)
+        self.r.close()
+        self.assertEqual(self.r.lrange("lr_big", 0, 0), [big])
+
+
 class TestListPersistence(MinisTestCase):
     def test_list_survives_restart(self):
         self.r.rpush("lp_list", "a", "b", "c")

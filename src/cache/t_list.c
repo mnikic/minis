@@ -111,6 +111,44 @@ minis_pop (Minis *minis, const char *key, size_t count, bool front,
 }
 
 MinisError
+minis_lrange (Minis *minis, const char *key, int64_t start, int64_t stop,
+	      MinisListCb cb, void *ctx, uint64_t now_us)
+{
+  Shard *shard = lock_shard_for_key (minis, key);
+
+  MinisError err;
+  Entry *ent = list_lookup (minis, shard, key, now_us, &err);
+  if (!ent)
+    {
+      unlock_shard (shard);
+      return err;
+    }
+
+  List *list = ent->list;
+  int64_t len = (int64_t) list_len (list);
+  if (start < 0)
+    start = start < -len ? 0 : start + len;
+  if (stop < 0)
+    stop += len;
+  if (stop >= len)
+    stop = len - 1;
+
+  if (start <= stop)
+    {
+      size_t total = (size_t) (stop - start + 1);
+      for (size_t i = 0; i < total; i++)
+	if (!cb (list_at (list, (size_t) start + i), i, total, ctx))
+	  {
+	    err = MINIS_ERR_OOM;
+	    break;
+	  }
+    }
+
+  unlock_shard (shard);
+  return err;
+}
+
+MinisError
 minis_llen (Minis *minis, const char *key, size_t *out_len, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);

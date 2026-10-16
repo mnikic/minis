@@ -19,6 +19,12 @@ MinisError minis_pop (Minis * minis, const char *key, size_t count,
 		      bool front, MinisListCb cb, void *ctx,
 		      uint64_t now_us);
 
+// LRANGE: visits elements start..stop inclusive. Negative indexes count
+// from the end, out of range ones are clamped like in Redis.
+MinisError minis_lrange (Minis * minis, const char *key, int64_t start,
+			 int64_t stop, MinisListCb cb, void *ctx,
+			 uint64_t now_us);
+
 MinisError minis_llen (Minis * minis, const char *key, size_t *out_len,
 		       uint64_t now_us);
 

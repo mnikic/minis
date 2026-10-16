@@ -839,6 +839,72 @@ test_list_push_pop (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6i: LRANGE
+// ============================================================================
+
+static void
+test_list_range (void)
+{
+  printf ("TEST: LRANGE... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  // Pushes at both ends wrap the ring buffer: a b c d e
+  RUN (cache, now, "rpush", "lr", "c", "d");
+  RUN (cache, now, "lpush", "lr", "b", "a", "x");
+  RUN (cache, now, "lpop", "lr");
+  RUN (cache, now, "rpush", "lr", "e");
+
+  const char *all[] = { "a", "b", "c", "d", "e" };
+  RUN (cache, now, "lrange", "lr", "0", "-1");
+  assert_str_array (&buf, all, 5);
+  RUN (cache, now, "lrange", "lr", "-100", "100");
+  assert_str_array (&buf, all, 5);
+  RUN (cache, now, "lrange", "lr", "1", "2");
+  assert_str_array (&buf, &all[1], 2);
+  RUN (cache, now, "lrange", "lr", "-2", "-1");
+  assert_str_array (&buf, &all[3], 2);
+  RUN (cache, now, "lrange", "lr", "4", "4");
+  assert_str_array (&buf, &all[4], 1);
+
+  // Empty ranges
+  RUN (cache, now, "lrange", "lr", "3", "1");
+  assert_str_array (&buf, NULL, 0);
+  RUN (cache, now, "lrange", "lr", "5", "10");
+  assert_str_array (&buf, NULL, 0);
+  RUN (cache, now, "lrange", "lr", "-9223372036854775808",
+       "-9223372036854775808");
+  assert_str_array (&buf, NULL, 0);
+  RUN (cache, now, "lrange", "lr", "0", "9223372036854775807");
+  assert_str_array (&buf, all, 5);
+  RUN (cache, now, "lrange", "lr_missing", "0", "-1");
+  assert_str_array (&buf, NULL, 0);
+
+  // Nothing was removed
+  RUN (cache, now, "llen", "lr");
+  ASSERT_EQ (extract_int_response (&buf), 5);
+
+  RUN (cache, now, "lrange", "lr", "x", "1");
+  assert_err_msg (&buf, "value is not an integer or out of range");
+  RUN (cache, now, "set", "lr_str", "v");
+  RUN (cache, now, "lrange", "lr_str", "0", "-1");
+  assert_err_msg (&buf, "WRONGTYPE");
+
+  // Too big for the reply buffer: fails instead of truncating
+  static char big[3001];
+  memset (big, 'x', sizeof (big) - 1);
+  RUN (cache, now, "rpush", "lr_big", big, big, big);
+  const char *range_cmd[] = { "lrange", "lr_big", "0", "-1" };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_FALSE (cache_execute (cache, range_cmd, 4, &buf, now));
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -1435,6 +1501,7 @@ main (void)
   test_resp_int64_limits ();
   test_list_push_pop ();
   test_list_pop_too_big ();
+  test_list_range ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

@@ -943,6 +943,54 @@ $ {client_executable-abs_path} llen lst_exp
 (int) 0
 $ {client_executable-abs_path} lpop lst_exp
 (nil)
+# Test: LRANGE
+$ {client_executable-abs_path} rpush lr c d
+(int) 2
+$ {client_executable-abs_path} lpush lr b a
+(int) 4
+$ {client_executable-abs_path} rpush lr e
+(int) 5
+$ {client_executable-abs_path} lrange lr 0 -1
+(arr) len=5
+(str) a
+(str) b
+(str) c
+(str) d
+(str) e
+(arr) end
+$ {client_executable-abs_path} lrange lr 1 2
+(arr) len=2
+(str) b
+(str) c
+(arr) end
+$ {client_executable-abs_path} lrange lr -2 100
+(arr) len=2
+(str) d
+(str) e
+(arr) end
+$ {client_executable-abs_path} lrange lr -100 0
+(arr) len=1
+(str) a
+(arr) end
+$ {client_executable-abs_path} lrange lr 3 1
+(arr) len=0
+(arr) end
+$ {client_executable-abs_path} lrange lr 5 10
+(arr) len=0
+(arr) end
+$ {client_executable-abs_path} lrange lr_missing 0 -1
+(arr) len=0
+(arr) end
+$ {client_executable-abs_path} lrange lr x 1
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} llen lr
+(int) 5
+$ {client_executable-abs_path} set lr_str v
+(str) OK
+$ {client_executable-abs_path} lrange lr_str 0 -1
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
+$ {client_executable-abs_path} del lr lr_str
+(int) 2
 '''
 
 
