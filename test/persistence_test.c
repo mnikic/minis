@@ -1,3 +1,5 @@
+// The checks are asserts, keep them in release (-DNDEBUG) builds too
+#undef NDEBUG
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
