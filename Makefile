@@ -152,7 +152,7 @@ TEST_PERSIST_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_PERSIST_SRCS))
 #  RULES
 # ============================================================================
 
-.PHONY: all clean install debug asan ubsan tsan android resp-test \
+.PHONY: all clean install debug asan ubsan tsan android resp-test resp-test-asan resp-test-ubsan \
         test test-android test-asan test-ubsan test-tsan test-debug heap-test
 
 # Default: Build all binaries for the selected profile
@@ -240,6 +240,12 @@ test: $(TARGET_BENCH) $(TARGET_TEST_HEAP) $(TARGET_TEST_CACHE)
 resp-test: $(TARGET_MINIS)
 	@echo "--- Running RESP Tests ($(PROFILE)) ---"
 	@MINIS_BIN=$(TARGET_MINIS) python3 test/test_resp.py
+
+# halt_on_error makes a UBSan report kill the server and fail the run
+resp-test-asan:
+	@$(MAKE) PROFILE=asan resp-test
+resp-test-ubsan:
+	@UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 $(MAKE) PROFILE=ubsan resp-test
 
 # --- Profile-Specific Test Wrappers ---
 test-android:

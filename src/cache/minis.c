@@ -21,9 +21,13 @@
 Minis *
 minis_init (void)
 {
-  Minis *minis = calloc (1, sizeof (Minis));
-  if (!minis)
+  // Shards are cache line aligned, which calloc does not guarantee.
+  // posix_memalign rather than aligned_alloc, which needs Android API 28.
+  void *mem = NULL;
+  if (posix_memalign (&mem, _Alignof (Minis), sizeof (Minis)) != 0)
     die ("Out of memory in minis_init");
+  memset (mem, 0, sizeof (Minis));
+  Minis *minis = mem;
 
   for (int i = 0; i < NUM_SHARDS; i++)
     {
