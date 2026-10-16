@@ -118,14 +118,6 @@ do_config (Cache *cache, const char **args, size_t arg_count, Buffer *out)
 // Key Operations
 
 static bool
-do_del (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
-{
-  int deleted = 0;
-  minis_del (cache, cmd[1], &deleted, now_us);
-  return out_int (out, deleted);
-}
-
-static bool
 do_mdel (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
 	 uint64_t now_us)
 {
@@ -546,9 +538,7 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
     return do_mget (cache, cmd + 1, size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "set"))
     return do_set (cache, cmd, out, now_us);
-  if (size == 2 && cmd_is (cmd[0], "del"))
-    return do_del (cache, cmd, out, now_us);
-  if (size > 1 && cmd_is (cmd[0], "mdel"))
+  if (size > 1 && (cmd_is (cmd[0], "del") || cmd_is (cmd[0], "mdel")))
     return do_mdel (cache, &cmd[1], size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "pexpire"))
     return do_expire (cache, cmd, out, now_us);

@@ -123,5 +123,40 @@ class TestSetClearsTtl(MinisTestCase):
         self.assertEqual(self.r.execute_command("PTTL", key), -2)
 
 
+class TestDel(MinisTestCase):
+    def test_single_key(self):
+        self.r.set("del_one", "v")
+        self.assertEqual(self.r.delete("del_one"), 1)
+        self.assertIsNone(self.r.get("del_one"))
+        self.assertEqual(self.r.delete("del_one"), 0)
+
+    def test_many_keys(self):
+        self.r.set("del_a", "1")
+        self.r.set("del_b", "2")
+        self.r.hset("del_h", "f", "v")
+        self.assertEqual(self.r.delete("del_a", "del_missing", "del_b", "del_h"), 3)
+        self.assertEqual(self.r.exists("del_a", "del_b", "del_h"), 0)
+
+    def test_duplicate_keys_count_once(self):
+        self.r.set("del_dup", "v")
+        self.assertEqual(self.r.delete("del_dup", "del_dup"), 1)
+
+    def test_expired_key_not_counted(self):
+        self.r.set("del_expired", "v")
+        self.r.execute_command("PEXPIRE", "del_expired", 50)
+        time.sleep(0.1)
+        self.assertEqual(self.r.delete("del_expired"), 0)
+
+    def test_no_keys_is_error(self):
+        with self.assertRaises(redis.ResponseError):
+            self.r.execute_command("DEL")
+        self.assertAlive()
+
+    def test_mdel_alias(self):
+        self.r.set("mdel_a", "1")
+        self.r.set("mdel_b", "2")
+        self.assertEqual(self.r.execute_command("MDEL", "mdel_a", "mdel_b"), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
