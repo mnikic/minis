@@ -220,6 +220,91 @@ class TestExpireTtl(MinisTestCase):
         self.assertEqual(self.r.ttl("exp_hash"), 100)
 
 
+class TestSetWithTtl(MinisTestCase):
+    def test_set_ex(self):
+        # leadgrep's seen:<id> marker
+        self.assertTrue(self.r.set("setex_seen", '{"a": 1}', ex=604800))
+        self.assertEqual(self.r.get("setex_seen"), '{"a": 1}')
+        self.assertEqual(self.r.ttl("setex_seen"), 604800)
+        self.assertEqual(self.r.exists("setex_seen"), 1)
+
+    def test_set_px(self):
+        self.assertTrue(self.r.set("setex_px", "v", px=5000))
+        pttl = self.r.pttl("setex_px")
+        self.assertTrue(4000 < pttl <= 5000, pttl)
+
+    def test_option_case_insensitive(self):
+        self.assertTrue(self.r.execute_command("SET", "setex_case", "v", "eX", 10))
+        self.assertEqual(self.r.ttl("setex_case"), 10)
+
+    def test_set_ex_replaces_ttl(self):
+        self.r.set("setex_replace", "old", ex=100)
+        self.r.set("setex_replace", "new", ex=200)
+        self.assertEqual(self.r.get("setex_replace"), "new")
+        self.assertEqual(self.r.ttl("setex_replace"), 200)
+
+    def test_set_ex_same_value_adds_ttl(self):
+        self.r.set("setex_same", "v")
+        self.r.set("setex_same", "v", ex=50)
+        self.assertEqual(self.r.ttl("setex_same"), 50)
+
+    def test_set_ex_over_other_type(self):
+        self.r.hset("setex_hash", "f", "v")
+        self.r.set("setex_hash", "v", ex=50)
+        self.assertEqual(self.r.get("setex_hash"), "v")
+        self.assertEqual(self.r.ttl("setex_hash"), 50)
+
+    def test_plain_set_clears_ttl(self):
+        self.r.set("setex_clear", "v", ex=50)
+        self.r.set("setex_clear", "w")
+        self.assertEqual(self.r.ttl("setex_clear"), -1)
+
+    def test_key_expires(self):
+        self.r.set("setex_gone", "v", px=100)
+        time.sleep(0.3)
+        self.assertAlive()
+        self.assertIsNone(self.r.get("setex_gone"))
+
+    def test_bad_options(self):
+        cases = {
+            ("EX", "0"): "invalid expire",
+            ("EX", "-1"): "invalid expire",
+            ("PX", "0"): "invalid expire",
+            ("EX", str(2**63 // 1000)): "invalid expire",
+            ("EX", "abc"): "not an integer",
+            ("EX",): "syntax error",
+            ("EX", "10", "PX", "100"): "syntax error",
+            ("EX", "10", "EX", "10"): "syntax error",
+            ("BOGUS",): "syntax error",
+        }
+        self.r.set("setex_bad", "orig")
+        for opts, msg in cases.items():
+            with self.subTest(opts=opts):
+                with self.assertRaisesRegex(redis.ResponseError, msg):
+                    self.r.execute_command("SET", "setex_bad", "new", *opts)
+                self.assertEqual(self.r.get("setex_bad"), "orig")
+                self.assertEqual(self.r.ttl("setex_bad"), -1)
+
+    def test_setex(self):
+        # leadgrep's draft keywords
+        self.assertTrue(self.r.setex("setex_cmd", 1800, "[1, 2]"))
+        self.assertEqual(self.r.get("setex_cmd"), "[1, 2]")
+        self.assertEqual(self.r.ttl("setex_cmd"), 1800)
+
+    def test_psetex(self):
+        self.assertTrue(self.r.psetex("psetex_cmd", 5000, "v"))
+        pttl = self.r.pttl("psetex_cmd")
+        self.assertTrue(4000 < pttl <= 5000, pttl)
+
+    def test_setex_bad_ttl(self):
+        for ttl, msg in (("0", "invalid expire"), ("-5", "invalid expire"),
+                         ("x", "not an integer")):
+            with self.subTest(ttl=ttl):
+                with self.assertRaisesRegex(redis.ResponseError, msg):
+                    self.r.execute_command("SETEX", "setex_badttl", ttl, "v")
+                self.assertEqual(self.r.exists("setex_badttl"), 0)
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

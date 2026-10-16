@@ -18,6 +18,9 @@ MinisError minis_mget (Minis * minis, const char **keys, size_t count,
 MinisError
 minis_set (Minis * minis, const char *key, const char *val, uint64_t now_us);
 MinisError
+minis_set_ex (Minis * minis, const char *key, const char *val,
+	      int64_t ttl_ms, uint64_t now_us);
+MinisError
 minis_mset (Minis * minis, const char **key_vals, size_t count,
 	    uint64_t now_us);
 

@@ -273,13 +273,74 @@ do_get (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
   return reply_with_error (out, err);
 }
 
-static bool
-do_set (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+// Parses a TTL for SET/SETEX, which must be positive. Returns an error
+// message, or NULL with the TTL in *out_ms.
+static const char *
+parse_set_ttl (const char *arg, int64_t unit_ms, const char *invalid_msg,
+	       int64_t *out_ms)
 {
-  MinisError err = minis_set (cache, cmd[1], cmd[2], now_us);
+  int64_t ttl = 0;
+  if (!str2int (arg, &ttl))
+    return ERR_NOT_INT;
+  if (ttl <= 0 || ttl > INT64_MAX / 1000 / unit_ms)
+    return invalid_msg;
+  *out_ms = ttl * unit_ms;
+  return NULL;
+}
+
+static bool
+set_with_ttl (Cache *cache, const char *key, const char *val, int64_t ttl_ms,
+	      Buffer *out, uint64_t now_us)
+{
+  MinisError err = ttl_ms > 0
+    ? minis_set_ex (cache, key, val, ttl_ms, now_us)
+    : minis_set (cache, key, val, now_us);
   if (err == MINIS_OK)
     return out_ok (out);
   return reply_with_error (out, err);
+}
+
+// SET key value [EX seconds | PX milliseconds]
+static bool
+do_set (Cache *cache, const char **cmd, size_t size, Buffer *out,
+	uint64_t now_us)
+{
+  int64_t ttl_ms = -1;
+  for (size_t i = 3; i < size; i++)
+    {
+      int64_t unit_ms;
+      if (cmd_is (cmd[i], "ex"))
+	unit_ms = 1000;
+      else if (cmd_is (cmd[i], "px"))
+	unit_ms = 1;
+      else
+	return out_err (out, ERR_ARG, "syntax error");
+
+      if (ttl_ms != -1 || i + 1 >= size)
+	return out_err (out, ERR_ARG, "syntax error");
+
+      const char *err = parse_set_ttl (cmd[++i], unit_ms,
+				       "invalid expire time in 'set' command",
+				       &ttl_ms);
+      if (err)
+	return out_err (out, ERR_ARG, err);
+    }
+  return set_with_ttl (cache, cmd[1], cmd[2], ttl_ms, out, now_us);
+}
+
+// SETEX/PSETEX key ttl value
+static bool
+do_setex (Cache *cache, const char **cmd, int64_t unit_ms, Buffer *out,
+	  uint64_t now_us)
+{
+  int64_t ttl_ms = 0;
+  const char *err = parse_set_ttl (cmd[2], unit_ms, unit_ms == 1
+				   ? "invalid expire time in 'psetex' command"
+				   : "invalid expire time in 'setex' command",
+				   &ttl_ms);
+  if (err)
+    return out_err (out, ERR_ARG, err);
+  return set_with_ttl (cache, cmd[1], cmd[3], ttl_ms, out, now_us);
 }
 
 static bool
@@ -564,8 +625,12 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
     return do_get (cache, cmd[1], out, now_us);
   if (size > 1 && cmd_is (cmd[0], "mget"))
     return do_mget (cache, cmd + 1, size - 1, out, now_us);
-  if (size == 3 && cmd_is (cmd[0], "set"))
-    return do_set (cache, cmd, out, now_us);
+  if (size >= 3 && cmd_is (cmd[0], "set"))
+    return do_set (cache, cmd, size, out, now_us);
+  if (size == 4 && cmd_is (cmd[0], "setex"))
+    return do_setex (cache, cmd, 1000, out, now_us);
+  if (size == 4 && cmd_is (cmd[0], "psetex"))
+    return do_setex (cache, cmd, 1, out, now_us);
   if (size > 1 && (cmd_is (cmd[0], "del") || cmd_is (cmd[0], "mdel")))
     return do_mdel (cache, &cmd[1], size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "pexpire"))

@@ -97,6 +97,28 @@ minis_set (Minis *minis, const char *key, const char *val, uint64_t now_us)
   return MINIS_OK;
 }
 
+// SET with a TTL, both under one shard lock. ttl_ms must be > 0.
+MinisError
+minis_set_ex (Minis *minis, const char *key, const char *val, int64_t ttl_ms,
+	      uint64_t now_us)
+{
+  Shard *shard = lock_shard_for_key (minis, key);
+
+  if (!minis_set_internal (minis, shard, key, val, now_us))
+    {
+      unlock_shard (shard);
+      return MINIS_ERR_OOM;
+    }
+
+  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  entry_set_ttl (minis, now_us, ent, ttl_ms);
+  // An unchanged value is not counted by minis_set_internal, the TTL is new
+  __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
+
+  unlock_shard (shard);
+  return MINIS_OK;
+}
+
 MinisError
 minis_mset (Minis *minis, const char **key_vals, size_t total_num,
 	    uint64_t now_us)
