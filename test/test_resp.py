@@ -181,6 +181,13 @@ class TestIntegerArgs(MinisTestCase):
                 self.assertNotInt("DECRBY", "int_incrby", bad)
         self.assertEqual(self.r.get("int_incrby"), "10")
 
+    def test_int64_limits_in_replies(self):
+        self.r.set("int_limits", "0")
+        self.assertEqual(self.r.incrby("int_limits", -(2**63)), -(2**63))
+        self.r.set("int_limits", "0")
+        self.assertEqual(self.r.incrby("int_limits", 2**63 - 1), 2**63 - 1)
+        self.assertEqual(self.r.decr("int_limits"), 2**63 - 2)
+
     def test_decrby_int64_min(self):
         self.r.set("int_decrby_min", "0")
         with self.assertRaisesRegex(redis.ResponseError, "overflow"):

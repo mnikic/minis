@@ -65,18 +65,15 @@ buf_append_int_as_string (Buffer *buf, int64_t value)
       return true;
     }
 
-  bool neg = false;
-  if (value < 0)
-    {
-      neg = true;
-      value = -value;		// careful with INT64_MIN, usually handled specially
-    }
+  // Work on the magnitude unsigned: -INT64_MIN does not fit in int64_t
+  bool neg = value < 0;
+  uint64_t mag = neg ? 0 - (uint64_t) value : (uint64_t) value;
 
   // Generate digits in reverse
-  while (value > 0)
+  while (mag > 0)
     {
-      *ptr++ = (char) ('0' + (value % 10));
-      value /= 10;
+      *ptr++ = (char) ('0' + (mag % 10));
+      mag /= 10;
     }
 
   if (neg)
