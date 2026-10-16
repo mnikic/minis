@@ -157,6 +157,22 @@ serialize_hash (Buffer *buf, HMap *hmap)
 }
 
 static bool
+serialize_list (Buffer *buf, const List *list)
+{
+  if (!buf_append_byte (buf, T_LIST))
+    return false;
+  if (!buf_append_u32 (buf, (uint32_t) list_len (list)))
+    return false;
+  for (size_t i = 0; i < list_len (list); i++)
+    {
+      const char *val = list_at (list, i);
+      if (!out_raw_str (buf, val, strlen (val)))
+	return false;
+    }
+  return true;
+}
+
+static bool
 serialize_entry (Buffer *buf, Entry *entry)
 {
   if (!buf_append_i64 (buf, (int64_t) entry->expire_at_us))
@@ -174,6 +190,8 @@ serialize_entry (Buffer *buf, Entry *entry)
     return serialize_zset (buf, entry->zset);
   if (entry->type == T_HASH)
     return serialize_hash (buf, entry->hash);
+  if (entry->type == T_LIST)
+    return serialize_list (buf, entry->list);
 
   return false;
 }
@@ -324,6 +342,58 @@ load_hash_entry (FILE *file_ptr, Minis *minis, const char *key,
 	  free (val_buf);
 	}
     }
+  return true;
+}
+
+static bool
+load_list_entry (FILE *file_ptr, Minis *minis, const char *key,
+		 uint64_t expire_at, uint32_t *crc, bool skip)
+{
+  uint32_t count;
+  if (!read_u32_crc (file_ptr, &count, crc))
+    return false;
+
+  Entry *ent = NULL;
+  if (!skip)
+    {
+      ent = entry_new_list (minis, key);
+      if (!ent)
+	return false;
+      if (expire_at > 0)
+	entry_set_expiration (minis, ent, expire_at);
+    }
+
+  for (uint32_t i = 0; i < count; i++)
+    {
+      uint32_t vlen;
+      if (!read_u32_crc (file_ptr, &vlen, crc))
+	return false;
+      if (vlen > K_MAX_MSG)
+	{
+	  msgf ("Snapshot: list value too long (%u)", vlen);
+	  return false;
+	}
+
+      // Read even when skipping, to keep the stream and CRC in sync
+      char *val_buf = malloc (vlen + 1);
+      if (!val_buf)
+	return false;
+      if (!read_exact_crc (file_ptr, val_buf, vlen, crc))
+	{
+	  free (val_buf);
+	  return false;
+	}
+      val_buf[vlen] = '\0';
+
+      bool pushed = !ent || list_push (ent->list, val_buf, false);
+      free (val_buf);
+      if (!pushed)
+	return false;
+    }
+
+  // Lists are never empty, drop one from a bad file
+  if (ent && list_len (ent->list) == 0)
+    entry_dispose_atomic (minis, ent);
   return true;
 }
 
@@ -483,6 +553,8 @@ load_one_entry (FILE *file_ptr, uint64_t now_us, Minis *minis, uint32_t *crc,
     return load_zset_entry (file_ptr, minis, key_buf, expire_at, crc, skip);
   if (type == T_HASH)
     return load_hash_entry (file_ptr, minis, key_buf, expire_at, crc, skip);
+  if (type == T_LIST)
+    return load_list_entry (file_ptr, minis, key_buf, expire_at, crc, skip);
 
   msgf ("Snapshot: unknown type %u for key %s", type, key_buf);
   return false;

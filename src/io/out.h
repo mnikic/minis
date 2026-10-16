@@ -15,6 +15,8 @@
 
 HOT bool out_simple_str (Buffer * out, const char *str);
 HOT bool out_nil (Buffer * out);
+// Null array, as LPOP with a count sends for a missing key
+bool out_nil_arr (Buffer * out);
 HOT bool out_str (Buffer * out, const char *val);
 HOT bool out_str_size (Buffer * out, const char *string, size_t size);
 HOT bool out_int (Buffer * out, int64_t val);

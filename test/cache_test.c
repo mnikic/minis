@@ -121,6 +121,30 @@ assert_err_msg (Buffer *buf, const char *expected)
 					&buf, (now)));                                             \
 	} while (0)
 
+// Helper to check a binary array of strings
+static void
+assert_str_array (Buffer *buf, const char **expected, size_t count)
+{
+  const uint8_t *data = buf_data (buf);
+  ASSERT_EQ (data[0], SER_ARR);
+  uint32_t len;
+  memcpy (&len, &data[1], 4);
+  ASSERT_EQ (ntoh_u32 (len), count);
+
+  size_t pos = 5;
+  for (size_t i = 0; i < count; i++)
+    {
+      ASSERT_EQ (data[pos], SER_STR);
+      uint32_t slen;
+      memcpy (&slen, &data[pos + 1], 4);
+      slen = ntoh_u32 (slen);
+      ASSERT_EQ (slen, strlen (expected[i]));
+      ASSERT_TRUE (memcmp (&data[pos + 5], expected[i], slen) == 0);
+      pos += 5 + slen;
+    }
+  ASSERT_EQ (pos, buf_len (buf));
+}
+
 // Helper to extract string response
 static const char *
 extract_str_response (Buffer *buf)
@@ -738,6 +762,113 @@ test_resp_int64_limits (void)
 }
 
 // ============================================================================
+// Test 6h: Lists, push and pop
+// ============================================================================
+
+static void
+test_list_push_pop (void)
+{
+  printf ("TEST: List push/pop... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  RUN (cache, now, "rpush", "lst", "a", "b");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now, "lpush", "lst", "y", "z");
+  ASSERT_EQ (extract_int_response (&buf), 4);
+  RUN (cache, now, "llen", "lst");
+  ASSERT_EQ (extract_int_response (&buf), 4);
+
+  // List is now z y a b
+  RUN (cache, now, "lpop", "lst");
+  ASSERT_STR_EQ (extract_str_response (&buf), "z");
+  RUN (cache, now, "rpop", "lst");
+  ASSERT_STR_EQ (extract_str_response (&buf), "b");
+
+  RUN (cache, now, "rpush", "lst", "c", "d");
+  RUN (cache, now, "lpop", "lst", "2");
+  const char *first_two[] = { "y", "a" };
+  assert_str_array (&buf, first_two, 2);
+  RUN (cache, now, "rpop", "lst", "0");
+  assert_str_array (&buf, NULL, 0);
+  RUN (cache, now, "rpop", "lst", "10");
+  const char *rest[] = { "d", "c" };
+  assert_str_array (&buf, rest, 2);
+
+  // Popping the last element deletes the key
+  RUN (cache, now, "exists", "lst");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+  RUN (cache, now, "llen", "lst");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+  RUN (cache, now, "lpop", "lst");
+  ASSERT_TRUE (is_nil_response (&buf));
+  RUN (cache, now, "lpop", "lst", "3");
+  ASSERT_TRUE (is_nil_response (&buf));
+
+  RUN (cache, now, "rpush", "lst", "a");
+  RUN (cache, now, "lpop", "lst", "-1");
+  assert_err_msg (&buf, "value is out of range, must be positive");
+  RUN (cache, now, "lpop", "lst", "x");
+  assert_err_msg (&buf, "value is out of range, must be positive");
+
+  // Wrong types, both ways
+  RUN (cache, now, "set", "lst_str", "v");
+  RUN (cache, now, "rpush", "lst_str", "a");
+  assert_err_msg (&buf, "WRONGTYPE");
+  RUN (cache, now, "lpop", "lst_str");
+  assert_err_msg (&buf, "WRONGTYPE");
+  RUN (cache, now, "llen", "lst_str");
+  assert_err_msg (&buf, "WRONGTYPE");
+  RUN (cache, now, "get", "lst");
+  assert_err_msg (&buf, "WRONGTYPE");
+  RUN (cache, now, "hset", "lst", "f", "v");
+  assert_err_msg (&buf, "WRONGTYPE");
+
+  // Lists expire like any key
+  RUN (cache, now, "pexpire", "lst", "1000");
+  ASSERT_EQ (cache_next_expiry (cache), now + 1000000);
+  uint64_t later = now + 2000000;
+  cache_evict (cache, later);
+  RUN (cache, later, "llen", "lst");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+  ASSERT_EQ (cache_next_expiry (cache), (uint64_t) - 1);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
+// A pop whose reply does not fit must leave the list alone
+static void
+test_list_pop_too_big (void)
+{
+  printf ("TEST: List pop too big for reply... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  static char big[3001];
+  memset (big, 'x', sizeof (big) - 1);
+  RUN (cache, now, "rpush", "lbig", big, big, big);
+
+  // 9KB of reply in the 8KB test buffer
+  const char *pop_cmd[] = { "lpop", "lbig", "3" };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_FALSE (cache_execute (cache, pop_cmd, 3, &buf, now));
+
+  RUN (cache, now, "llen", "lbig");
+  ASSERT_EQ (extract_int_response (&buf), 3);
+  RUN (cache, now, "lpop", "lbig", "2");
+  const char *two[] = { big, big };
+  assert_str_array (&buf, two, 2);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
+// ============================================================================
 // Test 7: KEYS command with pattern matching
 // ============================================================================
 
@@ -1302,6 +1433,8 @@ main (void)
   test_set_with_ttl ();
   test_integer_args ();
   test_resp_int64_limits ();
+  test_list_push_pop ();
+  test_list_pop_too_big ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

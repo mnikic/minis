@@ -82,6 +82,13 @@ entry_destroy_internal (Entry *ent)
 	  free (ent->hash);
 	}
       break;
+    case T_LIST:
+      if (ent->list)
+	{
+	  list_dispose (ent->list);
+	  free (ent->list);
+	}
+      break;
     case T_STR:
       if (ent->val)
 	free (ent->val);
@@ -116,6 +123,10 @@ entry_del (Minis *minis, Entry *ent, uint64_t now_us)
     case T_HASH:
       if (ent->hash)
 	too_big = hm_size (ent->hash) > k_large_container_size;
+      break;
+    case T_LIST:
+      if (ent->list)
+	too_big = list_len (ent->list) > k_large_container_size;
       break;
     case T_STR:
       // Fallthrough
@@ -241,6 +252,23 @@ entry_new_hash (Minis *minis, const char *key)
       entry_dispose_atomic (minis, ent);
       return NULL;
     }
+  return ent;
+}
+
+Entry *
+entry_new_list (Minis *minis, const char *key)
+{
+  Entry *ent = entry_new (minis, key, T_LIST);
+  if (!ent)
+    return NULL;
+
+  ent->list = malloc (sizeof (List));
+  if (!ent->list)
+    {
+      entry_dispose_atomic (minis, ent);
+      return NULL;
+    }
+  list_init (ent->list);
   return ent;
 }
 

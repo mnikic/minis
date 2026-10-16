@@ -8,7 +8,9 @@ MINIS_BIN selects the binary (default: build/bin/release/minis).
     python3 test/test_resp.py
 """
 
+import collections
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -37,6 +39,9 @@ class MinisServer:
         self.workdir = tempfile.TemporaryDirectory(prefix="minis-test-")
         self.port = free_port()
         self.log = open(os.path.join(self.workdir.name, "server.log"), "w")
+        self.start()
+
+    def start(self):
         self.proc = subprocess.Popen(
             [MINIS_BIN, "-p", str(self.port)],
             cwd=self.workdir.name,
@@ -54,7 +59,8 @@ class MinisServer:
                     raise RuntimeError(f"minis did not start ({MINIS_BIN})")
                 time.sleep(0.05)
 
-    def stop(self):
+    def shutdown(self):
+        # SIGTERM makes the server save a snapshot before it exits
         if self.proc.poll() is None:
             self.proc.terminate()
             try:
@@ -62,6 +68,15 @@ class MinisServer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait()
+
+    def restart(self):
+        """Stops and starts the server in the same directory, so it
+        reloads its snapshot."""
+        self.shutdown()
+        self.start()
+
+    def stop(self):
+        self.shutdown()
         self.log.close()
         self.workdir.cleanup()
 
@@ -303,6 +318,177 @@ class TestSetWithTtl(MinisTestCase):
                 with self.assertRaisesRegex(redis.ResponseError, msg):
                     self.r.execute_command("SETEX", "setex_badttl", ttl, "v")
                 self.assertEqual(self.r.exists("setex_badttl"), 0)
+
+
+class TestListPushPop(MinisTestCase):
+    def test_rpush_lpop_order(self):
+        self.assertEqual(self.r.rpush("l_order", "a", "b", "c"), 3)
+        self.assertEqual(self.r.rpush("l_order", "d"), 4)
+        self.assertEqual(self.r.llen("l_order"), 4)
+        self.assertEqual(self.r.lpop("l_order"), "a")
+        self.assertEqual(self.r.rpop("l_order"), "d")
+        self.assertEqual(self.r.lpop("l_order", 5), ["b", "c"])
+
+    def test_lpush_reverses(self):
+        self.assertEqual(self.r.lpush("l_rev", "a", "b", "c"), 3)
+        self.assertEqual(self.r.lpop("l_rev", 3), ["c", "b", "a"])
+
+    def test_rpop_count(self):
+        self.r.rpush("l_rpopn", "a", "b", "c")
+        self.assertEqual(self.r.rpop("l_rpopn", 2), ["c", "b"])
+        self.assertEqual(self.r.rpop("l_rpopn", 2), ["a"])
+
+    def test_missing_key(self):
+        self.assertIsNone(self.r.lpop("l_missing"))
+        self.assertIsNone(self.r.rpop("l_missing"))
+        self.assertIsNone(self.r.lpop("l_missing", 3))
+        self.assertEqual(self.r.llen("l_missing"), 0)
+
+    def test_missing_key_with_count_is_null_array(self):
+        # Redis sends *-1 here, not $-1
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.sendall(b"*3\r\n$4\r\nLPOP\r\n$9\r\nl_missing\r\n$1\r\n2\r\n")
+            self.assertEqual(sock.recv(100), b"*-1\r\n")
+
+    def test_count_zero_and_negative(self):
+        self.r.rpush("l_zero", "a")
+        self.assertEqual(self.r.lpop("l_zero", 0), [])
+        with self.assertRaisesRegex(redis.ResponseError, "must be positive"):
+            self.r.lpop("l_zero", -1)
+        with self.assertRaisesRegex(redis.ResponseError, "must be positive"):
+            self.r.execute_command("RPOP", "l_zero", "x")
+        self.assertEqual(self.r.llen("l_zero"), 1)
+
+    def test_empty_list_is_deleted(self):
+        self.r.rpush("l_empty", "a", "b")
+        self.r.lpop("l_empty")
+        self.r.rpop("l_empty")
+        self.assertEqual(self.r.exists("l_empty"), 0)
+        self.r.rpush("l_empty2", "a", "b")
+        self.r.lpop("l_empty2", 10)
+        self.assertEqual(self.r.exists("l_empty2"), 0)
+
+    def test_wrong_type(self):
+        self.r.set("l_str", "v")
+        self.r.rpush("l_list", "a")
+        for cmd in (lambda: self.r.rpush("l_str", "a"),
+                    lambda: self.r.lpush("l_str", "a"),
+                    lambda: self.r.lpop("l_str"),
+                    lambda: self.r.rpop("l_str", 2),
+                    lambda: self.r.llen("l_str"),
+                    lambda: self.r.get("l_list"),
+                    lambda: self.r.hset("l_list", "f", "v"),
+                    lambda: self.r.incr("l_list")):
+            with self.assertRaisesRegex(redis.ResponseError, "WRONGTYPE"):
+                cmd()
+        self.assertEqual(self.r.get("l_str"), "v")
+        self.assertEqual(self.r.llen("l_list"), 1)
+
+    def test_set_and_del_replace_list(self):
+        self.r.rpush("l_set", "a")
+        self.r.set("l_set", "v")
+        self.assertEqual(self.r.get("l_set"), "v")
+        self.r.rpush("l_del", "a")
+        self.assertEqual(self.r.delete("l_del"), 1)
+        self.assertEqual(self.r.exists("l_del"), 0)
+
+    def test_list_expires(self):
+        self.r.rpush("l_ttl", "a", "b")
+        self.assertTrue(self.r.pexpire("l_ttl", 100))
+        time.sleep(0.3)
+        self.assertAlive()
+        self.assertEqual(self.r.llen("l_ttl"), 0)
+        self.assertIsNone(self.r.lpop("l_ttl"))
+
+    def test_large_list(self):
+        values = [f"v{i}" for i in range(5000)]
+        for i in range(0, len(values), 500):
+            self.r.rpush("l_large", *values[i:i + 500])
+        self.assertEqual(self.r.llen("l_large"), 5000)
+        popped = []
+        while True:
+            batch = self.r.lpop("l_large", 700)
+            if batch is None:
+                break
+            popped += batch
+        self.assertEqual(popped, values)
+
+    def test_matches_deque_model(self):
+        # Random pushes and pops at both ends wrap the ring buffer and
+        # make it grow and shrink
+        rng = random.Random(1234)
+        model = collections.deque()
+        for step in range(3000):
+            op = rng.random()
+            if op < 0.3:
+                vals = [f"s{step}_{i}" for i in range(rng.randint(1, 20))]
+                self.assertEqual(self.r.rpush("l_model", *vals),
+                                 len(model) + len(vals))
+                model.extend(vals)
+            elif op < 0.6:
+                vals = [f"s{step}_{i}" for i in range(rng.randint(1, 20))]
+                self.assertEqual(self.r.lpush("l_model", *vals),
+                                 len(model) + len(vals))
+                model.extendleft(vals)
+            elif op < 0.8:
+                n = rng.randint(1, 30)
+                got = self.r.lpop("l_model", n)
+                want = [model.popleft() for _ in range(min(n, len(model)))]
+                self.assertEqual(got, want if want or model else None)
+            else:
+                n = rng.randint(1, 30)
+                got = self.r.rpop("l_model", n)
+                want = [model.pop() for _ in range(min(n, len(model)))]
+                self.assertEqual(got, want if want or model else None)
+            self.assertEqual(self.r.llen("l_model"), len(model))
+
+    def test_pop_too_big_for_reply_keeps_items(self):
+        big = "x" * 100_000
+        for _ in range(3):
+            self.r.rpush("l_big", big)
+        # 300KB does not fit in one reply
+        with self.assertRaises(redis.RedisError):
+            self.r.lpop("l_big", 3)
+        self.r.close()
+        self.assertEqual(self.r.llen("l_big"), 3)
+        self.assertEqual(self.r.lpop("l_big", 2), [big, big])
+
+    def test_leadgrep_queues(self):
+        # Keyword suggestions: RPUSH a batch, LPOP what was used
+        words = [f"kw{i}" for i in range(50)]
+        self.assertEqual(self.r.rpush("keyword_suggestions_queue:1", *words), 50)
+        self.r.lpop("keyword_suggestions_queue:1", 5)
+        self.assertEqual(self.r.llen("keyword_suggestions_queue:1"), 45)
+        # Retries: LPUSH, RPOP the oldest
+        self.r.lpush("intentengine:ai_retries", '{"n": 1}')
+        self.r.lpush("intentengine:ai_retries", '{"n": 2}')
+        self.assertEqual(self.r.rpop("intentengine:ai_retries"), '{"n": 1}')
+
+
+class TestListPersistence(MinisTestCase):
+    def test_list_survives_restart(self):
+        self.r.rpush("lp_list", "a", "b", "c")
+        self.r.lpush("lp_list", "z")
+        self.r.rpush("lp_ttl", "x")
+        self.r.expire("lp_ttl", 3600)
+        self.r.close()
+
+        self.server.restart()
+
+        self.assertEqual(self.r.lpop("lp_list", 10), ["z", "a", "b", "c"])
+        self.assertEqual(self.r.lpop("lp_ttl"), "x")
+
+    def test_large_list_survives_restart(self):
+        values = [f"value-{i}" for i in range(3000)]
+        for i in range(0, len(values), 500):
+            self.r.rpush("lp_large", *values[i:i + 500])
+        self.r.close()
+
+        self.server.restart()
+
+        self.assertEqual(self.r.llen("lp_large"), 3000)
+        self.assertEqual(self.r.lpop("lp_large", 3000)[::1000],
+                         values[::1000])
 
 
 class TestDel(MinisTestCase):

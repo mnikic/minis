@@ -8,6 +8,7 @@
 #include "cache/hashtable.h"
 #include "cache/minis_private.h"
 #include "cache/zset.h"
+#include "cache/list.h"
 #include "common/macros.h"
 #include "common/common.h"
 
@@ -17,13 +18,14 @@ typedef enum
 {
   T_STR = 0,
   T_ZSET = 1,
-  T_HASH = 2
+  T_HASH = 2,
+  T_LIST = 3
 } EntryType;
 
 typedef struct entry
 {
   HNode node;			// HMap linkage
-  EntryType type;		// T_STR, T_ZSET, or T_HASH
+  EntryType type;		// T_STR, T_ZSET, T_HASH or T_LIST
   uint64_t expire_at_us;	// Expiration time
   size_t heap_idx;		// Heap index for TTL
 
@@ -32,6 +34,7 @@ typedef struct entry
     char *val;			// Used if type == T_STR
     ZSet *zset;			// Used if type == T_ZSET
     HMap *hash;			// Used if type == T_HASH
+    List *list;			// Used if type == T_LIST
   };
 
   // Must be at the very end
@@ -42,6 +45,7 @@ typedef struct entry
 Entry *entry_new_zset (Minis * minis, const char *key);
 Entry *entry_new_str (Minis * minis, const char *key, const char *val);
 Entry *entry_new_hash (Minis * minis, const char *key);
+Entry *entry_new_list (Minis * minis, const char *key);
 
 Entry *entry_fetch (HNode * node_to_fetch);
 Entry *fetch_entry_expiry_aware (Minis * minis, HNode * node,

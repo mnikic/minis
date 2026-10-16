@@ -876,6 +876,73 @@ $ {client_executable-abs_path} get setex_cmd
 (str) w
 $ {client_executable-abs_path} del setex_cmd
 (int) 1
+# Test: list push and pop
+$ {client_executable-abs_path} rpush lst a b
+(int) 2
+$ {client_executable-abs_path} lpush lst y z
+(int) 4
+$ {client_executable-abs_path} llen lst
+(int) 4
+$ {client_executable-abs_path} lpop lst
+(str) z
+$ {client_executable-abs_path} rpop lst
+(str) b
+$ {client_executable-abs_path} rpush lst c d
+(int) 4
+$ {client_executable-abs_path} lpop lst 2
+(arr) len=2
+(str) y
+(str) a
+(arr) end
+$ {client_executable-abs_path} rpop lst 0
+(arr) len=0
+(arr) end
+$ {client_executable-abs_path} rpop lst 10
+(arr) len=2
+(str) d
+(str) c
+(arr) end
+$ {client_executable-abs_path} exists lst
+(int) 0
+$ {client_executable-abs_path} llen lst
+(int) 0
+$ {client_executable-abs_path} lpop lst
+(nil)
+$ {client_executable-abs_path} rpop lst 3
+(nil)
+
+# Test: list argument and type errors
+$ {client_executable-abs_path} rpush lst_err a
+(int) 1
+$ {client_executable-abs_path} lpop lst_err -1
+(err) 4 value is out of range, must be positive
+$ {client_executable-abs_path} set lst_str v
+(str) OK
+$ {client_executable-abs_path} rpush lst_str a
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
+$ {client_executable-abs_path} lpop lst_str
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
+$ {client_executable-abs_path} llen lst_str
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
+$ {client_executable-abs_path} get lst_err
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
+$ {client_executable-abs_path} set lst_err v
+(str) OK
+$ {client_executable-abs_path} get lst_err
+(str) v
+$ {client_executable-abs_path} del lst_err lst_str
+(int) 2
+
+# Test: lists expire
+$ {client_executable-abs_path} rpush lst_exp a b
+(int) 2
+$ {client_executable-abs_path} pexpire lst_exp 100
+(int) 1
+$ sleep 0.3
+$ {client_executable-abs_path} llen lst_exp
+(int) 0
+$ {client_executable-abs_path} lpop lst_exp
+(nil)
 '''
 
 

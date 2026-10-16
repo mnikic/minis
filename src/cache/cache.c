@@ -20,6 +20,7 @@
 #include "cache/t_hash.h"
 #include "cache/t_string.h"
 #include "cache/t_zset.h"
+#include "cache/t_list.h"
 
 static int
 str2dbl (const char *string, double *out)
@@ -492,6 +493,76 @@ do_hgetall (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
   return ctx.result;
 }
 
+// List Operations
+
+// LPUSH/RPUSH key value [value ...]
+static bool
+do_push (Cache *cache, const char **cmd, size_t size, bool front,
+	 Buffer *out, uint64_t now_us)
+{
+  size_t len = 0;
+  MinisError err =
+    minis_push (cache, cmd[1], cmd + 2, size - 2, front, &len, now_us);
+  if (err == MINIS_OK)
+    return out_int (out, (int64_t) len);
+  return reply_with_error (out, err);
+}
+
+typedef struct
+{
+  Buffer *out;
+  bool array;			// Reply is an array, not one value
+} ListReplyCtx;
+
+static bool
+cb_list_reply (const char *val, size_t idx, size_t total, void *arg)
+{
+  ListReplyCtx *ctx = (ListReplyCtx *) arg;
+  if (idx == 0 && ctx->array && !out_arr (ctx->out, total))
+    return false;
+  return out_str (ctx->out, val);
+}
+
+// LPOP/RPOP key [count]
+static bool
+do_pop (Cache *cache, const char **cmd, size_t size, bool front,
+	Buffer *out, uint64_t now_us)
+{
+  ListReplyCtx ctx = {.out = out,.array = size == 3 };
+  int64_t count = 1;
+  if (ctx.array)
+    {
+      if (!str2int (cmd[2], &count) || count < 0)
+	return out_err (out, ERR_ARG, "value is out of range, must be positive");
+    }
+
+  size_t before = buf_len (out);
+  MinisError err =
+    minis_pop (cache, cmd[1], (size_t) count, front, cb_list_reply, &ctx,
+	       now_us);
+  if (err == MINIS_ERR_NIL)
+    return ctx.array ? out_nil_arr (out) : out_nil (out);
+  if (err == MINIS_ERR_OOM)
+    return false;		// Reply did not fit, nothing was popped
+  if (err != MINIS_OK)
+    return reply_with_error (out, err);
+
+  // LPOP key 0 visits nothing
+  if (buf_len (out) == before)
+    return out_arr (out, 0);
+  return true;
+}
+
+static bool
+do_llen (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
+{
+  size_t len = 0;
+  MinisError err = minis_llen (cache, key, &len, now_us);
+  if (err == MINIS_OK || err == MINIS_ERR_NIL)
+    return out_int (out, (int64_t) len);
+  return reply_with_error (out, err);
+}
+
 static bool
 do_zadd (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
@@ -670,6 +741,16 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
 	return out_err (out, ERR_ARG, "decrement would overflow");
       return do_incr (cache, cmd[1], -delta, out, now_us);
     }
+  if (size >= 3 && cmd_is (cmd[0], "lpush"))
+    return do_push (cache, cmd, size, true, out, now_us);
+  if (size >= 3 && cmd_is (cmd[0], "rpush"))
+    return do_push (cache, cmd, size, false, out, now_us);
+  if ((size == 2 || size == 3) && cmd_is (cmd[0], "lpop"))
+    return do_pop (cache, cmd, size, true, out, now_us);
+  if ((size == 2 || size == 3) && cmd_is (cmd[0], "rpop"))
+    return do_pop (cache, cmd, size, false, out, now_us);
+  if (size == 2 && cmd_is (cmd[0], "llen"))
+    return do_llen (cache, cmd[1], out, now_us);
   if (size >= 2 && cmd_is (cmd[0], "exists"))
     return do_exists (cache, cmd + 1, size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "hget"))

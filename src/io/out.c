@@ -52,6 +52,14 @@ out_nil (Buffer *out)
   return true;
 }
 
+bool
+out_nil_arr (Buffer *out)
+{
+  if (out->proto == PROTO_RESP)
+    return buf_append_cstr (out, "*-1\r\n");
+  return out_nil (out);
+}
+
 COLD bool
 out_err (Buffer *out, int32_t code, const char *msg)
 {

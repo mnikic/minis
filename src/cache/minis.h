@@ -35,6 +35,10 @@ typedef void (*MinisZSetCb) (const char *member, size_t len, double score,
 
 typedef bool (*MinisOneEntryVisitor) (const Entry * entry, void *ctx);
 
+// For list replies: element idx of total. Return false to stop.
+typedef bool (*MinisListCb) (const char *val, size_t idx, size_t total,
+			     void *ctx);
+
 // Lifecycle Management
 
 Minis *minis_init (void);

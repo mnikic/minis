@@ -22,6 +22,8 @@ add_library( minis
              ${MINIS_CORE_DIR}/cache/t_string.c
              ${MINIS_CORE_DIR}/cache/t_hash.c
              ${MINIS_CORE_DIR}/cache/t_zset.c
+             ${MINIS_CORE_DIR}/cache/list.c
+             ${MINIS_CORE_DIR}/cache/t_list.c
              ${MINIS_CORE_DIR}/cache/hash.c
              ${MINIS_CORE_DIR}/cache/thread_pool.c
              ${MINIS_CORE_DIR}/cache/deque.c

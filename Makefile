@@ -70,6 +70,7 @@ TEST_CACHE_SRCS := test/cache_test.c \
                    src/cache/cache.c src/cache/hashtable.c src/cache/heap.c \
                    src/cache/zset.c src/cache/thread_pool.c src/cache/avl.c \
 		   src/cache/t_string.c src/cache/t_hash.c src/cache/t_zset.c \
+                   src/cache/list.c src/cache/t_list.c \
                    src/cache/deque.c src/cache/hash.c src/cache/minis.c \
                    src/io/buffer.c src/io/out.c src/cache/entry.c \
                    src/common/common.c src/common/glob.c src/cache/persistence.c
@@ -80,7 +81,7 @@ TEST_PERSIST_SRCS := test/persistence_test.c \
                      src/cache/thread_pool.c src/cache/deque.c src/cache/minis.c \
                      src/io/buffer.c src/io/out.c src/cache/hash.c \
 		     src/cache/entry.c src/cache/t_hash.c src/cache/t_zset.c \
-		     src/cache/t_string.c \
+		     src/cache/t_string.c src/cache/list.c src/cache/t_list.c \
                      src/common/common.c src/common/glob.c
 
 # ============================================================================

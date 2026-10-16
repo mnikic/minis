@@ -12,12 +12,16 @@
 #include "cache/minis_private.h"
 #include "cache/zset.h"
 #include "cache/hash.h"		// <--- Added for hash_set/hash_lookup
+#include "cache/list.h"
 #include "cache/persistence.h"
 #include "common/common.h"
 
 #define GREETING_KEY "greeting"
 #define LEADERBOARD_KEY "leaderboard"
 #define USER_HASH_KEY "user:100"	// <--- Added Key
+#define QUEUE_KEY "queue"
+#define BIG_QUEUE_KEY "big queue"
+#define BIG_QUEUE_LEN 1000
 #define TEMP_KEY "temp"
 #define LONG_EXPIRED_KEY "long expired"
 #define RECENTLY_EXPIRED_KEY "recently expired"
@@ -79,7 +83,24 @@ main (void)
   hash_set (ent_hash->hash, "username", "jdoe");
   hash_set (ent_hash->hash, "role", "admin");
 
-  // D. Add Expiration
+  // D. Add Lists: one built from both ends, and one long enough to
+  // wrap and grow the ring buffer, with a TTL
+  msgf ("   -> Adding List 'queue' = [c, a, b] and List 'big queue'");
+  Entry *ent_list = entry_new_list (cache1, QUEUE_KEY);
+  list_push (ent_list->list, "a", false);
+  list_push (ent_list->list, "b", false);
+  list_push (ent_list->list, "c", true);
+
+  Entry *ent_big = entry_new_list (cache1, BIG_QUEUE_KEY);
+  for (int i = 0; i < BIG_QUEUE_LEN; i++)
+    {
+      char val[32];
+      snprintf (val, sizeof (val), "item-%d", i);
+      list_push (ent_big->list, val, i % 2 == 0);
+    }
+  entry_set_expiration (cache1, ent_big, 123456789);
+
+  // E. Add Expiration
   msgf ("   -> Adding Expiring Key 'temp' (TTL 5000ms)");
   Entry *ent3 = entry_new_str (cache1, TEMP_KEY, "I will survive");
   ent3->expire_at_us = 123456789;	// Arbitrary future timestamp
@@ -185,6 +206,28 @@ main (void)
   assert (h_missing == NULL);
 
   msgf ("   [PASS] Hash fields and values match.");
+
+  // Verify Lists
+  Entry *res_list = find_entry (cache2, QUEUE_KEY);
+  assert (res_list != NULL);
+  assert (res_list->type == T_LIST);
+  assert (list_len (res_list->list) == 3);
+  assert (strcmp (list_at (res_list->list, 0), "c") == 0);
+  assert (strcmp (list_at (res_list->list, 1), "a") == 0);
+  assert (strcmp (list_at (res_list->list, 2), "b") == 0);
+
+  // Even items went to the front, so the head is the last even one
+  Entry *res_big = find_entry (cache2, BIG_QUEUE_KEY);
+  assert (res_big != NULL);
+  assert (res_big->type == T_LIST);
+  assert (list_len (res_big->list) == BIG_QUEUE_LEN);
+  assert (strcmp (list_at (res_big->list, 0), "item-998") == 0);
+  assert (strcmp (list_at (res_big->list, BIG_QUEUE_LEN / 2), "item-1") == 0);
+  assert (strcmp (list_at (res_big->list, BIG_QUEUE_LEN - 1), "item-999") ==
+	  0);
+  assert (res_big->expire_at_us == 123456789);
+  assert (res_big->heap_idx != (size_t) -1);
+  msgf ("   [PASS] Lists match.");
 
   // Verify Expiration
   Entry *res3 = find_entry (cache2, TEMP_KEY);
