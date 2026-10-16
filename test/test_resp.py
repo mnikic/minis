@@ -158,5 +158,36 @@ class TestDel(MinisTestCase):
         self.assertEqual(self.r.execute_command("MDEL", "mdel_a", "mdel_b"), 2)
 
 
+class TestIntegerArgs(MinisTestCase):
+    BAD_INTS = ["", " 5", "+5", "5 ", "5x", "1.5", "99999999999999999999"]
+
+    def assertNotInt(self, *cmd):
+        with self.assertRaisesRegex(redis.ResponseError, "not an integer"):
+            self.r.execute_command(*cmd)
+
+    def test_pexpire_rejects_bad_ints(self):
+        self.r.set("int_pexpire", "v")
+        for bad in self.BAD_INTS:
+            with self.subTest(bad=bad):
+                self.assertNotInt("PEXPIRE", "int_pexpire", bad)
+        # None of them may have set a TTL
+        self.assertEqual(self.r.execute_command("PTTL", "int_pexpire"), -1)
+
+    def test_incrby_rejects_bad_ints(self):
+        self.r.set("int_incrby", "10")
+        for bad in self.BAD_INTS:
+            with self.subTest(bad=bad):
+                self.assertNotInt("INCRBY", "int_incrby", bad)
+                self.assertNotInt("DECRBY", "int_incrby", bad)
+        self.assertEqual(self.r.get("int_incrby"), "10")
+
+    def test_decrby_int64_min(self):
+        self.r.set("int_decrby_min", "0")
+        with self.assertRaisesRegex(redis.ResponseError, "overflow"):
+            self.r.decrby("int_decrby_min", -(2**63))
+        self.assertEqual(self.r.get("int_decrby_min"), "0")
+        self.assertAlive()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

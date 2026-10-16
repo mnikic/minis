@@ -6,6 +6,8 @@
 #include <string.h>
 #include <strings.h>
 #include <math.h>
+#include <errno.h>
+#include <ctype.h>
 #include <stdint.h>
 
 #include "cache/hash.h"
@@ -22,18 +24,30 @@
 static int
 str2dbl (const char *string, double *out)
 {
+  if (string[0] == '\0' || isspace ((unsigned char) string[0]))
+    return 0;
   char *endp = NULL;
   *out = strtod (string, &endp);
-  return endp == string + strlen (string) && !isnan (*out);
+  return *endp == '\0' && !isnan (*out);
 }
 
+// Strict like Redis: no empty string, no leading space or '+', no overflow
 static int
 str2int (const char *string, int64_t *out)
 {
+  if (string[0] == '\0' || string[0] == '+'
+      || isspace ((unsigned char) string[0]))
+    return 0;
   char *endp = NULL;
-  *out = strtoll (string, &endp, 10);
-  return endp == string + strlen (string);
+  errno = 0;
+  long long val = strtoll (string, &endp, 10);
+  if (errno == ERANGE || *endp != '\0')
+    return 0;
+  *out = val;
+  return 1;
 }
+
+#define ERR_NOT_INT "value is not an integer or out of range"
 
 static ALWAYS_INLINE bool
 cmd_is (const char *word, const char *cmd)
@@ -142,7 +156,7 @@ do_expire (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 {
   int64_t ttl_ms = 0;
   if (!str2int (cmd[2], &ttl_ms))
-    return out_err (out, ERR_ARG, "expect int64");
+    return out_err (out, ERR_ARG, ERR_NOT_INT);
 
   int set = 0;
   minis_expire (cache, cmd[1], ttl_ms, &set, now_us);
@@ -560,14 +574,17 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
     {
       int64_t delta;
       if (!str2int (cmd[2], &delta))
-	return out_err (out, ERR_ARG, "expect int");
+	return out_err (out, ERR_ARG, ERR_NOT_INT);
       return do_incr (cache, cmd[1], delta, out, now_us);
     }
   if (size == 3 && cmd_is (cmd[0], "decrby"))
     {
       int64_t delta;
       if (!str2int (cmd[2], &delta))
-	return out_err (out, ERR_ARG, "expect int");
+	return out_err (out, ERR_ARG, ERR_NOT_INT);
+      // -INT64_MIN does not fit
+      if (delta == INT64_MIN)
+	return out_err (out, ERR_ARG, "decrement would overflow");
       return do_incr (cache, cmd[1], -delta, out, now_us);
     }
   if (size >= 2 && cmd_is (cmd[0], "exists"))
