@@ -699,6 +699,183 @@ $ {client_executable-abs_path} get null_like_str
 (str) NULL
 $ {client_executable-abs_path} mdel empty_str null_like_str
 (int) 2
+# Test: SET over a key with a TTL, then let the old TTL pass
+# The stale expiry record used to make the server spin forever
+$ {client_executable-abs_path} set hang_key v1
+(str) OK
+$ {client_executable-abs_path} pexpire hang_key 100
+(int) 1
+$ {client_executable-abs_path} set hang_key v2
+(str) OK
+$ sleep 0.3
+$ {client_executable-abs_path} get hang_key
+(str) v2
+$ {client_executable-abs_path} pexpire hang_key 100
+(int) 1
+$ sleep 0.3
+$ {client_executable-abs_path} get hang_key
+(nil)
+
+# Test: DEL with several keys
+$ {client_executable-abs_path} mset del_m1 a del_m2 b
+(str) OK
+$ {client_executable-abs_path} del del_m1 del_missing del_m2
+(int) 2
+$ {client_executable-abs_path} exists del_m1 del_m2
+(int) 0
+$ {client_executable-abs_path} set del_dup v
+(str) OK
+$ {client_executable-abs_path} del del_dup del_dup
+(int) 1
+
+# Test: malformed integer arguments
+$ {client_executable-abs_path} set int_key 10
+(str) OK
+$ {client_executable-abs_path} pexpire int_key ""
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} pexpire int_key " 5"
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} incrby int_key +5
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} incrby int_key 5x
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} incrby int_key 99999999999999999999
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} decrby int_key -9223372036854775808
+(err) 4 decrement would overflow
+$ {client_executable-abs_path} get int_key
+(str) 10
+$ {client_executable-abs_path} set int_key 0
+(str) OK
+$ {client_executable-abs_path} incrby int_key -9223372036854775808
+(int) -9223372036854775808
+$ {client_executable-abs_path} del int_key
+(int) 1
+
+# Test: PEXPIRE with a non-positive TTL deletes the key
+$ {client_executable-abs_path} set pexp_neg v
+(str) OK
+$ {client_executable-abs_path} pexpire pexp_neg -1
+(int) 1
+$ {client_executable-abs_path} get pexp_neg
+(nil)
+$ {client_executable-abs_path} set pexp_zero v
+(str) OK
+$ {client_executable-abs_path} pexpire pexp_zero 0
+(int) 1
+$ {client_executable-abs_path} exists pexp_zero
+(int) 0
+$ {client_executable-abs_path} pexpire pexp_neg -1
+(int) 0
+$ {client_executable-abs_path} set pexp_huge v
+(str) OK
+$ {client_executable-abs_path} pexpire pexp_huge 9223372036854775807
+(err) 4 invalid expire time in 'pexpire' command
+$ {client_executable-abs_path} del pexp_huge
+(int) 1
+
+# Test: EXPIRE and TTL (seconds, TTL rounds to nearest)
+$ {client_executable-abs_path} set exp_key v
+(str) OK
+$ {client_executable-abs_path} ttl exp_key
+(int) -1
+$ {client_executable-abs_path} expire exp_key 100
+(int) 1
+$ {client_executable-abs_path} ttl exp_key
+(int) 100
+$ {client_executable-abs_path} pexpire exp_key 1600
+(int) 1
+$ {client_executable-abs_path} ttl exp_key
+(int) 2
+$ {client_executable-abs_path} pexpire exp_key 1400
+(int) 1
+$ {client_executable-abs_path} ttl exp_key
+(int) 1
+$ {client_executable-abs_path} ttl exp_missing
+(int) -2
+$ {client_executable-abs_path} expire exp_missing 10
+(int) 0
+$ {client_executable-abs_path} expire exp_key 9223372036854775
+(err) 4 invalid expire time in 'expire' command
+$ {client_executable-abs_path} expire exp_key 0
+(int) 1
+$ {client_executable-abs_path} exists exp_key
+(int) 0
+
+# Test: EXPIRE then INCR keeps the TTL
+$ {client_executable-abs_path} incr exp_counter
+(int) 1
+$ {client_executable-abs_path} expire exp_counter 3600
+(int) 1
+$ {client_executable-abs_path} incr exp_counter
+(int) 2
+$ {client_executable-abs_path} ttl exp_counter
+(int) 3600
+$ {client_executable-abs_path} del exp_counter
+(int) 1
+
+# Test: SET with EX and PX
+$ {client_executable-abs_path} set setex_key v EX 100
+(str) OK
+$ {client_executable-abs_path} get setex_key
+(str) v
+$ {client_executable-abs_path} ttl setex_key
+(int) 100
+$ {client_executable-abs_path} set setex_key v2 px 5000
+(str) OK
+$ {client_executable-abs_path} get setex_key
+(str) v2
+$ {client_executable-abs_path} ttl setex_key
+(int) 5
+$ {client_executable-abs_path} set setex_key v3
+(str) OK
+$ {client_executable-abs_path} ttl setex_key
+(int) -1
+$ {client_executable-abs_path} set setex_key bad EX 0
+(err) 4 invalid expire time in 'set' command
+$ {client_executable-abs_path} set setex_key bad EX -1
+(err) 4 invalid expire time in 'set' command
+$ {client_executable-abs_path} set setex_key bad EX abc
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} set setex_key bad EX
+(err) 4 syntax error
+$ {client_executable-abs_path} set setex_key bad EX 10 PX 100
+(err) 4 syntax error
+$ {client_executable-abs_path} set setex_key bad NX
+(err) 4 syntax error
+$ {client_executable-abs_path} get setex_key
+(str) v3
+$ {client_executable-abs_path} ttl setex_key
+(int) -1
+$ {client_executable-abs_path} set setex_short v PX 100
+(str) OK
+$ sleep 0.3
+$ {client_executable-abs_path} get setex_short
+(nil)
+$ {client_executable-abs_path} del setex_key
+(int) 1
+
+# Test: SETEX and PSETEX
+$ {client_executable-abs_path} setex setex_cmd 1800 v
+(str) OK
+$ {client_executable-abs_path} get setex_cmd
+(str) v
+$ {client_executable-abs_path} ttl setex_cmd
+(int) 1800
+$ {client_executable-abs_path} psetex setex_cmd 5000 w
+(str) OK
+$ {client_executable-abs_path} get setex_cmd
+(str) w
+$ {client_executable-abs_path} ttl setex_cmd
+(int) 5
+$ {client_executable-abs_path} setex setex_cmd 0 x
+(err) 4 invalid expire time in 'setex' command
+$ {client_executable-abs_path} psetex setex_cmd -5 x
+(err) 4 invalid expire time in 'psetex' command
+$ {client_executable-abs_path} get setex_cmd
+(str) w
+$ {client_executable-abs_path} del setex_cmd
+(int) 1
 '''
 
 
@@ -755,7 +932,7 @@ for i, (cmd, expect) in enumerate(zip(cmds, outputs)):
     # ****************************
 
     try:
-        out = subprocess.check_output(command_parts, stderr=subprocess.STDOUT).decode('utf-8')
+        out = subprocess.check_output(command_parts, stderr=subprocess.STDOUT, timeout=10).decode('utf-8')
         if validate_output(cmd, expect, out):
             passed += 1
             print(f"  Test {i+1}/{len(cmds)}: PASSED")
@@ -771,6 +948,10 @@ for i, (cmd, expect) in enumerate(zip(cmds, outputs)):
         print(f"  Command: {invariant_cmd}")
         print(f"  Stderr/Stdout:\n{e.output.decode('utf-8')}")
         print(f"  Return Code: {e.returncode}")
+    except subprocess.TimeoutExpired:
+        failed += 1
+        print(f"  Test {i+1}/{len(cmds)}: ERROR (No reply within 10s, server hung?)")
+        print(f"  Command: {invariant_cmd}")
     except FileNotFoundError:
         failed += 1
         print(f"  Test {i+1}/{len(cmds)}: FATAL ERROR (File Not Found by OS)")
