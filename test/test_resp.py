@@ -163,6 +163,63 @@ class TestPexpire(MinisTestCase):
         self.assertEqual(self.r.execute_command("PTTL", "pexp_huge"), -1)
 
 
+class TestExpireTtl(MinisTestCase):
+    def test_expire_sets_ttl_in_seconds(self):
+        self.r.set("exp_secs", "v")
+        self.assertTrue(self.r.expire("exp_secs", 3600))
+        self.assertEqual(self.r.ttl("exp_secs"), 3600)
+        pttl = self.r.pttl("exp_secs")
+        self.assertTrue(3599000 < pttl <= 3600000, pttl)
+
+    def test_ttl_rounds_to_nearest_second(self):
+        self.r.set("exp_round", "v")
+        self.r.pexpire("exp_round", 1600)
+        self.assertEqual(self.r.ttl("exp_round"), 2)
+        self.r.pexpire("exp_round", 1400)
+        self.assertEqual(self.r.ttl("exp_round"), 1)
+
+    def test_ttl_no_ttl_and_missing(self):
+        self.r.set("exp_none", "v")
+        self.assertEqual(self.r.ttl("exp_none"), -1)
+        self.assertEqual(self.r.ttl("exp_missing"), -2)
+
+    def test_expire_missing_key(self):
+        self.assertFalse(self.r.expire("exp_missing", 10))
+
+    def test_expire_non_positive_deletes(self):
+        for ttl in (0, -1, -(2**63)):
+            with self.subTest(ttl=ttl):
+                self.r.set("exp_del", "v")
+                self.assertTrue(self.r.expire("exp_del", ttl))
+                self.assertEqual(self.r.exists("exp_del"), 0)
+
+    def test_expire_huge_rejected(self):
+        self.r.set("exp_huge", "v")
+        with self.assertRaisesRegex(redis.ResponseError, "invalid expire"):
+            self.r.expire("exp_huge", 2**63 // 1000)
+        self.assertEqual(self.r.ttl("exp_huge"), -1)
+
+    def test_key_expires(self):
+        self.r.set("exp_gone", "v")
+        self.r.expire("exp_gone", 1)
+        time.sleep(1.2)
+        self.assertIsNone(self.r.get("exp_gone"))
+        self.assertEqual(self.r.ttl("exp_gone"), -2)
+
+    def test_counter_window(self):
+        # leadgrep's rate limit: INCR, then EXPIRE on the first hit
+        key = "exp_counter"
+        self.assertEqual(self.r.incr(key), 1)
+        self.assertTrue(self.r.expire(key, 3600))
+        self.assertEqual(self.r.incr(key), 2)
+        self.assertEqual(self.r.ttl(key), 3600)
+
+    def test_expire_on_hash(self):
+        self.r.hset("exp_hash", "f", "v")
+        self.assertTrue(self.r.expire("exp_hash", 100))
+        self.assertEqual(self.r.ttl("exp_hash"), 100)
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

@@ -151,27 +151,38 @@ do_exists (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
   return reply_with_error (out, err);
 }
 
+// EXPIRE and PEXPIRE, unit_ms is the length of one TTL unit
 static bool
-do_expire (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_expire (Cache *cache, const char **cmd, int64_t unit_ms, Buffer *out,
+	   uint64_t now_us)
 {
-  int64_t ttl_ms = 0;
-  if (!str2int (cmd[2], &ttl_ms))
+  int64_t ttl = 0;
+  if (!str2int (cmd[2], &ttl))
     return out_err (out, ERR_ARG, ERR_NOT_INT);
   // Keeps now_us + ttl_ms * 1000 from overflowing
-  if (ttl_ms > INT64_MAX / 1000)
-    return out_err (out, ERR_ARG, "invalid expire time in 'pexpire' command");
+  if (ttl > INT64_MAX / 1000 / unit_ms)
+    return out_err (out, ERR_ARG, unit_ms == 1
+		    ? "invalid expire time in 'pexpire' command"
+		    : "invalid expire time in 'expire' command");
 
+  // Any TTL <= 0 deletes the key, clamp so the product cannot overflow
+  int64_t ttl_ms = ttl > 0 ? ttl * unit_ms : -1;
   int set = 0;
   minis_expire (cache, cmd[1], ttl_ms, &set, now_us);
   return out_int (out, set);
 }
 
+// TTL and PTTL. Seconds are rounded to nearest, like Redis.
 static bool
-do_ttl (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_ttl (Cache *cache, const char **cmd, int64_t unit_ms, Buffer *out,
+	uint64_t now_us)
 {
-  int64_t ttl_val = 0;
-  minis_ttl (cache, cmd[1], &ttl_val, now_us);
-  return out_int (out, ttl_val);
+  int64_t ttl_ms = 0;
+  minis_ttl (cache, cmd[1], &ttl_ms, now_us);
+  // -1 (no TTL) and -2 (no key) pass through
+  if (ttl_ms >= 0)
+    ttl_ms = (ttl_ms + unit_ms / 2) / unit_ms;
+  return out_int (out, ttl_ms);
 }
 
 // Visitor Callbacks for Arrays
@@ -558,9 +569,13 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
   if (size > 1 && (cmd_is (cmd[0], "del") || cmd_is (cmd[0], "mdel")))
     return do_mdel (cache, &cmd[1], size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "pexpire"))
-    return do_expire (cache, cmd, out, now_us);
+    return do_expire (cache, cmd, 1, out, now_us);
+  if (size == 3 && cmd_is (cmd[0], "expire"))
+    return do_expire (cache, cmd, 1000, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "pttl"))
-    return do_ttl (cache, cmd, out, now_us);
+    return do_ttl (cache, cmd, 1, out, now_us);
+  if (size == 2 && cmd_is (cmd[0], "ttl"))
+    return do_ttl (cache, cmd, 1000, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "zadd"))
     return do_zadd (cache, cmd, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "zrem"))
