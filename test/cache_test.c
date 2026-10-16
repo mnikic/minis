@@ -95,6 +95,32 @@ is_err_response (Buffer *buf)
   return buf_len (buf) > 0 && buf_data (buf)[0] == SER_ERR;
 }
 
+// Helper to check an error response and its message
+static void
+assert_err_msg (Buffer *buf, const char *expected)
+{
+  // Binary protocol: SER_ERR + 4 bytes code + 4 bytes length + message.
+  // The test buffer is zeroed, so the message is NUL terminated.
+  ASSERT_TRUE (is_err_response (buf));
+  const char *msg = (const char *) &buf_data (buf)[9];
+  if (strstr (msg, expected) == NULL)
+    {
+      msgf ("ASSERTION FAILED: error '%s' does not contain '%s'", msg,
+	    expected);
+      exit (1);
+    }
+}
+
+// Run one command into a fresh binary protocol 'buf'
+#define RUN(cache, now, ...)                                                   \
+	do {                                                                       \
+		const char *run_cmd_[] = { __VA_ARGS__ };                              \
+		buf = init_test_buffer (PROTO_BIN);                                    \
+		ASSERT_TRUE (cache_execute ((cache), run_cmd_,                         \
+					sizeof (run_cmd_) / sizeof (run_cmd_[0]),                  \
+					&buf, (now)));                                             \
+	} while (0)
+
 // Helper to extract string response
 static const char *
 extract_str_response (Buffer *buf)
@@ -273,6 +299,13 @@ test_del (void)
   ASSERT_TRUE (cache_execute (cache, mdel_cmd, 4, &buf, now));
   ASSERT_EQ (extract_int_response (&buf), 2);	// Only 2 existed
 
+  // DEL takes several keys too, a repeated key counts once
+  RUN (cache, now, "mset", "d4", "v4", "d5", "v5");
+  RUN (cache, now, "del", "d4", "nonexist", "d5", "d4");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now, "exists", "d4", "d5");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
   cache_free (cache);
   printf ("PASSED\n");
 }
@@ -392,6 +425,313 @@ test_active_eviction (void)
 	  ASSERT_FALSE (is_nil_response (&buf));
 	}
     }
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
+// ============================================================================
+// Test 6b: SET clears the TTL of an existing key
+// ============================================================================
+
+// SET on a key with a TTL must also drop its expiry heap record, otherwise
+// eviction keeps finding a due record for a key that no longer expires
+// and spins forever.
+static void
+check_set_clears_ttl (const char *new_val)
+{
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  RUN (cache, now, "set", "setttl", "value");
+  RUN (cache, now, "pexpire", "setttl", "1000");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  ASSERT_EQ (cache_next_expiry (cache), now + 1000000);
+
+  RUN (cache, now, "set", "setttl", new_val);
+  RUN (cache, now, "pttl", "setttl");
+  ASSERT_EQ (extract_int_response (&buf), -1ULL);
+
+  // Nothing is left to expire
+  ASSERT_EQ (cache_next_expiry (cache), (uint64_t) - 1);
+
+  // Must return, and must not evict the key
+  uint64_t future = now + 2000000;
+  alarm (5);
+  cache_evict (cache, future);
+  alarm (0);
+
+  RUN (cache, future, "get", "setttl");
+  ASSERT_STR_EQ (extract_str_response (&buf), new_val);
+
+  // A new TTL on the same key still works
+  RUN (cache, future, "pexpire", "setttl", "1000");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+
+  uint64_t later = future + 1500000;
+  alarm (5);
+  cache_evict (cache, later);
+  alarm (0);
+
+  RUN (cache, later, "get", "setttl");
+  ASSERT_TRUE (is_nil_response (&buf));
+  ASSERT_EQ (cache_next_expiry (cache), (uint64_t) - 1);
+
+  cache_free (cache);
+}
+
+static void
+test_set_clears_ttl (void)
+{
+  printf ("TEST: SET clears TTL (new value)... ");
+  check_set_clears_ttl ("other");
+  printf ("PASSED\n");
+
+  printf ("TEST: SET clears TTL (same value)... ");
+  check_set_clears_ttl ("value");
+  printf ("PASSED\n");
+}
+
+// ============================================================================
+// Test 6c: PEXPIRE with a non-positive or huge TTL
+// ============================================================================
+
+static void
+test_pexpire_edges (void)
+{
+  printf ("TEST: PEXPIRE edge cases... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  // A negative TTL deletes the key, and its pending expiry record
+  RUN (cache, now, "set", "pexp", "v");
+  RUN (cache, now, "pexpire", "pexp", "100");
+  RUN (cache, now, "pexpire", "pexp", "-1");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "get", "pexp");
+  ASSERT_TRUE (is_nil_response (&buf));
+  ASSERT_EQ (cache_next_expiry (cache), (uint64_t) - 1);
+
+  // So does zero, visible at once
+  RUN (cache, now, "set", "pexp", "v");
+  RUN (cache, now, "pexpire", "pexp", "0");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "exists", "pexp");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  // Missing key
+  RUN (cache, now, "pexpire", "pexp", "-1");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  // Overflowing TTL is refused and leaves the key alone
+  RUN (cache, now, "set", "pexp", "v");
+  RUN (cache, now, "pexpire", "pexp", "9223372036854775807");
+  assert_err_msg (&buf, "invalid expire time in 'pexpire' command");
+  RUN (cache, now, "pttl", "pexp");
+  ASSERT_EQ (extract_int_response (&buf), -1ULL);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
+// ============================================================================
+// Test 6d: EXPIRE and TTL
+// ============================================================================
+
+static void
+test_expire_ttl (void)
+{
+  printf ("TEST: EXPIRE/TTL operations... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  RUN (cache, now, "set", "exp", "v");
+  RUN (cache, now, "ttl", "exp");
+  ASSERT_EQ (extract_int_response (&buf), -1ULL);
+  RUN (cache, now, "ttl", "exp_missing");
+  ASSERT_EQ (extract_int_response (&buf), -2ULL);
+
+  RUN (cache, now, "expire", "exp", "100");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  ASSERT_EQ (cache_next_expiry (cache), now + 100000000);
+  RUN (cache, now, "ttl", "exp");
+  ASSERT_EQ (extract_int_response (&buf), 100);
+
+  // TTL rounds to the nearest second
+  RUN (cache, now, "pexpire", "exp", "1600");
+  RUN (cache, now, "ttl", "exp");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now + 200000, "ttl", "exp");	// 1400ms left
+  ASSERT_EQ (extract_int_response (&buf), 1);
+
+  RUN (cache, now, "expire", "exp_missing", "10");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  RUN (cache, now, "expire", "exp", "9223372036854775");
+  assert_err_msg (&buf, "invalid expire time in 'expire' command");
+
+  // The most negative TTL still just deletes
+  RUN (cache, now, "expire", "exp", "-9223372036854775808");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "exists", "exp");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  // INCR keeps the TTL
+  RUN (cache, now, "incr", "exp_counter");
+  RUN (cache, now, "expire", "exp_counter", "3600");
+  RUN (cache, now, "incr", "exp_counter");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now, "ttl", "exp_counter");
+  ASSERT_EQ (extract_int_response (&buf), 3600);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
+// ============================================================================
+// Test 6e: SET EX/PX, SETEX and PSETEX
+// ============================================================================
+
+static void
+test_set_with_ttl (void)
+{
+  printf ("TEST: SET EX/PX, SETEX, PSETEX... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  RUN (cache, now, "set", "sx", "v", "EX", "100");
+  ASSERT_FALSE (is_err_response (&buf));
+  ASSERT_EQ (cache_next_expiry (cache), now + 100000000);
+  RUN (cache, now, "get", "sx");
+  ASSERT_STR_EQ (extract_str_response (&buf), "v");
+
+  // Options are case insensitive; a new TTL replaces the old one
+  RUN (cache, now, "set", "sx", "w", "px", "5000");
+  RUN (cache, now, "pttl", "sx");
+  ASSERT_EQ (extract_int_response (&buf), 5000);
+  ASSERT_EQ (cache_next_expiry (cache), now + 5000000);
+
+  // Same value without a TTL gets one
+  RUN (cache, now, "set", "sx_same", "v");
+  RUN (cache, now, "set", "sx_same", "v", "EX", "50");
+  RUN (cache, now, "ttl", "sx_same");
+  ASSERT_EQ (extract_int_response (&buf), 50);
+
+  // Expires and is evicted
+  uint64_t later = now + 6000000;
+  cache_evict (cache, later);
+  RUN (cache, later, "get", "sx");
+  ASSERT_TRUE (is_nil_response (&buf));
+
+  // Bad options change nothing
+  RUN (cache, now, "set", "sx_bad", "orig");
+  RUN (cache, now, "set", "sx_bad", "x", "EX", "0");
+  assert_err_msg (&buf, "invalid expire time in 'set' command");
+  RUN (cache, now, "set", "sx_bad", "x", "PX", "-5");
+  assert_err_msg (&buf, "invalid expire time in 'set' command");
+  RUN (cache, now, "set", "sx_bad", "x", "EX", "abc");
+  assert_err_msg (&buf, "value is not an integer");
+  RUN (cache, now, "set", "sx_bad", "x", "EX");
+  assert_err_msg (&buf, "syntax error");
+  RUN (cache, now, "set", "sx_bad", "x", "EX", "10", "PX", "10");
+  assert_err_msg (&buf, "syntax error");
+  RUN (cache, now, "set", "sx_bad", "x", "KEEPTTL");
+  assert_err_msg (&buf, "syntax error");
+  RUN (cache, now, "get", "sx_bad");
+  ASSERT_STR_EQ (extract_str_response (&buf), "orig");
+  RUN (cache, now, "pttl", "sx_bad");
+  ASSERT_EQ (extract_int_response (&buf), -1ULL);
+
+  RUN (cache, now, "setex", "sx_cmd", "1800", "v");
+  RUN (cache, now, "ttl", "sx_cmd");
+  ASSERT_EQ (extract_int_response (&buf), 1800);
+  RUN (cache, now, "psetex", "sx_cmd", "5000", "w");
+  RUN (cache, now, "pttl", "sx_cmd");
+  ASSERT_EQ (extract_int_response (&buf), 5000);
+  RUN (cache, now, "get", "sx_cmd");
+  ASSERT_STR_EQ (extract_str_response (&buf), "w");
+  RUN (cache, now, "setex", "sx_cmd", "0", "x");
+  assert_err_msg (&buf, "invalid expire time in 'setex' command");
+  RUN (cache, now, "psetex", "sx_cmd", "-1", "x");
+  assert_err_msg (&buf, "invalid expire time in 'psetex' command");
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
+// ============================================================================
+// Test 6f: Integer argument parsing
+// ============================================================================
+
+static void
+test_integer_args (void)
+{
+  printf ("TEST: Integer argument parsing... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  const char *bad[] = { "", " 5", "+5", "5 ", "5x", "1.5",
+    "99999999999999999999"
+  };
+
+  RUN (cache, now, "set", "ints", "10");
+  for (size_t i = 0; i < sizeof (bad) / sizeof (bad[0]); i++)
+    {
+      RUN (cache, now, "pexpire", "ints", bad[i]);
+      assert_err_msg (&buf, "value is not an integer or out of range");
+      RUN (cache, now, "incrby", "ints", bad[i]);
+      assert_err_msg (&buf, "value is not an integer or out of range");
+      RUN (cache, now, "decrby", "ints", bad[i]);
+      assert_err_msg (&buf, "value is not an integer or out of range");
+    }
+  RUN (cache, now, "pttl", "ints");
+  ASSERT_EQ (extract_int_response (&buf), -1ULL);
+
+  RUN (cache, now, "decrby", "ints", "-9223372036854775808");
+  assert_err_msg (&buf, "decrement would overflow");
+  RUN (cache, now, "get", "ints");
+  ASSERT_STR_EQ (extract_str_response (&buf), "10");
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
+// ============================================================================
+// Test 6g: RESP encodes the int64 limits
+// ============================================================================
+
+static void
+test_resp_int64_limits (void)
+{
+  printf ("TEST: RESP int64 limits... ");
+
+  Cache *cache = cache_init ();
+  uint64_t now = get_test_time_us ();
+
+  const char *set_cmd[] = { "set", "lim", "0" };
+  const char *min_cmd[] = { "incrby", "lim", "-9223372036854775808" };
+  const char *max_cmd[] = { "incrby", "lim", "9223372036854775807" };
+
+  Buffer buf = init_test_buffer (PROTO_RESP);
+  ASSERT_TRUE (cache_execute (cache, set_cmd, 3, &buf, now));
+  buf = init_test_buffer (PROTO_RESP);
+  ASSERT_TRUE (cache_execute (cache, min_cmd, 3, &buf, now));
+  ASSERT_STR_EQ ((const char *) buf_data (&buf), ":-9223372036854775808\r\n");
+
+  buf = init_test_buffer (PROTO_RESP);
+  ASSERT_TRUE (cache_execute (cache, set_cmd, 3, &buf, now));
+  buf = init_test_buffer (PROTO_RESP);
+  ASSERT_TRUE (cache_execute (cache, max_cmd, 3, &buf, now));
+  ASSERT_STR_EQ ((const char *) buf_data (&buf), ":9223372036854775807\r\n");
 
   cache_free (cache);
   printf ("PASSED\n");
@@ -956,6 +1296,12 @@ main (void)
   test_del ();
   test_ttl ();
   test_active_eviction ();
+  test_set_clears_ttl ();
+  test_pexpire_edges ();
+  test_expire_ttl ();
+  test_set_with_ttl ();
+  test_integer_args ();
+  test_resp_int64_limits ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();
