@@ -123,6 +123,46 @@ class TestSetClearsTtl(MinisTestCase):
         self.assertEqual(self.r.execute_command("PTTL", key), -2)
 
 
+class TestPexpire(MinisTestCase):
+    def pexpire(self, key, ms):
+        return self.r.execute_command("PEXPIRE", key, ms)
+
+    def test_sets_ttl(self):
+        self.r.set("pexp_ttl", "v")
+        self.assertEqual(self.pexpire("pexp_ttl", 10000), 1)
+        pttl = self.r.execute_command("PTTL", "pexp_ttl")
+        self.assertTrue(9000 < pttl <= 10000, pttl)
+
+    def test_missing_key(self):
+        self.assertEqual(self.pexpire("pexp_missing", 1000), 0)
+        self.assertEqual(self.pexpire("pexp_missing", 0), 0)
+
+    def test_zero_deletes(self):
+        self.r.set("pexp_zero", "v")
+        self.assertEqual(self.pexpire("pexp_zero", 0), 1)
+        self.assertIsNone(self.r.get("pexp_zero"))
+        self.assertEqual(self.r.exists("pexp_zero"), 0)
+
+    def test_negative_deletes(self):
+        self.r.hset("pexp_neg", "f", "v")
+        self.assertEqual(self.pexpire("pexp_neg", -5), 1)
+        self.assertEqual(self.r.hgetall("pexp_neg"), {})
+        self.assertEqual(self.r.execute_command("PTTL", "pexp_neg"), -2)
+
+    def test_delete_drops_pending_expiry(self):
+        self.r.set("pexp_pending", "v")
+        self.pexpire("pexp_pending", 100)
+        self.assertEqual(self.pexpire("pexp_pending", -1), 1)
+        time.sleep(0.3)
+        self.assertAlive()
+
+    def test_huge_ttl_rejected(self):
+        self.r.set("pexp_huge", "v")
+        with self.assertRaisesRegex(redis.ResponseError, "invalid expire"):
+            self.pexpire("pexp_huge", 2**63 - 1)
+        self.assertEqual(self.r.execute_command("PTTL", "pexp_huge"), -1)
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

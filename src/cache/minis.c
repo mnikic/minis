@@ -244,7 +244,12 @@ minis_expire (Minis *minis, const char *key, int64_t ttl_ms, int *out_set,
   Shard *shard = lock_shard_for_key (minis, key);
   Entry *ent = entry_lookup (minis, shard, key, now_us);
   int success = 0;
-  if (ent)
+  if (ent && ttl_ms <= 0)
+    {
+      // Like Redis: a TTL that is already up deletes the key
+      success = minis_del_internal_locked (minis, shard, key, now_us);
+    }
+  else if (ent)
     {
       // This internally locks Heap. Safe order: Shard -> Heap.
       entry_set_ttl (minis, now_us, ent, ttl_ms);

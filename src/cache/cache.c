@@ -157,6 +157,9 @@ do_expire (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   int64_t ttl_ms = 0;
   if (!str2int (cmd[2], &ttl_ms))
     return out_err (out, ERR_ARG, ERR_NOT_INT);
+  // Keeps now_us + ttl_ms * 1000 from overflowing
+  if (ttl_ms > INT64_MAX / 1000)
+    return out_err (out, ERR_ARG, "invalid expire time in 'pexpire' command");
 
   int set = 0;
   minis_expire (cache, cmd[1], ttl_ms, &set, now_us);
