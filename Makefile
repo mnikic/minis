@@ -152,7 +152,7 @@ TEST_PERSIST_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_PERSIST_SRCS))
 #  RULES
 # ============================================================================
 
-.PHONY: all clean install debug asan ubsan tsan android \
+.PHONY: all clean install debug asan ubsan tsan android resp-test \
         test test-android test-asan test-ubsan test-tsan test-debug heap-test
 
 # Default: Build all binaries for the selected profile
@@ -235,6 +235,11 @@ test: $(TARGET_BENCH) $(TARGET_TEST_HEAP) $(TARGET_TEST_CACHE)
 	@$(MAKE) persist-test
 	@echo "--- Running E2E Tests ($(PROFILE)) ---"
 	@CLIENT_BIN_PATH=$(TARGET_BENCH) python3 test/test_cmds_extra.py
+
+# RESP Tests (redis-py, starts its own server)
+resp-test: $(TARGET_MINIS)
+	@echo "--- Running RESP Tests ($(PROFILE)) ---"
+	@MINIS_BIN=$(TARGET_MINIS) python3 test/test_resp.py
 
 # --- Profile-Specific Test Wrappers ---
 test-android:

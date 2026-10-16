@@ -57,7 +57,7 @@ minis_set_internal (Minis *minis, Shard *shard, const char *key,
 	    {
 	      if (ent->expire_at_us != 0)
 		{
-		  ent->expire_at_us = 0;
+		  entry_set_ttl (minis, now_us, ent, -1);
 		  __atomic_fetch_add (&shard->dirty_count, 1,
 				      __ATOMIC_RELAXED);
 		}
@@ -70,7 +70,7 @@ minis_set_internal (Minis *minis, Shard *shard, const char *key,
 	  if (ent->val)
 	    free (ent->val);
 	  ent->val = new_val;
-	  ent->expire_at_us = 0;
+	  entry_set_ttl (minis, now_us, ent, -1);
 	}
     }
   else
