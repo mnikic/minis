@@ -149,6 +149,29 @@ minis_lrange (Minis *minis, const char *key, int64_t start, int64_t stop,
 }
 
 MinisError
+minis_lrem (Minis *minis, const char *key, int64_t count, const char *val,
+	    size_t *out_removed, uint64_t now_us)
+{
+  Shard *shard = lock_shard_for_key (minis, key);
+
+  MinisError err;
+  Entry *ent = list_lookup (minis, shard, key, now_us, &err);
+  size_t removed = 0;
+  if (ent)
+    {
+      removed = list_remove (ent->list, val, count);
+      if (removed > 0)
+	__atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
+      if (list_len (ent->list) == 0)
+	entry_dispose_atomic (minis, ent);
+    }
+
+  *out_removed = removed;
+  unlock_shard (shard);
+  return err;
+}
+
+MinisError
 minis_llen (Minis *minis, const char *key, size_t *out_len, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);

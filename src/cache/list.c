@@ -70,6 +70,18 @@ list_push (List *list, const char *val, bool front)
   return true;
 }
 
+// Gives memory back once a queue drains, keeping it at least half
+// empty. Failing to shrink is harmless.
+static void
+list_maybe_shrink (List *list)
+{
+  size_t new_cap = list->cap;
+  while (new_cap > LIST_MIN_CAP && list->len <= new_cap / 4)
+    new_cap /= 2;
+  if (new_cap != list->cap)
+    (void) list_resize (list, new_cap);
+}
+
 void
 list_drop (List *list, size_t count, bool front)
 {
@@ -86,12 +98,42 @@ list_drop (List *list, size_t count, bool front)
 	}
       list->len--;
     }
+  list_maybe_shrink (list);
+}
 
-  // Give memory back once a queue drains, keeping it at least half
-  // empty. Failing to shrink is harmless.
-  size_t new_cap = list->cap;
-  while (new_cap > LIST_MIN_CAP && list->len <= new_cap / 4)
-    new_cap /= 2;
-  if (new_cap != list->cap)
-    (void) list_resize (list, new_cap);
+size_t
+list_remove (List *list, const char *val, int64_t count)
+{
+  size_t matches = 0;
+  for (size_t i = 0; i < list->len; i++)
+    if (strcmp (*list_slot (list, i), val) == 0)
+      matches++;
+
+  // -INT64_MIN does not fit in int64_t, negate unsigned
+  uint64_t want = count < 0 ? 0 - (uint64_t) count : (uint64_t) count;
+  size_t limit = (count == 0 || want > matches) ? matches : (size_t) want;
+  // Removing from the tail means keeping the first matches
+  size_t keep = count < 0 ? matches - limit : 0;
+
+  size_t kept = 0;
+  size_t seen = 0;
+  for (size_t i = 0; i < list->len; i++)
+    {
+      char *item = *list_slot (list, i);
+      if (strcmp (item, val) == 0)
+	{
+	  size_t nth = seen++;
+	  if (nth >= keep && nth < keep + limit)
+	    {
+	      free (item);
+	      continue;
+	    }
+	}
+      *list_slot (list, kept++) = item;
+    }
+
+  size_t removed = list->len - kept;
+  list->len = kept;
+  list_maybe_shrink (list);
+  return removed;
 }

@@ -905,6 +905,71 @@ test_list_range (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6j: LREM
+// ============================================================================
+
+// Fills key with a b a c a b a and runs LREM count val
+static void
+lrem_case (Cache *cache, uint64_t now, const char *count, const char *val,
+	   int64_t removed, const char **rest, size_t rest_len)
+{
+  Buffer buf;
+  RUN (cache, now, "del", "lrem");
+  RUN (cache, now, "rpush", "lrem", "a", "b", "a", "c", "a", "b", "a");
+  RUN (cache, now, "lrem", "lrem", count, val);
+  ASSERT_EQ (extract_int_response (&buf), (uint64_t) removed);
+  RUN (cache, now, "lrange", "lrem", "0", "-1");
+  assert_str_array (&buf, rest, rest_len);
+}
+
+static void
+test_list_rem (void)
+{
+  printf ("TEST: LREM... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  const char *no_a[] = { "b", "c", "b" };
+  lrem_case (cache, now, "0", "a", 4, no_a, 3);
+  lrem_case (cache, now, "100", "a", 4, no_a, 3);
+  lrem_case (cache, now, "-100", "a", 4, no_a, 3);
+
+  const char *head2[] = { "b", "c", "a", "b", "a" };
+  lrem_case (cache, now, "2", "a", 2, head2, 5);
+
+  const char *tail2[] = { "a", "b", "a", "c", "b" };
+  lrem_case (cache, now, "-2", "a", 2, tail2, 5);
+
+  const char *tail_b[] = { "a", "b", "a", "c", "a", "a" };
+  lrem_case (cache, now, "-1", "b", 1, tail_b, 6);
+
+  const char *all[] = { "a", "b", "a", "c", "a", "b", "a" };
+  lrem_case (cache, now, "0", "z", 0, all, 7);
+
+  // Removing everything deletes the key
+  RUN (cache, now, "rpush", "lrem_x", "x", "x");
+  RUN (cache, now, "lrem", "lrem_x", "0", "x");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now, "exists", "lrem_x");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  RUN (cache, now, "lrem", "lrem_missing", "0", "x");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+  RUN (cache, now, "lrem", "lrem", "x", "a");
+  assert_err_msg (&buf, "value is not an integer or out of range");
+  RUN (cache, now, "lrem", "lrem", "-9223372036854775808", "a");
+  assert_err_msg (&buf, "value is out of range");
+  RUN (cache, now, "set", "lrem_str", "v");
+  RUN (cache, now, "lrem", "lrem_str", "0", "v");
+  assert_err_msg (&buf, "WRONGTYPE");
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -1502,6 +1567,7 @@ main (void)
   test_list_push_pop ();
   test_list_pop_too_big ();
   test_list_range ();
+  test_list_rem ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

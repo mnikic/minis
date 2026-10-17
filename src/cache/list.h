@@ -37,4 +37,8 @@ bool list_push (List * list, const char *val, bool front);
 // Removes and frees count elements from one end, count must be <= len
 void list_drop (List * list, size_t count, bool front);
 
+// Removes elements equal to val: the first count if count > 0, the last
+// -count if count < 0, all if count == 0. Returns how many went.
+size_t list_remove (List * list, const char *val, int64_t count);
+
 #endif // CACHE_LIST_H_

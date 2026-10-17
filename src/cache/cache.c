@@ -577,6 +577,26 @@ do_lrange (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   return true;
 }
 
+// LREM key count value
+static bool
+do_lrem (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+{
+  int64_t count = 0;
+  if (!str2int (cmd[2], &count))
+    return out_err (out, ERR_ARG, ERR_NOT_INT);
+  // Like valkey, whose count must be negatable
+  if (count == INT64_MIN)
+    return out_err (out, ERR_ARG, "value is out of range, value must "
+		    "between -9223372036854775807 and 9223372036854775807");
+
+  size_t removed = 0;
+  MinisError err = minis_lrem (cache, cmd[1], count, cmd[3], &removed,
+			       now_us);
+  if (err == MINIS_OK || err == MINIS_ERR_NIL)
+    return out_int (out, (int64_t) removed);
+  return reply_with_error (out, err);
+}
+
 static bool
 do_llen (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 {
@@ -775,6 +795,8 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
     return do_pop (cache, cmd, size, false, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "lrange"))
     return do_lrange (cache, cmd, out, now_us);
+  if (size == 4 && cmd_is (cmd[0], "lrem"))
+    return do_lrem (cache, cmd, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "llen"))
     return do_llen (cache, cmd[1], out, now_us);
   if (size >= 2 && cmd_is (cmd[0], "exists"))

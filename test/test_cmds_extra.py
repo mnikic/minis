@@ -991,6 +991,42 @@ $ {client_executable-abs_path} lrange lr_str 0 -1
 (err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
 $ {client_executable-abs_path} del lr lr_str
 (int) 2
+# Test: LREM
+$ {client_executable-abs_path} rpush lrem a b a c a b a
+(int) 7
+$ {client_executable-abs_path} lrem lrem 2 a
+(int) 2
+$ {client_executable-abs_path} lrange lrem 0 -1
+(arr) len=5
+(str) b
+(str) c
+(str) a
+(str) b
+(str) a
+(arr) end
+$ {client_executable-abs_path} lrem lrem -1 b
+(int) 1
+$ {client_executable-abs_path} lrange lrem 0 -1
+(arr) len=4
+(str) b
+(str) c
+(str) a
+(str) a
+(arr) end
+$ {client_executable-abs_path} lrem lrem 0 a
+(int) 2
+$ {client_executable-abs_path} lrem lrem 0 z
+(int) 0
+$ {client_executable-abs_path} lrem lrem x a
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} lrem lrem 0 b
+(int) 1
+$ {client_executable-abs_path} lrem lrem 0 c
+(int) 1
+$ {client_executable-abs_path} exists lrem
+(int) 0
+$ {client_executable-abs_path} lrem lrem 0 a
+(int) 0
 '''
 
 

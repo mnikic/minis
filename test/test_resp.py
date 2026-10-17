@@ -536,6 +536,80 @@ class TestListRange(MinisTestCase):
         self.assertEqual(self.r.lrange("lr_big", 0, 0), [big])
 
 
+def ref_lrem(values, count, val):
+    """LREM as Redis defines it, returns (removed, new list)"""
+    idx = [i for i, v in enumerate(values) if v == val]
+    if count > 0:
+        idx = idx[:count]
+    elif count < 0:
+        idx = idx[count:] if -count < len(idx) else idx
+    gone = set(idx)
+    return len(gone), [v for i, v in enumerate(values) if i not in gone]
+
+
+class TestListRem(MinisTestCase):
+    VALUES = ["a", "b", "a", "c", "a", "b", "a"]
+
+    def fresh(self, key):
+        self.r.delete(key)
+        self.r.rpush(key, *self.VALUES)
+
+    def test_counts(self):
+        for count in (0, 1, 2, 3, 4, 10, -1, -2, -3, -4, -10,
+                      2**63 - 1, -(2**63 - 1)):
+            for val in ("a", "b", "c", "z"):
+                with self.subTest(count=count, val=val):
+                    self.fresh("lrem")
+                    removed, rest = ref_lrem(self.VALUES, count, val)
+                    self.assertEqual(self.r.lrem("lrem", count, val), removed)
+                    self.assertEqual(self.r.lrange("lrem", 0, -1), rest)
+
+    def test_removing_all_deletes_key(self):
+        self.r.rpush("lrem_all", "x", "x")
+        self.assertEqual(self.r.lrem("lrem_all", 0, "x"), 2)
+        self.assertEqual(self.r.exists("lrem_all"), 0)
+
+    def test_missing_key(self):
+        self.assertEqual(self.r.lrem("lrem_missing", 0, "x"), 0)
+
+    def test_wrong_type(self):
+        self.r.set("lrem_str", "v")
+        with self.assertRaisesRegex(redis.ResponseError, "WRONGTYPE"):
+            self.r.lrem("lrem_str", 0, "v")
+
+    def test_bad_count(self):
+        self.r.rpush("lrem_bad", "x")
+        with self.assertRaisesRegex(redis.ResponseError, "not an integer"):
+            self.r.execute_command("LREM", "lrem_bad", "x", "x")
+        # valkey refuses a count it cannot negate
+        with self.assertRaisesRegex(redis.ResponseError, "out of range"):
+            self.r.lrem("lrem_bad", -(2**63), "x")
+        self.assertEqual(self.r.llen("lrem_bad"), 1)
+
+    def test_on_wrapped_large_list(self):
+        rng = random.Random(99)
+        model = collections.deque()
+        for i in range(400):
+            v = rng.choice("abcd")
+            if rng.random() < 0.5:
+                self.r.lpush("lrem_big", v)
+                model.appendleft(v)
+            else:
+                self.r.rpush("lrem_big", v)
+                model.append(v)
+        values = list(model)
+        for count, val in ((5, "a"), (-7, "b"), (0, "c"), (3, "d")):
+            removed, values = ref_lrem(values, count, val)
+            self.assertEqual(self.r.lrem("lrem_big", count, val), removed)
+            self.assertEqual(self.r.lrange("lrem_big", 0, -1), values)
+
+    def test_leadgrep_remove_keyword(self):
+        self.r.rpush("keyword_suggestions_queue:7", "x", "y", "z")
+        self.assertEqual(self.r.lrem("keyword_suggestions_queue:7", 0, "y"), 1)
+        self.assertEqual(self.r.lrange("keyword_suggestions_queue:7", 0, -1),
+                         ["x", "z"])
+
+
 class TestListPersistence(MinisTestCase):
     def test_list_survives_restart(self):
         self.r.rpush("lp_list", "a", "b", "c")

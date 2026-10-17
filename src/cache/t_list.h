@@ -25,6 +25,11 @@ MinisError minis_lrange (Minis * minis, const char *key, int64_t start,
 			 int64_t stop, MinisListCb cb, void *ctx,
 			 uint64_t now_us);
 
+// LREM: removes elements equal to val, see list_remove for count.
+// Deletes the key if the list empties.
+MinisError minis_lrem (Minis * minis, const char *key, int64_t count,
+		       const char *val, size_t *out_removed, uint64_t now_us);
+
 MinisError minis_llen (Minis * minis, const char *key, size_t *out_len,
 		       uint64_t now_us);
 
