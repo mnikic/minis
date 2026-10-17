@@ -661,6 +661,25 @@ class TestIdle(MinisTestCase):
         self.assertAlive()
 
 
+class TestShutdown(MinisTestCase):
+    def test_sigterm_saves_and_exits_promptly(self):
+        # A SIGTERM landing just before the event loop's wait used to be
+        # missed until the wait timed out, so the harness killed the
+        # server unsaved. It took a few percent of restarts to hit.
+        for i in range(50):
+            self.r.rpush("shutdown_list", *[f"{i}-{j}" for j in range(100)])
+            self.r.close()
+
+            start = time.time()
+            self.server.shutdown()
+            took = time.time() - start
+            self.assertLess(took, 2, f"restart {i}: shutdown took {took:.2f}s")
+            self.assertEqual(self.server.proc.returncode, 0)
+
+            self.server.start()
+            self.assertEqual(self.r.llen("shutdown_list"), 100 * (i + 1))
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

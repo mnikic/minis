@@ -44,6 +44,7 @@
 #include <time.h>
 #include <sys/epoll.h>
 #include <signal.h>
+#include <sys/eventfd.h>
 
 #include "cache/cache.h"
 #include "cache/persistence.h"
@@ -69,6 +70,8 @@ static struct
   uint64_t last_snapshot_mod_count;
   uint64_t last_snapshot_mod_count_at_fork;
   volatile sig_atomic_t terminate_flag;
+  // Written by the signal handler to wake epoll_wait, -1 until set up
+  volatile sig_atomic_t wake_fd;
 } g_data;
 
 static ALWAYS_INLINE uint64_t
@@ -85,6 +88,18 @@ sigint_handler (int sig)
 {
   (void) sig;
   g_data.terminate_flag = 1;
+
+  // The flag alone is not enough: if the signal lands between the loop's
+  // flag check and epoll_wait, or on a thread pool thread, the loop
+  // would sleep until its timeout. The eventfd makes the wait return.
+  if (g_data.wake_fd >= 0)
+    {
+      int saved_errno = errno;
+      uint64_t one = 1;
+      ssize_t ret = write (g_data.wake_fd, &one, sizeof (one));
+      (void) ret;
+      errno = saved_errno;
+    }
 }
 
 static void
@@ -383,6 +398,14 @@ process_active_events (Cache *cache, struct epoll_event *events, int count,
 	  handle_listener_event (listen_fd, now_us);
 	  continue;
 	}
+      if (unlikely (file_desc == g_data.wake_fd))
+	{
+	  // Only wakes the loop, terminate_flag says why
+	  uint64_t wakeups;
+	  ssize_t ret = read (file_desc, &wakeups, sizeof (wakeups));
+	  (void) ret;
+	  continue;
+	}
       Conn *conn = connpool_lookup (g_data.fd2conn, file_desc);
       if (unlikely (!conn))
 	continue;
@@ -431,6 +454,11 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
   cache_free (cache);
   close (listen_fd);
   close (epfd);
+  if (g_data.wake_fd >= 0)
+    {
+      close (g_data.wake_fd);
+      g_data.wake_fd = -1;
+    }
   msgf ("Cleanup complete. %llu calls to epoll_ctl", sys_calls);
 }
 
@@ -479,6 +507,15 @@ initialize_server_core (int port, int *listen_fd, int *epfd)
     }
 
   g_data.epfd = *epfd;
+
+  int wake_fd = eventfd (0, EFD_NONBLOCK | EFD_CLOEXEC);
+  if (unlikely (wake_fd == -1))
+    die ("eventfd");
+  event.events = EPOLLIN;
+  event.data.fd = wake_fd;
+  if (unlikely (epoll_ctl (*epfd, EPOLL_CTL_ADD, wake_fd, &event) == -1))
+    die ("epoll ctl: wake fd");
+  g_data.wake_fd = wake_fd;
 
   event.events = EPOLLIN | EPOLLET;
   event.data.fd = *listen_fd;
@@ -650,6 +687,7 @@ server_run (int port)
   int epfd = -1;
 
   g_data.terminate_flag = 0;
+  g_data.wake_fd = -1;
   setup_signal_handlers ();
 
   dlist_init (&g_data.idle_list);
