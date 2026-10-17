@@ -21,7 +21,9 @@ bool
 entry_eq_str (HNode *node, const void *key)
 {
   Entry *ent = entry_fetch (node);
-  return strcmp (ent->key, (const char *) key) == 0;
+  const EntryKey *ekey = (const EntryKey *) key;
+  return ent->key_len == ekey->len
+    && memcmp (ent->key, ekey->key, ekey->len) == 0;
 }
 
 bool
@@ -143,11 +145,12 @@ entry_del (Minis *minis, Entry *ent, uint64_t now_us)
 void
 entry_dispose_atomic (Minis *minis, Entry *ent)
 {
-  int shard_id = get_shard_id (ent->key);
+  int shard_id = get_shard_id (ent->key, ent->key_len);
 
-  uint64_t hcode = cstr_hash (ent->key);
+  uint64_t hcode = str_hash ((const uint8_t *) ent->key, ent->key_len);
+  EntryKey ekey = {.key = ent->key,.len = ent->key_len };
   HNode *removed =
-    hm_pop (&minis->shards[shard_id].db, ent->key, hcode, &entry_eq_str);
+    hm_pop (&minis->shards[shard_id].db, &ekey, hcode, &entry_eq_str);
 
   if (removed)
     entry_del (minis, ent, (uint64_t) - 1);
@@ -166,10 +169,12 @@ fetch_entry_expiry_aware (Minis *minis, HNode *node, uint64_t now_us)
 }
 
 Entry *
-entry_lookup (Minis *minis, Shard *shard, const char *key, uint64_t now_us)
+entry_lookup (Minis *minis, Shard *shard, const char *key, size_t key_len,
+	      uint64_t now_us)
 {
-  uint64_t hcode = cstr_hash (key);
-  HNode *node = hm_lookup (&shard->db, key, hcode, &entry_eq_str);
+  uint64_t hcode = str_hash ((const uint8_t *) key, key_len);
+  EntryKey ekey = {.key = key,.len = key_len };
+  HNode *node = hm_lookup (&shard->db, &ekey, hcode, &entry_eq_str);
 
   if (!node)
     return NULL;
@@ -178,32 +183,34 @@ entry_lookup (Minis *minis, Shard *shard, const char *key, uint64_t now_us)
 }
 
 static Entry *
-entry_new (Minis *minis, const char *key, EntryType type)
+entry_new (Minis *minis, const char *key, size_t klen, EntryType type)
 {
-  size_t klen = strlen (key);
 
   Entry *ent = malloc (sizeof (Entry) + klen + 1);
   if (!ent)
     return NULL;
-  memcpy (ent->key, key, klen + 1);
+  memcpy (ent->key, key, klen);
+  ent->key[klen] = '\0';
+  ent->key_len = klen;
 
-  ent->node.hcode = cstr_hash (key);
+  ent->node.hcode = str_hash ((const uint8_t *) key, klen);
   ent->type = type;
   ent->heap_idx = (size_t) -1;
   ent->expire_at_us = 0;
 
   ent->val = NULL;
   ent->val_len = 0;
-  hm_insert (&minis->shards[get_shard_id (key)].db, &ent->node, key,
+  EntryKey ekey = {.key = key,.len = klen };
+  hm_insert (&minis->shards[get_shard_id (key, klen)].db, &ent->node, &ekey,
 	     &entry_eq_str);
 
   return ent;
 }
 
 Entry *
-entry_new_zset (Minis *minis, const char *key)
+entry_new_zset (Minis *minis, const char *key, size_t key_len)
 {
-  Entry *ent = entry_new (minis, key, T_ZSET);
+  Entry *ent = entry_new (minis, key, key_len, T_ZSET);
   if (!ent)
     return NULL;
 
@@ -231,10 +238,10 @@ entry_set_str (Entry *ent, const char *val, size_t val_len)
 }
 
 Entry *
-entry_new_str (Minis *minis, const char *key, const char *val,
-	       size_t val_len)
+entry_new_str (Minis *minis, const char *key, size_t key_len,
+	       const char *val, size_t val_len)
 {
-  Entry *ent = entry_new (minis, key, T_STR);
+  Entry *ent = entry_new (minis, key, key_len, T_STR);
   if (!ent)
     return NULL;
 
@@ -247,9 +254,9 @@ entry_new_str (Minis *minis, const char *key, const char *val,
 }
 
 Entry *
-entry_new_hash (Minis *minis, const char *key)
+entry_new_hash (Minis *minis, const char *key, size_t key_len)
 {
-  Entry *ent = entry_new (minis, key, T_HASH);
+  Entry *ent = entry_new (minis, key, key_len, T_HASH);
   if (!ent)
     return NULL;
 
@@ -269,9 +276,9 @@ entry_new_hash (Minis *minis, const char *key)
 }
 
 Entry *
-entry_new_list (Minis *minis, const char *key)
+entry_new_list (Minis *minis, const char *key, size_t key_len)
 {
-  Entry *ent = entry_new (minis, key, T_LIST);
+  Entry *ent = entry_new (minis, key, key_len, T_LIST);
   if (!ent)
     return NULL;
 

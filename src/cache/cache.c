@@ -134,20 +134,22 @@ do_config (Cache *cache, const char **args, size_t arg_count, Buffer *out)
 // Key Operations
 
 static bool
-do_mdel (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
+do_mdel (Cache *cache, const char **cmd, const size_t *lens, size_t nkeys,
+	 Buffer *out,
 	 uint64_t now_us)
 {
   uint64_t total = 0;
-  minis_mdel (cache, cmd, nkeys, &total, now_us);
+  minis_mdel (cache, cmd, lens, nkeys, &total, now_us);
   return out_int (out, (int64_t) total);
 }
 
 static bool
-do_exists (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
+do_exists (Cache *cache, const char **cmd, const size_t *lens, size_t nkeys,
+	   Buffer *out,
 	   uint64_t now_us)
 {
   int64_t hits;
-  MinisError err = minis_exists (cache, cmd, nkeys, &hits, now_us);
+  MinisError err = minis_exists (cache, cmd, lens, nkeys, &hits, now_us);
   if (err == MINIS_OK)
     return out_int (out, hits);
   return reply_with_error (out, err);
@@ -155,7 +157,8 @@ do_exists (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
 
 // EXPIRE and PEXPIRE, unit_ms is the length of one TTL unit
 static bool
-do_expire (Cache *cache, const char **cmd, int64_t unit_ms, Buffer *out,
+do_expire (Cache *cache, const char **cmd, const size_t *lens,
+	   int64_t unit_ms, Buffer *out,
 	   uint64_t now_us)
 {
   int64_t ttl = 0;
@@ -170,17 +173,18 @@ do_expire (Cache *cache, const char **cmd, int64_t unit_ms, Buffer *out,
   // Any TTL <= 0 deletes the key, clamp so the product cannot overflow
   int64_t ttl_ms = ttl > 0 ? ttl * unit_ms : -1;
   int set = 0;
-  minis_expire (cache, cmd[1], ttl_ms, &set, now_us);
+  minis_expire (cache, cmd[1], lens[1], ttl_ms, &set, now_us);
   return out_int (out, set);
 }
 
 // TTL and PTTL. Seconds are rounded to nearest, like Redis.
 static bool
-do_ttl (Cache *cache, const char **cmd, int64_t unit_ms, Buffer *out,
+do_ttl (Cache *cache, const char **cmd, const size_t *lens, int64_t unit_ms,
+	Buffer *out,
 	uint64_t now_us)
 {
   int64_t ttl_ms = 0;
-  minis_ttl (cache, cmd[1], &ttl_ms, now_us);
+  minis_ttl (cache, cmd[1], lens[1], &ttl_ms, now_us);
   // -1 (no TTL) and -2 (no key) pass through
   if (ttl_ms >= 0)
     ttl_ms = (ttl_ms + unit_ms / 2) / unit_ms;
@@ -198,7 +202,7 @@ typedef struct
 } VisitCtx;
 
 static void
-cb_keys_visitor (const char *key, void *arg)
+cb_keys_visitor (const char *key, size_t key_len, void *arg)
 {
   VisitCtx *ctx = (VisitCtx *) arg;
   if (!ctx->result)
@@ -206,13 +210,14 @@ cb_keys_visitor (const char *key, void *arg)
   ctx->count++;
   if (!ctx->counting_only)
     {
-      if (!out_str (ctx->out, key))
+      if (!out_str_size (ctx->out, key, key_len))
 	ctx->result = false;
     }
 }
 
 static bool
-do_keys (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_keys (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
+	 uint64_t now_us)
 {
   VisitCtx ctx = {.out = out,.counting_only = false,.count = 0,.result = true
   };
@@ -224,7 +229,7 @@ do_keys (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
       if (idx == 0)
 	return false;
 
-      minis_keys (cache, cmd[1], cb_keys_visitor, &ctx, now_us);
+      minis_keys (cache, cmd[1], lens[1], cb_keys_visitor, &ctx, now_us);
       if (!ctx.result)
 	return false;
       return out_arr_end (out, idx, ctx.count);
@@ -232,13 +237,13 @@ do_keys (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 
   // PATH 2: RESP (Double Pass)
   ctx.counting_only = true;
-  minis_keys (cache, cmd[1], cb_keys_visitor, &ctx, now_us);
+  minis_keys (cache, cmd[1], lens[1], cb_keys_visitor, &ctx, now_us);
 
   if (!out_arr (out, ctx.count))
     return false;
 
   ctx.counting_only = false;
-  minis_keys (cache, cmd[1], cb_keys_visitor, &ctx, now_us);
+  minis_keys (cache, cmd[1], lens[1], cb_keys_visitor, &ctx, now_us);
 
   return ctx.result;
 }
@@ -278,7 +283,8 @@ type_from_name (const char *name)
 
 // SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]
 static bool
-do_scan (Cache *cache, const char **cmd, size_t size, Buffer *out,
+do_scan (Cache *cache, const char **cmd, const size_t *lens, size_t size,
+	 Buffer *out,
 	 uint64_t now_us)
 {
   uint64_t cursor = 0;
@@ -286,6 +292,7 @@ do_scan (Cache *cache, const char **cmd, size_t size, Buffer *out,
     return out_err (out, ERR_ARG, "invalid cursor");
 
   const char *pattern = NULL;
+  size_t pattern_len = 0;
   int64_t count = 10;
   int type = -1;
   // Options can repeat, the last one wins
@@ -295,7 +302,10 @@ do_scan (Cache *cache, const char **cmd, size_t size, Buffer *out,
 	return out_err (out, ERR_ARG, "syntax error");
       const char *val = cmd[i + 1];
       if (cmd_is (cmd[i], "match"))
-	pattern = val;
+	{
+	  pattern = val;
+	  pattern_len = lens[i + 1];
+	}
       else if (cmd_is (cmd[i], "count"))
 	{
 	  if (!str2int (val, &count))
@@ -322,7 +332,7 @@ do_scan (Cache *cache, const char **cmd, size_t size, Buffer *out,
   VisitCtx ctx = {.out = out,.counting_only = true,.count = 0,.result = true
   };
   uint64_t next = 0;
-  minis_scan (cache, cursor, (size_t) count, pattern, type,
+  minis_scan (cache, cursor, (size_t) count, pattern, pattern_len, type,
 	      cb_keys_visitor, &ctx, now_us, &next);
 
   char next_str[24];
@@ -332,7 +342,7 @@ do_scan (Cache *cache, const char **cmd, size_t size, Buffer *out,
     return false;
 
   ctx.counting_only = false;
-  minis_scan (cache, cursor, (size_t) count, pattern, type,
+  minis_scan (cache, cursor, (size_t) count, pattern, pattern_len, type,
 	      cb_keys_visitor, &ctx, now_us, &next);
   return ctx.result;
 }
@@ -360,10 +370,12 @@ single_get_visitor (const Entry *ent, void *ctx)
 }
 
 static bool
-do_get (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
+do_get (Cache *cache, const char *key, size_t key_len, Buffer *out,
+	uint64_t now_us)
 {
   GetVstCtx ctx = {.out = out,.result = true };
-  MinisError err = minis_get (cache, key, single_get_visitor, &ctx, now_us);
+  MinisError err = minis_get (cache, key, key_len, single_get_visitor, &ctx,
+			      now_us);
   if (err == MINIS_OK)
     return ctx.result;
   return reply_with_error (out, err);
@@ -385,12 +397,12 @@ parse_set_ttl (const char *arg, int64_t unit_ms, const char *invalid_msg,
 }
 
 static bool
-set_with_ttl (Cache *cache, const char *key, const char *val, size_t val_len,
-	      int64_t ttl_ms, Buffer *out, uint64_t now_us)
+set_with_ttl (Cache *cache, const char *key, size_t key_len, const char *val,
+	      size_t val_len, int64_t ttl_ms, Buffer *out, uint64_t now_us)
 {
   MinisError err = ttl_ms > 0
-    ? minis_set_ex (cache, key, val, val_len, ttl_ms, now_us)
-    : minis_set (cache, key, val, val_len, now_us);
+    ? minis_set_ex (cache, key, key_len, val, val_len, ttl_ms, now_us)
+    : minis_set (cache, key, key_len, val, val_len, now_us);
   if (err == MINIS_OK)
     return out_ok (out);
   return reply_with_error (out, err);
@@ -421,7 +433,8 @@ do_set (Cache *cache, const char **cmd, const size_t *lens, size_t size,
       if (err)
 	return out_err (out, ERR_ARG, err);
     }
-  return set_with_ttl (cache, cmd[1], cmd[2], lens[2], ttl_ms, out, now_us);
+  return set_with_ttl (cache, cmd[1], lens[1], cmd[2], lens[2], ttl_ms, out,
+		       now_us);
 }
 
 // SETEX/PSETEX key ttl value
@@ -436,7 +449,8 @@ do_setex (Cache *cache, const char **cmd, const size_t *lens, int64_t unit_ms,
 				   &ttl_ms);
   if (err)
     return out_err (out, ERR_ARG, err);
-  return set_with_ttl (cache, cmd[1], cmd[3], lens[3], ttl_ms, out, now_us);
+  return set_with_ttl (cache, cmd[1], lens[1], cmd[3], lens[3], ttl_ms, out,
+		       now_us);
 }
 
 static bool
@@ -473,22 +487,24 @@ mget_visitor (const Entry *ent, void *ctx)
 }
 
 static bool
-do_mget (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
+do_mget (Cache *cache, const char **cmd, const size_t *lens, size_t nkeys,
+	 Buffer *out,
 	 uint64_t now_us)
 {
   if (!out_arr (out, nkeys))
     return false;
   MgetVisitorCtx ctx = {.out = out,.result = true };
-  minis_mget (cache, cmd, nkeys, mget_visitor, &ctx, now_us);
+  minis_mget (cache, cmd, lens, nkeys, mget_visitor, &ctx, now_us);
   return ctx.result;
 }
 
 static bool
-do_incr (Cache *cache, const char *key, int64_t delta, Buffer *out,
+do_incr (Cache *cache, const char *key, size_t key_len, int64_t delta,
+	 Buffer *out,
 	 uint64_t now_us)
 {
   int64_t val = 0;
-  MinisError err = minis_incr (cache, key, delta, &val, now_us);
+  MinisError err = minis_incr (cache, key, key_len, delta, &val, now_us);
   if (err == MINIS_OK)
     return out_int (out, val);
   return reply_with_error (out, err);
@@ -501,7 +517,7 @@ do_hset (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 	 uint64_t now_us)
 {
   int added = 0;
-  MinisError err = minis_hset (cache, cmd[1], cmd[2], lens[2], cmd[3],
+  MinisError err = minis_hset (cache, cmd[1], lens[1], cmd[2], lens[2], cmd[3],
 			       lens[3], &added, now_us);
   if (err == MINIS_OK)
     return out_int (out, added);
@@ -519,7 +535,7 @@ static bool
 do_hget (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 	 uint64_t now_us)
 {
-  MinisError err = minis_hget (cache, cmd[1], cmd[2], lens[2], hget_visitor,
+  MinisError err = minis_hget (cache, cmd[1], lens[1], cmd[2], lens[2], hget_visitor,
 			       out, now_us);
   return reply_with_error (out, err);
 }
@@ -530,7 +546,7 @@ do_hdel (Cache *cache, const char **cmd, const size_t *lens, size_t argc,
 {
   int total = 0;
   MinisError err =
-    minis_hdel (cache, cmd[1], cmd + 2, lens + 2, argc - 2, &total, now_us);
+    minis_hdel (cache, cmd[1], lens[1], cmd + 2, lens + 2, argc - 2, &total, now_us);
   if (err == MINIS_OK)
     return out_int (out, total);
   return reply_with_error (out, err);
@@ -541,7 +557,7 @@ do_hexists (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 	    uint64_t now_us)
 {
   int exists = 0;
-  MinisError err = minis_hexists (cache, cmd[1], cmd[2], lens[2], &exists,
+  MinisError err = minis_hexists (cache, cmd[1], lens[1], cmd[2], lens[2], &exists,
 				  now_us);
   if (err == MINIS_OK)
     return out_int (out, exists);
@@ -574,10 +590,11 @@ cb_hash_visitor (const HashEntry *entry, void *arg)
 }
 
 static bool
-do_hgetall (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
+do_hgetall (Cache *cache, const char *key, size_t key_len, Buffer *out,
+	    uint64_t now_us)
 {
   size_t count = 0;
-  MinisError err = minis_hlen (cache, key, &count, now_us);
+  MinisError err = minis_hlen (cache, key, key_len, &count, now_us);
 
   if (err == MINIS_ERR_NIL)
     return out_arr (out, 0);
@@ -587,7 +604,7 @@ do_hgetall (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
   if (!out_arr (out, count * 2))
     return false;
   HashVisitorCtx ctx = {.out = out,.result = true };
-  minis_hgetall (cache, key, cb_hash_visitor, &ctx, now_us);
+  minis_hgetall (cache, key, key_len, cb_hash_visitor, &ctx, now_us);
   return ctx.result;
 }
 
@@ -600,7 +617,7 @@ do_push (Cache *cache, const char **cmd, const size_t *lens, size_t size,
 {
   size_t len = 0;
   MinisError err =
-    minis_push (cache, cmd[1], cmd + 2, lens + 2, size - 2, front, &len,
+    minis_push (cache, cmd[1], lens[1], cmd + 2, lens + 2, size - 2, front, &len,
 		now_us);
   if (err == MINIS_OK)
     return out_int (out, (int64_t) len);
@@ -625,7 +642,8 @@ cb_list_reply (const char *val, size_t len, size_t idx, size_t total,
 
 // LPOP/RPOP key [count]
 static bool
-do_pop (Cache *cache, const char **cmd, size_t size, bool front,
+do_pop (Cache *cache, const char **cmd, const size_t *lens, size_t size,
+	bool front,
 	Buffer *out, uint64_t now_us)
 {
   ListReplyCtx ctx = {.out = out,.array = size == 3 };
@@ -638,7 +656,8 @@ do_pop (Cache *cache, const char **cmd, size_t size, bool front,
 
   size_t before = buf_len (out);
   MinisError err =
-    minis_pop (cache, cmd[1], (size_t) count, front, cb_list_reply, &ctx,
+    minis_pop (cache, cmd[1], lens[1], (size_t) count, front, cb_list_reply,
+	       &ctx,
 	       now_us);
   if (err == MINIS_ERR_NIL)
     return ctx.array ? out_nil_arr (out) : out_nil (out);
@@ -657,6 +676,7 @@ typedef struct
 {
   Buffer *out;
   const char *key;
+  size_t key_len;
 } BPopReplyCtx;
 
 static bool
@@ -666,7 +686,7 @@ cb_bpop_reply (const char *val, size_t len, size_t idx, size_t total,
   (void) idx;
   (void) total;
   BPopReplyCtx *ctx = (BPopReplyCtx *) arg;
-  return out_arr (ctx->out, 2) && out_str (ctx->out, ctx->key)
+  return out_arr (ctx->out, 2) && out_str_size (ctx->out, ctx->key, ctx->key_len)
     && out_str_size (ctx->out, val, len);
 }
 
@@ -697,7 +717,8 @@ parse_bpop_timeout (const char *arg, uint64_t *out_us)
 }
 
 BPopResult
-cache_bpop (Cache *cache, const char **cmd, size_t size, bool retry,
+cache_bpop (Cache *cache, const char **cmd, const size_t *lens, size_t size,
+	    bool retry,
 	    Buffer *out, uint64_t now_us, uint64_t *out_timeout_us)
 {
   bool front = cmd_is (cmd[0], "blpop");
@@ -716,8 +737,9 @@ cache_bpop (Cache *cache, const char **cmd, size_t size, bool retry,
   // The first non-empty list in key order wins
   for (size_t i = 1; i < size - 1; i++)
     {
-      BPopReplyCtx ctx = {.out = out,.key = cmd[i] };
-      MinisError perr = minis_pop (cache, cmd[i], 1, front, cb_bpop_reply,
+      BPopReplyCtx ctx = {.out = out,.key = cmd[i],.key_len = lens[i] };
+      MinisError perr = minis_pop (cache, cmd[i], lens[i], 1, front,
+				   cb_bpop_reply,
 				   &ctx, now_us);
       if (perr == MINIS_OK)
 	return BPOP_DONE;
@@ -738,11 +760,12 @@ cache_list_pushes (Cache *cache)
 
 // Without a server to wait in, BLPOP times out at once
 static bool
-do_bpop_now (Cache *cache, const char **cmd, size_t size, Buffer *out,
+do_bpop_now (Cache *cache, const char **cmd, const size_t *lens, size_t size,
+	     Buffer *out,
 	     uint64_t now_us)
 {
   uint64_t timeout_us = 0;
-  BPopResult res = cache_bpop (cache, cmd, size, false, out, now_us,
+  BPopResult res = cache_bpop (cache, cmd, lens, size, false, out, now_us,
 			       &timeout_us);
   if (res == BPOP_BLOCK)
     return out_nil_arr (out);
@@ -751,7 +774,8 @@ do_bpop_now (Cache *cache, const char **cmd, size_t size, Buffer *out,
 
 // LRANGE key start stop
 static bool
-do_lrange (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_lrange (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
+	   uint64_t now_us)
 {
   int64_t start = 0;
   int64_t stop = 0;
@@ -761,7 +785,8 @@ do_lrange (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   ListReplyCtx ctx = {.out = out,.array = true };
   size_t before = buf_len (out);
   MinisError err =
-    minis_lrange (cache, cmd[1], start, stop, cb_list_reply, &ctx, now_us);
+    minis_lrange (cache, cmd[1], lens[1], start, stop, cb_list_reply, &ctx,
+		  now_us);
   if (err == MINIS_ERR_OOM)
     return false;
   if (err != MINIS_OK && err != MINIS_ERR_NIL)
@@ -787,7 +812,7 @@ do_lrem (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 		    "between -9223372036854775807 and 9223372036854775807");
 
   size_t removed = 0;
-  MinisError err = minis_lrem (cache, cmd[1], count, cmd[3], lens[3],
+  MinisError err = minis_lrem (cache, cmd[1], lens[1], count, cmd[3], lens[3],
 			       &removed,
 			       now_us);
   if (err == MINIS_OK || err == MINIS_ERR_NIL)
@@ -796,10 +821,11 @@ do_lrem (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 }
 
 static bool
-do_llen (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
+do_llen (Cache *cache, const char *key, size_t key_len, Buffer *out,
+	 uint64_t now_us)
 {
   size_t len = 0;
-  MinisError err = minis_llen (cache, key, &len, now_us);
+  MinisError err = minis_llen (cache, key, key_len, &len, now_us);
   if (err == MINIS_OK || err == MINIS_ERR_NIL)
     return out_int (out, (int64_t) len);
   return reply_with_error (out, err);
@@ -814,7 +840,7 @@ do_zadd (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
     return out_err (out, ERR_ARG, "expect fp number");
 
   int added = 0;
-  MinisError err = minis_zadd (cache, cmd[1], score, cmd[3], lens[3], &added,
+  MinisError err = minis_zadd (cache, cmd[1], lens[1], score, cmd[3], lens[3], &added,
 			       now_us);
   if (err == MINIS_OK)
     return out_int (out, added);
@@ -826,7 +852,7 @@ do_zrem (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 	        uint64_t now_us)
 {
   int removed = 0;
-  MinisError err = minis_zrem (cache, cmd[1], cmd[2], lens[2], &removed,
+  MinisError err = minis_zrem (cache, cmd[1], lens[1], cmd[2], lens[2], &removed,
 			       now_us);
   if (err == MINIS_OK)
     return out_int (out, removed);
@@ -838,7 +864,7 @@ do_zscore (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 	          uint64_t now_us)
 {
   double score = 0;
-  MinisError err = minis_zscore (cache, cmd[1], cmd[2], lens[2], &score,
+  MinisError err = minis_zscore (cache, cmd[1], lens[1], cmd[2], lens[2], &score,
 				 now_us);
   if (err == MINIS_OK)
     return out_dbl (out, score);
@@ -891,7 +917,7 @@ do_zquery (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 
       // Single call to core logic
       MinisError err =
-	minis_zquery (cache, cmd[1], score, cmd[3], lens[3], offset, limit,
+	minis_zquery (cache, cmd[1], lens[1], score, cmd[3], lens[3], offset, limit,
 		      cb_zquery, &ctx, now_us);
 
       if (err != MINIS_OK && err != MINIS_ERR_NIL)
@@ -906,7 +932,7 @@ do_zquery (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 
   // Pass 1: Count Only
   ctx.count_only = true;
-  MinisError err = minis_zquery (cache, cmd[1], score, cmd[3], lens[3], offset, limit,
+  MinisError err = minis_zquery (cache, cmd[1], lens[1], score, cmd[3], lens[3], offset, limit,
 				 cb_zquery, &ctx, now_us);
 
   if (err == MINIS_ERR_NIL)
@@ -923,7 +949,7 @@ do_zquery (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
   // Write Data
   ctx.count_only = false;
   // Reset count if you want, though irrelevant for writing
-  minis_zquery (cache, cmd[1], score, cmd[3], lens[3], offset, limit,
+  minis_zquery (cache, cmd[1], lens[1], score, cmd[3], lens[3], offset, limit,
 		cb_zquery, &ctx, now_us);
 
   return true;
@@ -950,15 +976,15 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   if (size > 0 && cmd_is (cmd[0], "config"))
     return do_config (cache, cmd, size, out);
   if (size >= 2 && cmd_is (cmd[0], "scan"))
-    return do_scan (cache, cmd, size, out, now_us);
+    return do_scan (cache, cmd, lens, size, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "keys"))
-    return do_keys (cache, cmd, out, now_us);
+    return do_keys (cache, cmd, lens, out, now_us);
   if (size > 2 && size % 2 == 1 && cmd_is (cmd[0], "mset"))
     return do_mset (cache, &cmd[1], &lens[1], size - 1, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "get"))
-    return do_get (cache, cmd[1], out, now_us);
+    return do_get (cache, cmd[1], lens[1], out, now_us);
   if (size > 1 && cmd_is (cmd[0], "mget"))
-    return do_mget (cache, cmd + 1, size - 1, out, now_us);
+    return do_mget (cache, cmd + 1, lens + 1, size - 1, out, now_us);
   if (size >= 3 && cmd_is (cmd[0], "set"))
     return do_set (cache, cmd, lens, size, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "setex"))
@@ -966,15 +992,15 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   if (size == 4 && cmd_is (cmd[0], "psetex"))
     return do_setex (cache, cmd, lens, 1, out, now_us);
   if (size > 1 && (cmd_is (cmd[0], "del") || cmd_is (cmd[0], "mdel")))
-    return do_mdel (cache, &cmd[1], size - 1, out, now_us);
+    return do_mdel (cache, &cmd[1], &lens[1], size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "pexpire"))
-    return do_expire (cache, cmd, 1, out, now_us);
+    return do_expire (cache, cmd, lens, 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "expire"))
-    return do_expire (cache, cmd, 1000, out, now_us);
+    return do_expire (cache, cmd, lens, 1000, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "pttl"))
-    return do_ttl (cache, cmd, 1, out, now_us);
+    return do_ttl (cache, cmd, lens, 1, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "ttl"))
-    return do_ttl (cache, cmd, 1000, out, now_us);
+    return do_ttl (cache, cmd, lens, 1000, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "zadd"))
     return do_zadd (cache, cmd, lens, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "zrem"))
@@ -984,15 +1010,15 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   if (size == 6 && cmd_is (cmd[0], "zquery"))
     return do_zquery (cache, cmd, lens, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "incr"))
-    return do_incr (cache, cmd[1], 1, out, now_us);
+    return do_incr (cache, cmd[1], lens[1], 1, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "decr"))
-    return do_incr (cache, cmd[1], -1, out, now_us);
+    return do_incr (cache, cmd[1], lens[1], -1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "incrby"))
     {
       int64_t delta;
       if (!str2int (cmd[2], &delta))
 	return out_err (out, ERR_ARG, ERR_NOT_INT);
-      return do_incr (cache, cmd[1], delta, out, now_us);
+      return do_incr (cache, cmd[1], lens[1], delta, out, now_us);
     }
   if (size == 3 && cmd_is (cmd[0], "decrby"))
     {
@@ -1002,26 +1028,26 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
       // -INT64_MIN does not fit
       if (delta == INT64_MIN)
 	return out_err (out, ERR_ARG, "decrement would overflow");
-      return do_incr (cache, cmd[1], -delta, out, now_us);
+      return do_incr (cache, cmd[1], lens[1], -delta, out, now_us);
     }
   if (size >= 3 && cmd_is (cmd[0], "lpush"))
     return do_push (cache, cmd, lens, size, true, out, now_us);
   if (size >= 3 && cmd_is (cmd[0], "rpush"))
     return do_push (cache, cmd, lens, size, false, out, now_us);
   if ((size == 2 || size == 3) && cmd_is (cmd[0], "lpop"))
-    return do_pop (cache, cmd, size, true, out, now_us);
+    return do_pop (cache, cmd, lens, size, true, out, now_us);
   if ((size == 2 || size == 3) && cmd_is (cmd[0], "rpop"))
-    return do_pop (cache, cmd, size, false, out, now_us);
+    return do_pop (cache, cmd, lens, size, false, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "lrange"))
-    return do_lrange (cache, cmd, out, now_us);
+    return do_lrange (cache, cmd, lens, out, now_us);
   if (size >= 1 && (cmd_is (cmd[0], "blpop") || cmd_is (cmd[0], "brpop")))
-    return do_bpop_now (cache, cmd, size, out, now_us);
+    return do_bpop_now (cache, cmd, lens, size, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "lrem"))
     return do_lrem (cache, cmd, lens, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "llen"))
-    return do_llen (cache, cmd[1], out, now_us);
+    return do_llen (cache, cmd[1], lens[1], out, now_us);
   if (size >= 2 && cmd_is (cmd[0], "exists"))
-    return do_exists (cache, cmd + 1, size - 1, out, now_us);
+    return do_exists (cache, cmd + 1, lens + 1, size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "hget"))
     return do_hget (cache, cmd, lens, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "hset"))
@@ -1029,7 +1055,7 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   if (size > 2 && cmd_is (cmd[0], "hdel"))
     return do_hdel (cache, cmd, lens, size, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "hgetall"))
-    return do_hgetall (cache, cmd[1], out, now_us);
+    return do_hgetall (cache, cmd[1], lens[1], out, now_us);
   if (size == 3 && cmd_is (cmd[0], "hexists"))
     return do_hexists (cache, cmd, lens, out, now_us);
 

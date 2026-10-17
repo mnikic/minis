@@ -127,8 +127,8 @@ execute_blocking_pop (RequestContext *ctx, size_t size, Buffer *out_buf)
 {
   Conn *conn = ctx->conn;
   uint64_t timeout_us = 0;
-  BPopResult res = cache_bpop (ctx->cache, global_cmd_scratch, size,
-			       conn->blocked, out_buf, ctx->now_us,
+  BPopResult res = cache_bpop (ctx->cache, global_cmd_scratch,
+			       global_len_scratch, size, conn->blocked, out_buf, ctx->now_us,
 			       &timeout_us);
   if (res == BPOP_BLOCK)
     {

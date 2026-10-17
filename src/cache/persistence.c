@@ -240,7 +240,7 @@ serialize_entry (Buffer *buf, Entry *entry, const SnapClock *clock)
   if (!buf_append_i64 (buf, (int64_t) expire))
     return false;
 
-  uint32_t klen = (uint32_t) strlen (entry->key);
+  uint32_t klen = (uint32_t) entry->key_len;
   if (!buf_append_u32 (buf, klen))
     return false;
   if (!buf_append_bytes (buf, (const uint8_t *) entry->key, klen))
@@ -336,6 +336,7 @@ read_and_verify_header (FILE *file_ptr, uint32_t *expected_crc,
 
 static bool
 load_hash_entry (FILE *file_ptr, Minis *minis, const char *key,
+		 size_t key_len,
 		 uint64_t expire_at, uint32_t *crc, bool skip)
 {
   uint32_t count;
@@ -345,7 +346,7 @@ load_hash_entry (FILE *file_ptr, Minis *minis, const char *key,
   Entry *ent = NULL;
   if (!skip)
     {
-      ent = entry_new_hash (minis, key);
+      ent = entry_new_hash (minis, key, key_len);
       if (!ent)
 	return false;
       if (expire_at > 0)
@@ -411,6 +412,7 @@ load_hash_entry (FILE *file_ptr, Minis *minis, const char *key,
 
 static bool
 load_list_entry (FILE *file_ptr, Minis *minis, const char *key,
+		 size_t key_len,
 		 uint64_t expire_at, uint32_t *crc, bool skip)
 {
   uint32_t count;
@@ -420,7 +422,7 @@ load_list_entry (FILE *file_ptr, Minis *minis, const char *key,
   Entry *ent = NULL;
   if (!skip)
     {
-      ent = entry_new_list (minis, key);
+      ent = entry_new_list (minis, key, key_len);
       if (!ent)
 	return false;
       if (expire_at > 0)
@@ -464,6 +466,7 @@ load_list_entry (FILE *file_ptr, Minis *minis, const char *key,
 // Reads data to update CRC/Stream, but ignores the result if skip=true
 static bool
 load_string_entry (FILE *file_ptr, Minis *minis, const char *key,
+		 size_t key_len,
 		   uint64_t expire_at, uint32_t *crc, bool skip)
 {
   uint32_t vlen;
@@ -499,7 +502,7 @@ load_string_entry (FILE *file_ptr, Minis *minis, const char *key,
     }
   val[vlen] = '\0';
 
-  Entry *ent = entry_new_str (minis, key, val, vlen);
+  Entry *ent = entry_new_str (minis, key, key_len, val, vlen);
   if (!ent)
     return false;
   if (expire_at > 0)
@@ -510,6 +513,7 @@ load_string_entry (FILE *file_ptr, Minis *minis, const char *key,
 
 static bool
 load_zset_entry (FILE *file_ptr, Minis *minis, const char *key,
+		 size_t key_len,
 		 uint64_t expire_at, uint32_t *crc, bool skip)
 {
   uint32_t count;
@@ -521,7 +525,7 @@ load_zset_entry (FILE *file_ptr, Minis *minis, const char *key,
   // Only create the object if we aren't skipping
   if (!skip)
     {
-      ent = entry_new_zset (minis, key);
+      ent = entry_new_zset (minis, key, key_len);
       if (!ent)
 	return false;
       if (expire_at > 0)
@@ -597,7 +601,8 @@ load_one_entry (FILE *file_ptr, const SnapClock *clock, uint32_t version,
   uint32_t klen;
   if (!read_u32_crc (file_ptr, &klen, crc))
     return false;
-  if (klen > K_MAX_MSG)
+  // key_buf needs room for the NUL after the key
+  if (klen >= K_MAX_MSG)
     {
       msgf ("Snapshot: key too long (%u)", klen);
       return false;
@@ -613,13 +618,17 @@ load_one_entry (FILE *file_ptr, const SnapClock *clock, uint32_t version,
     return false;
 
   if (type == T_STR)
-    return load_string_entry (file_ptr, minis, key_buf, expire_at, crc, skip);
+    return load_string_entry (file_ptr, minis, key_buf, klen, expire_at, crc,
+			    skip);
   if (type == T_ZSET)
-    return load_zset_entry (file_ptr, minis, key_buf, expire_at, crc, skip);
+    return load_zset_entry (file_ptr, minis, key_buf, klen, expire_at, crc,
+			    skip);
   if (type == T_HASH)
-    return load_hash_entry (file_ptr, minis, key_buf, expire_at, crc, skip);
+    return load_hash_entry (file_ptr, minis, key_buf, klen, expire_at, crc,
+			    skip);
   if (type == T_LIST)
-    return load_list_entry (file_ptr, minis, key_buf, expire_at, crc, skip);
+    return load_list_entry (file_ptr, minis, key_buf, klen, expire_at, crc,
+			    skip);
 
   msgf ("Snapshot: unknown type %u for key %s", type, key_buf);
   return false;

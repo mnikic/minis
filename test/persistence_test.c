@@ -28,6 +28,9 @@
 #define HUGE_LIST_KEY "huge list"
 #define HUGE_COUNT 200
 #define HUGE_VALUE_LEN 10000
+// A literal key and its length
+#define KEY(name) name, sizeof (name) - 1
+
 #define TEMP_KEY "temp"
 #define BINARY_KEY "binary"
 #define LONG_EXPIRED_KEY "long expired"
@@ -35,12 +38,12 @@
 
 // --- Helpers for Test Verification ---
 
-// Helper to look up an entry by key string
+// Helpers to look up an entry by key, which may hold NUL bytes
 static Entry *
-find_entry (Cache *cache, const char *key)
+find_entry_n (Cache *cache, const char *key, size_t key_len)
 {
   HMIter iter;
-  int shard_id = get_shard_id(key);
+  int shard_id = get_shard_id (key, key_len);
   hm_iter_init (&cache->shards[shard_id].db, &iter);
   HNode *node;
   while ((node = hm_iter_next (&iter)) != NULL)
@@ -49,12 +52,18 @@ find_entry (Cache *cache, const char *key)
 #pragma GCC diagnostic ignored "-Wcast-align"
       Entry *ent = container_of (node, Entry, node);
 #pragma GCC diagnostic pop
-      if (strcmp (ent->key, key) == 0)
+      if (ent->key_len == key_len && memcmp (ent->key, key, key_len) == 0)
 	{
 	  return ent;
 	}
     }
   return NULL;
+}
+
+static Entry *
+find_entry (Cache *cache, const char *key)
+{
+  return find_entry_n (cache, key, strlen (key));
 }
 
 // Wall clock the snapshot code sees, so the test can stage a reboot
@@ -89,19 +98,19 @@ main (void)
 
   // A. Add a String
   msgf ("   -> Adding String 'greeting' = 'Hello Persistence'");
-  Entry *ent1 = entry_new_str (cache1, GREETING_KEY, "Hello Persistence", 17);
+  Entry *ent1 = entry_new_str (cache1, KEY (GREETING_KEY), "Hello Persistence", 17);
   (void) ent1;
 
   // B. Add a ZSet
   msgf ("   -> Adding ZSet 'leaderboard' with 3 entries");
-  Entry *ent2 = entry_new_zset (cache1, LEADERBOARD_KEY);
+  Entry *ent2 = entry_new_zset (cache1, KEY (LEADERBOARD_KEY));
   zset_add (ent2->zset, "Alice", 5, 100.5);
   zset_add (ent2->zset, "Bob", 3, 50.0);
   zset_add (ent2->zset, "Charlie", 7, 75.0);
 
   // C. Add a Hash (NEW)
   msgf ("   -> Adding Hash 'user:100' with 2 fields");
-  Entry *ent_hash = entry_new_hash (cache1, USER_HASH_KEY);
+  Entry *ent_hash = entry_new_hash (cache1, KEY (USER_HASH_KEY));
   hash_set (ent_hash->hash, "username", 8, "jdoe", 4);
   hash_set (ent_hash->hash, "role", 4, "admin", 5);
   // A field and a value holding NUL bytes
@@ -110,12 +119,12 @@ main (void)
   // D. Add Lists: one built from both ends, and one long enough to
   // wrap and grow the ring buffer, with a TTL
   msgf ("   -> Adding List 'queue' = [c, a, b] and List 'big queue'");
-  Entry *ent_list = entry_new_list (cache1, QUEUE_KEY);
+  Entry *ent_list = entry_new_list (cache1, KEY (QUEUE_KEY));
   list_push (ent_list->list, "a", 1, false);
   list_push (ent_list->list, "b", 1, false);
   list_push (ent_list->list, "c\0", 2, true);
 
-  Entry *ent_big = entry_new_list (cache1, BIG_QUEUE_KEY);
+  Entry *ent_big = entry_new_list (cache1, KEY (BIG_QUEUE_KEY));
   for (int i = 0; i < BIG_QUEUE_LEN; i++)
     {
       char val[32];
@@ -124,15 +133,16 @@ main (void)
     }
   entry_set_expiration (cache1, ent_big, 123456789);
 
-  // A string holding NUL bytes
-  entry_new_str (cache1, BINARY_KEY, "a\0b\0", 4);
+  // A string holding NUL bytes, and a key holding them
+  entry_new_str (cache1, KEY (BINARY_KEY), "a\0b\0", 4);
+  entry_new_str (cache1, "bin\0key", 7, "v", 1);
 
   // E. Add a hash and a list of ~2MB each
   msgf ("   -> Adding ~2MB Hash 'huge hash' and List 'huge list'");
   static char huge_value[HUGE_VALUE_LEN + 1];
   memset (huge_value, 'h', HUGE_VALUE_LEN);
-  Entry *ent_huge_hash = entry_new_hash (cache1, HUGE_HASH_KEY);
-  Entry *ent_huge_list = entry_new_list (cache1, HUGE_LIST_KEY);
+  Entry *ent_huge_hash = entry_new_hash (cache1, KEY (HUGE_HASH_KEY));
+  Entry *ent_huge_list = entry_new_list (cache1, KEY (HUGE_LIST_KEY));
   for (int i = 0; i < HUGE_COUNT; i++)
     {
       char field[32];
@@ -144,16 +154,16 @@ main (void)
 
   // F. Add Expiration
   msgf ("   -> Adding Expiring Key 'temp' (TTL 5000ms)");
-  Entry *ent3 = entry_new_str (cache1, TEMP_KEY, "I will survive", 14);
+  Entry *ent3 = entry_new_str (cache1, KEY (TEMP_KEY), "I will survive", 14);
   ent3->expire_at_us = 123456789;	// Arbitrary future timestamp
 
   msg ("   -> Adding Long Expired Key 'long expired'");
   Entry *ent4 =
-    entry_new_str (cache1, LONG_EXPIRED_KEY, "I won't get resurected.", 23);
+    entry_new_str (cache1, KEY (LONG_EXPIRED_KEY), "I won't get resurected.", 23);
   ent4->expire_at_us = 1000;
 
   msg ("   -> Adding Recently Expired Key 'recently expired'");
-  Entry *ent5 = entry_new_str (cache1, RECENTLY_EXPIRED_KEY,
+  Entry *ent5 = entry_new_str (cache1, KEY (RECENTLY_EXPIRED_KEY),
 			       "I won't get resurected either.", 30);
   ent5->expire_at_us = in_between_us;
 
@@ -193,6 +203,12 @@ main (void)
   assert (res_bin->val_len == 4);
   assert (memcmp (res_bin->val, "a\0b\0", 4) == 0);
   msgf ("   [PASS] String with NUL bytes matches.");
+
+  Entry *res_bin_key = find_entry_n (cache2, "bin\0key", 7);
+  (void) res_bin_key;
+  assert (res_bin_key != NULL && res_bin_key->key_len == 7);
+  assert (find_entry_n (cache2, "bin", 3) == NULL);
+  msgf ("   [PASS] Key with a NUL byte matches.");
 
   // Verify ZSet
   Entry *res2 = find_entry (cache2, LEADERBOARD_KEY);

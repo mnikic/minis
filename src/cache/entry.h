@@ -38,18 +38,20 @@ typedef struct entry
     List *list;			// Used if type == T_LIST
   };
 
-  // Must be at the very end
+  // Must be at the very end. Any bytes, NUL included, and NUL terminated.
+  size_t key_len;
   char key[];
 } Entry;
 
 
-Entry *entry_new_zset (Minis * minis, const char *key);
-Entry *entry_new_str (Minis * minis, const char *key, const char *val,
-		      size_t val_len);
+// Keys may hold NUL bytes, hence their lengths
+Entry *entry_new_zset (Minis * minis, const char *key, size_t key_len);
+Entry *entry_new_str (Minis * minis, const char *key, size_t key_len,
+		      const char *val, size_t val_len);
 // Replaces a T_STR entry's value. False on OOM, leaving the old one.
 bool entry_set_str (Entry * ent, const char *val, size_t val_len);
-Entry *entry_new_hash (Minis * minis, const char *key);
-Entry *entry_new_list (Minis * minis, const char *key);
+Entry *entry_new_hash (Minis * minis, const char *key, size_t key_len);
+Entry *entry_new_list (Minis * minis, const char *key, size_t key_len);
 
 Entry *entry_fetch (HNode * node_to_fetch);
 Entry *fetch_entry_expiry_aware (Minis * minis, HNode * node,
@@ -57,6 +59,7 @@ Entry *fetch_entry_expiry_aware (Minis * minis, HNode * node,
 Entry *fetch_entry_from_heap_ref (size_t *ref);
 
 Entry *entry_lookup (Minis * minis, Shard * shard, const char *key,
+		     size_t key_len,
 		     uint64_t now_us);
 
 bool entry_set_ttl (Minis * minis, uint64_t now_us, Entry * ent,
@@ -66,6 +69,13 @@ bool entry_set_expiration (Minis * minis, Entry * ent, uint64_t expire_at_us);
 void cb_destroy_entry (HNode * node, void *arg);
 void entry_del (Minis * minis, Entry * ent, uint64_t now_us);
 void entry_dispose_atomic (Minis * minis, Entry * ent);
+// What the shard tables compare entries against
+typedef struct
+{
+  const char *key;
+  size_t len;
+} EntryKey;
+
 bool entry_eq_str (HNode * node, const void *key);
 
 #endif // ENTRY_H_

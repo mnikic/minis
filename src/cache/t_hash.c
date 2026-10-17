@@ -9,16 +9,16 @@
 #include "cache/hashtable.h"
 
 MinisError
-minis_hset (Minis *minis, const char *key, const char *field,
+minis_hset (Minis *minis, const char *key, size_t key_len, const char *field,
 	    size_t field_len, const char *value, size_t value_len,
 	    int *out_added, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
-    ent = entry_new_hash (minis, key);
+    ent = entry_new_hash (minis, key, key_len);
 
   if (!ent)
     {
@@ -43,12 +43,12 @@ minis_hset (Minis *minis, const char *key, const char *field,
 }
 
 MinisError
-minis_hget (Minis *minis, const char *key, const char *field,
+minis_hget (Minis *minis, const char *key, size_t key_len, const char *field,
 	    size_t field_len, MinisHashCb func, void *ctx, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {
@@ -75,12 +75,12 @@ minis_hget (Minis *minis, const char *key, const char *field,
 }
 
 MinisError
-minis_hdel (Minis *minis, const char *key, const char **fields,
+minis_hdel (Minis *minis, const char *key, size_t key_len, const char **fields,
 	    const size_t *field_lens, size_t field_count, int *out_deleted,
 	    uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {
@@ -124,12 +124,12 @@ minis_hdel (Minis *minis, const char *key, const char **fields,
 }
 
 MinisError
-minis_hexists (Minis *minis, const char *key, const char *field,
+minis_hexists (Minis *minis, const char *key, size_t key_len, const char *field,
 	       size_t field_len, int *out_exists, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {
@@ -151,11 +151,11 @@ minis_hexists (Minis *minis, const char *key, const char *field,
 }
 
 MinisError
-minis_hlen (Minis *minis, const char *key, size_t *out_count, uint64_t now_us)
+minis_hlen (Minis *minis, const char *key, size_t key_len, size_t *out_count, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {
@@ -175,12 +175,12 @@ minis_hlen (Minis *minis, const char *key, size_t *out_count, uint64_t now_us)
 }
 
 MinisError
-minis_hgetall (Minis *minis, const char *key, MinisHashCb func, void *ctx,
+minis_hgetall (Minis *minis, const char *key, size_t key_len, MinisHashCb func, void *ctx,
 	       uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {

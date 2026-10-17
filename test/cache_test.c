@@ -1409,10 +1409,13 @@ test_scan_command (void)
 #define BPOP(retry, ...)                                                        \
 	do {                                                                       \
 		const char *bpop_cmd_[] = { __VA_ARGS__ };                             \
+		size_t bpop_n_ = sizeof (bpop_cmd_) / sizeof (bpop_cmd_[0]);           \
+		size_t bpop_lens_[sizeof (bpop_cmd_) / sizeof (bpop_cmd_[0])];         \
+		for (size_t i_ = 0; i_ < bpop_n_; i_++)                                 \
+			bpop_lens_[i_] = strlen (bpop_cmd_[i_]);                           \
 		buf = init_test_buffer (PROTO_BIN);                                    \
-		res = cache_bpop (cache, bpop_cmd_,                                    \
-				  sizeof (bpop_cmd_) / sizeof (bpop_cmd_[0]),       \
-				  (retry), &buf, now, &timeout_us);                 \
+		res = cache_bpop (cache, bpop_cmd_, bpop_lens_, bpop_n_, (retry),      \
+				  &buf, now, &timeout_us);                          \
 	} while (0)
 
 static void
@@ -1711,7 +1714,7 @@ test_binary_strings (void)
   assert_str_bytes (&buf, "\0z", 2);
 
   // List elements: pushed, popped and removed byte for byte
-  const size_t push_lens[] = { 5, 3, 3, 3, 1 };
+  const size_t push_lens[] = { 5, 2, 3, 3, 1 };
   RUN_N (cache, now, push_lens, "rpush", "bl", "a\0b", "a\0c", "a");
   const size_t lrem_lens[] = { 4, 2, 1, 3 };
   RUN_N (cache, now, lrem_lens, "lrem", "bl", "0", "a\0b");
@@ -1745,6 +1748,30 @@ test_binary_strings (void)
   const size_t zscore_lens[] = { 6, 2, 3 };
   RUN_N (cache, now, zscore_lens, "zscore", "bz", "m\0a");
   ASSERT_TRUE (fabs (extract_dbl_response (&buf) - 1) < EPSILON);
+
+  // Keys: "key\0a", "key\0b" and "key" are three keys
+  const size_t key_lens[] = { 3, 5, 1 };
+  RUN_N (cache, now, key_lens, "set", "key\0a", "a");
+  RUN_N (cache, now, key_lens, "set", "key\0b", "b");
+  RUN (cache, now, "set", "key", "plain");
+  const size_t get_lens[] = { 3, 5 };
+  RUN_N (cache, now, get_lens, "get", "key\0a");
+  assert_str_bytes (&buf, "a", 1);
+  RUN_N (cache, now, get_lens, "get", "key\0b");
+  assert_str_bytes (&buf, "b", 1);
+  RUN (cache, now, "get", "key");
+  assert_str_bytes (&buf, "plain", 5);
+  // KEYS hands them back byte for byte
+  const size_t keys_lens[] = { 4, 5 };
+  RUN_N (cache, now, keys_lens, "keys", "key\0a");
+  ASSERT_EQ (buf_data (&buf)[0], SER_ARR);
+  uint32_t nkeys;
+  memcpy (&nkeys, &buf_data (&buf)[1], 4);
+  ASSERT_EQ (ntoh_u32 (nkeys), 1);
+  uint32_t klen;
+  memcpy (&klen, &buf_data (&buf)[6], 4);
+  ASSERT_EQ (ntoh_u32 (klen), 5);
+  ASSERT_TRUE (memcmp (&buf_data (&buf)[10], "key\0a", 5) == 0);
 
   // INCR needs every byte to be the number
   const size_t num_lens[] = { 3, 4, 3 };

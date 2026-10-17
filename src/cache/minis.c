@@ -74,6 +74,7 @@ minis_evict (Minis *minis, uint64_t now_us)
   while (nworks < k_max_works)
     {
       char *key_copy = NULL;
+      size_t key_len = 0;
 
       // Lock Heap to peek at the top
       lock_heap (minis);
@@ -99,7 +100,12 @@ minis_evict (Minis *minis, uint64_t now_us)
       // So 'ref' is valid to READ. We copy the key so we can find the shard later.
       Entry *ent = fetch_entry_from_heap_ref (top->ref);
       if (ent)
-	key_copy = strdup (ent->key);
+	{
+	  key_len = ent->key_len;
+	  key_copy = malloc (key_len + 1);
+	  if (key_copy)
+	    memcpy (key_copy, ent->key, key_len + 1);
+	}
 
       unlock_heap (minis);
 
@@ -107,10 +113,10 @@ minis_evict (Minis *minis, uint64_t now_us)
 	break;
 
       // Lock Shard (Outer Lock) and Verify
-      Shard *shard = lock_shard_for_key (minis, key_copy);
+      Shard *shard = lock_shard_for_key (minis, key_copy, key_len);
 
       // Re-lookup entry. It might have been deleted by user between steps 2 and 3.
-      Entry *victim = entry_lookup (minis, shard, key_copy, now_us);
+      Entry *victim = entry_lookup (minis, shard, key_copy, key_len, now_us);
 
       if (victim && victim->expire_at_us != 0
 	  && victim->expire_at_us <= now_us)
@@ -140,9 +146,13 @@ minis_next_expiry (Minis *minis)
 // Internal helper for DEL (Assumes Shard Lock is HELD)
 static int
 minis_del_internal_locked (Minis *minis, Shard *shard, const char *key,
+			   size_t key_len,
 			   uint64_t now_us)
 {
-  HNode *node = hm_pop (&shard->db, key, cstr_hash (key), &entry_eq_str);
+  EntryKey ekey = {.key = key,.len = key_len };
+  HNode *node = hm_pop (&shard->db, &ekey,
+			str_hash ((const uint8_t *) key, key_len),
+			&entry_eq_str);
   int ret_val = 0;
 
   if (node)
@@ -161,10 +171,12 @@ minis_del_internal_locked (Minis *minis, Shard *shard, const char *key,
 }
 
 MinisError
-minis_del (Minis *minis, const char *key, int *out_deleted, uint64_t now_us)
+minis_del (Minis *minis, const char *key, size_t key_len, int *out_deleted,
+	   uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
-  *out_deleted = minis_del_internal_locked (minis, shard, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
+  *out_deleted =
+    minis_del_internal_locked (minis, shard, key, key_len, now_us);
   unlock_shard (shard);
   return MINIS_OK;
 }
@@ -175,6 +187,7 @@ typedef struct
   MinisKeyCb cb;
   void *ctx;
   const char *pattern;
+  size_t pattern_len;
   uint64_t now_us;
 } KeyScanCtx;
 
@@ -185,25 +198,27 @@ cb_scan_keys (HNode *node, void *arg)
   Entry *ent = fetch_entry_expiry_aware (ctx->minis, node, ctx->now_us);
   if (!ent)
     return;
-  if (glob_match (ctx->pattern, ent->key))
+  if (glob_match_n (ctx->pattern, ctx->pattern_len, ent->key, ent->key_len))
     {
-      ctx->cb (ent->key, ctx->ctx);
+      ctx->cb (ent->key, ent->key_len, ctx->ctx);
     }
 }
 
 MinisError
-minis_mdel (Minis *minis, const char **keys, size_t count,
-	    uint64_t *out_deleted, uint64_t now_us)
+minis_mdel (Minis *minis, const char **keys, const size_t *key_lens,
+	    size_t count, uint64_t *out_deleted, uint64_t now_us)
 {
   int shards[NUM_SHARDS];
-  size_t n_locked = lock_shards_batch (minis, keys, count, 1, shards);
+  size_t n_locked =
+    lock_shards_batch (minis, keys, key_lens, count, 1, shards);
 
   uint64_t total = 0;
   for (size_t i = 0; i < count; ++i)
     {
-      int shard_id = get_shard_id (keys[i]);
+      int shard_id = get_shard_id (keys[i], key_lens[i]);
       int deleted =
 	minis_del_internal_locked (minis, &minis->shards[shard_id], keys[i],
+				   key_lens[i],
 				   now_us);
       total += (uint64_t) deleted;
     }
@@ -216,8 +231,8 @@ minis_mdel (Minis *minis, const char **keys, size_t count,
 }
 
 MinisError
-minis_exists (Minis *minis, const char **keys, size_t nkeys,
-	      int64_t *out_exists, uint64_t now_us)
+minis_exists (Minis *minis, const char **keys, const size_t *key_lens,
+	      size_t nkeys, int64_t *out_exists, uint64_t now_us)
 {
   // Note: For EXISTS with multiple keys, we have a choice:
   // 1. Lock all involved shards (Atomic snapshot)
@@ -229,8 +244,8 @@ minis_exists (Minis *minis, const char **keys, size_t nkeys,
   int64_t hits = 0;
   for (size_t i = 0; i < nkeys; ++i)
     {
-      Shard *shard = lock_shard_for_key (minis, keys[i]);
-      if (entry_lookup (minis, shard, keys[i], now_us))
+      Shard *shard = lock_shard_for_key (minis, keys[i], key_lens[i]);
+      if (entry_lookup (minis, shard, keys[i], key_lens[i], now_us))
 	hits++;
       unlock_shard (shard);
     }
@@ -242,16 +257,17 @@ minis_exists (Minis *minis, const char **keys, size_t nkeys,
 }
 
 MinisError
-minis_expire (Minis *minis, const char *key, int64_t ttl_ms, int *out_set,
-	      uint64_t now_us)
+minis_expire (Minis *minis, const char *key, size_t key_len, int64_t ttl_ms,
+	      int *out_set, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
   int success = 0;
   if (ent && ttl_ms <= 0)
     {
       // Like Redis: a TTL that is already up deletes the key
-      success = minis_del_internal_locked (minis, shard, key, now_us);
+      success = minis_del_internal_locked (minis, shard, key, key_len,
+					   now_us);
     }
   else if (ent)
     {
@@ -269,11 +285,11 @@ minis_expire (Minis *minis, const char *key, int64_t ttl_ms, int *out_set,
 }
 
 MinisError
-minis_ttl (Minis *minis, const char *key, int64_t *out_ttl_ms,
+minis_ttl (Minis *minis, const char *key, size_t key_len, int64_t *out_ttl_ms,
 	   uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
   if (!ent)
     {
       *out_ttl_ms = -2;
@@ -292,14 +308,15 @@ minis_ttl (Minis *minis, const char *key, int64_t *out_ttl_ms,
 }
 
 MinisError
-minis_keys (Minis *minis, const char *pattern, MinisKeyCb cb, void *ctx,
-	    uint64_t now_us)
+minis_keys (Minis *minis, const char *pattern, size_t pattern_len,
+	    MinisKeyCb cb, void *ctx, uint64_t now_us)
 {
   KeyScanCtx kctx = {
     .minis = minis,
     .cb = cb,
     .ctx = ctx,
     .pattern = pattern,
+    .pattern_len = pattern_len,
     .now_us = now_us
   };
 
@@ -319,6 +336,7 @@ minis_keys (Minis *minis, const char *pattern, MinisKeyCb cb, void *ctx,
 typedef struct
 {
   const char *pattern;
+  size_t pattern_len;
   int type;
   MinisKeyCb cb;
   void *ctx;
@@ -339,9 +357,10 @@ cb_scan_step (HNode *node, void *arg)
 
   if (ctx->type >= 0 && (int) ent->type != ctx->type)
     return;
-  if (ctx->pattern && !glob_match (ctx->pattern, ent->key))
+  if (ctx->pattern && !glob_match_n (ctx->pattern, ctx->pattern_len, ent->key,
+				     ent->key_len))
     return;
-  ctx->cb (ent->key, ctx->ctx);
+  ctx->cb (ent->key, ent->key_len, ctx->ctx);
 }
 
 // The cursor is the shard in its low bits and the shard's hm_scan_step
@@ -352,11 +371,12 @@ _Static_assert ((1 << SCAN_SHARD_BITS) == NUM_SHARDS,
 
 MinisError
 minis_scan (Minis *minis, uint64_t cursor, size_t count, const char *pattern,
-	    int type, MinisKeyCb cb, void *ctx, uint64_t now_us,
-	    uint64_t *out_cursor)
+	    size_t pattern_len, int type, MinisKeyCb cb, void *ctx,
+	    uint64_t now_us, uint64_t *out_cursor)
 {
   ScanCtx sctx = {
     .pattern = pattern,
+    .pattern_len = pattern_len,
     .type = type,
     .cb = cb,
     .ctx = ctx,

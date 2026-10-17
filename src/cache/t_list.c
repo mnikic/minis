@@ -10,10 +10,10 @@
 
 // Looks up a list. NULL with *out_err set if missing or another type.
 static Entry *
-list_lookup (Minis *minis, Shard *shard, const char *key, uint64_t now_us,
+list_lookup (Minis *minis, Shard *shard, const char *key, size_t key_len, uint64_t now_us,
 	     MinisError *out_err)
 {
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
   if (!ent)
     {
       *out_err = MINIS_ERR_NIL;
@@ -29,21 +29,21 @@ list_lookup (Minis *minis, Shard *shard, const char *key, uint64_t now_us,
 }
 
 MinisError
-minis_push (Minis *minis, const char *key, const char **vals,
+minis_push (Minis *minis, const char *key, size_t key_len, const char **vals,
 	    const size_t *lens, size_t count, bool front, size_t *out_len,
 	    uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
   MinisError err;
-  Entry *ent = list_lookup (minis, shard, key, now_us, &err);
+  Entry *ent = list_lookup (minis, shard, key, key_len, now_us, &err);
   if (err == MINIS_ERR_TYPE)
     {
       unlock_shard (shard);
       return err;
     }
   if (!ent)
-    ent = entry_new_list (minis, key);
+    ent = entry_new_list (minis, key, key_len);
   if (!ent)
     {
       unlock_shard (shard);
@@ -73,13 +73,13 @@ minis_push (Minis *minis, const char *key, const char **vals,
 }
 
 MinisError
-minis_pop (Minis *minis, const char *key, size_t count, bool front,
+minis_pop (Minis *minis, const char *key, size_t key_len, size_t count, bool front,
 	   MinisListCb cb, void *ctx, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
   MinisError err;
-  Entry *ent = list_lookup (minis, shard, key, now_us, &err);
+  Entry *ent = list_lookup (minis, shard, key, key_len, now_us, &err);
   if (!ent)
     {
       unlock_shard (shard);
@@ -114,13 +114,13 @@ minis_pop (Minis *minis, const char *key, size_t count, bool front,
 }
 
 MinisError
-minis_lrange (Minis *minis, const char *key, int64_t start, int64_t stop,
+minis_lrange (Minis *minis, const char *key, size_t key_len, int64_t start, int64_t stop,
 	      MinisListCb cb, void *ctx, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
   MinisError err;
-  Entry *ent = list_lookup (minis, shard, key, now_us, &err);
+  Entry *ent = list_lookup (minis, shard, key, key_len, now_us, &err);
   if (!ent)
     {
       unlock_shard (shard);
@@ -155,13 +155,13 @@ minis_lrange (Minis *minis, const char *key, int64_t start, int64_t stop,
 }
 
 MinisError
-minis_lrem (Minis *minis, const char *key, int64_t count, const char *val,
+minis_lrem (Minis *minis, const char *key, size_t key_len, int64_t count, const char *val,
 	    size_t val_len, size_t *out_removed, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
   MinisError err;
-  Entry *ent = list_lookup (minis, shard, key, now_us, &err);
+  Entry *ent = list_lookup (minis, shard, key, key_len, now_us, &err);
   size_t removed = 0;
   if (ent)
     {
@@ -178,12 +178,12 @@ minis_lrem (Minis *minis, const char *key, int64_t count, const char *val,
 }
 
 MinisError
-minis_llen (Minis *minis, const char *key, size_t *out_len, uint64_t now_us)
+minis_llen (Minis *minis, const char *key, size_t key_len, size_t *out_len, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
   MinisError err;
-  Entry *ent = list_lookup (minis, shard, key, now_us, &err);
+  Entry *ent = list_lookup (minis, shard, key, key_len, now_us, &err);
   *out_len = ent ? list_len (ent->list) : 0;
 
   unlock_shard (shard);

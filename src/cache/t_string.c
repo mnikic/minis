@@ -10,11 +10,11 @@
 #include "cache/minis_private.h"
 
 MinisError
-minis_get (Minis *minis, const char *key, MinisOneEntryVisitor visitor,
+minis_get (Minis *minis, const char *key, size_t key_len, MinisOneEntryVisitor visitor,
 	   void *ctx, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
-  const Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
+  const Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {
@@ -34,11 +34,11 @@ minis_get (Minis *minis, const char *key, MinisOneEntryVisitor visitor,
 }
 
 static bool
-minis_set_internal (Minis *minis, Shard *shard, const char *key,
+minis_set_internal (Minis *minis, Shard *shard, const char *key, size_t key_len,
 		    const char *val, size_t val_len, uint64_t now_us)
 {
   // Note: Caller must hold the lock for 'shard_id'
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (ent)
     {
@@ -48,7 +48,7 @@ minis_set_internal (Minis *minis, Shard *shard, const char *key,
 	  entry_dispose_atomic (minis, ent);
 
 	  // entry_new_str MUST use shard_id to insert into the correct DB
-	  if (!entry_new_str (minis, key, val, val_len))
+	  if (!entry_new_str (minis, key, key_len, val, val_len))
 	    return false;
 	}
       else
@@ -71,7 +71,7 @@ minis_set_internal (Minis *minis, Shard *shard, const char *key,
     }
   else
     {
-      if (!entry_new_str (minis, key, val, val_len))
+      if (!entry_new_str (minis, key, key_len, val, val_len))
 	return false;
     }
   __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
@@ -79,12 +79,12 @@ minis_set_internal (Minis *minis, Shard *shard, const char *key,
 }
 
 MinisError
-minis_set (Minis *minis, const char *key, const char *val, size_t val_len,
+minis_set (Minis *minis, const char *key, size_t key_len, const char *val, size_t val_len,
 	   uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  if (!minis_set_internal (minis, shard, key, val, val_len, now_us))
+  if (!minis_set_internal (minis, shard, key, key_len, val, val_len, now_us))
     {
       unlock_shard (shard);
       return MINIS_ERR_OOM;
@@ -96,18 +96,18 @@ minis_set (Minis *minis, const char *key, const char *val, size_t val_len,
 
 // SET with a TTL, both under one shard lock. ttl_ms must be > 0.
 MinisError
-minis_set_ex (Minis *minis, const char *key, const char *val, size_t val_len,
+minis_set_ex (Minis *minis, const char *key, size_t key_len, const char *val, size_t val_len,
 	      int64_t ttl_ms, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  if (!minis_set_internal (minis, shard, key, val, val_len, now_us))
+  if (!minis_set_internal (minis, shard, key, key_len, val, val_len, now_us))
     {
       unlock_shard (shard);
       return MINIS_ERR_OOM;
     }
 
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
   entry_set_ttl (minis, now_us, ent, ttl_ms);
   // An unchanged value is not counted by minis_set_internal, the TTL is new
   __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
@@ -122,17 +122,17 @@ minis_mset (Minis *minis, const char **key_vals, const size_t *lens,
 {
   int shards[NUM_SHARDS];
   // Stride 2 for key-value pairs
-  size_t n_locked = lock_shards_batch (minis, key_vals, total_num, 2, shards);
+  size_t n_locked =
+    lock_shards_batch (minis, key_vals, lens, total_num, 2, shards);
 
   MinisError err = MINIS_OK;
   for (size_t i = 0; i < total_num; i += 2)
     {
-      int shard_id = get_shard_id (key_vals[i]);
+      int shard_id = get_shard_id (key_vals[i], lens[i]);
       // We already hold the lock, so call internal
-      size_t val_len = lens ? lens[i + 1] : strlen (key_vals[i + 1]);
       if (!minis_set_internal
-	  (minis, &minis->shards[shard_id], key_vals[i], key_vals[i + 1],
-	   val_len, now_us))
+	  (minis, &minis->shards[shard_id], key_vals[i], lens[i],
+	   key_vals[i + 1], lens[i + 1], now_us))
 	{
 	  err = MINIS_ERR_OOM;
 	  break;
@@ -144,17 +144,19 @@ minis_mset (Minis *minis, const char **key_vals, const size_t *lens,
 }
 
 MinisError
-minis_mget (Minis *minis, const char **keys, size_t count,
-	    MinisOneEntryVisitor visitor, void *ctx, uint64_t now_us)
+minis_mget (Minis *minis, const char **keys, const size_t *key_lens,
+	    size_t count, MinisOneEntryVisitor visitor, void *ctx,
+	    uint64_t now_us)
 {
   int shards[NUM_SHARDS];
-  size_t n_locked = lock_shards_batch (minis, keys, count, 1, shards);
+  size_t n_locked =
+    lock_shards_batch (minis, keys, key_lens, count, 1, shards);
 
   for (size_t i = 0; i < count; ++i)
     {
-      int shard_id = get_shard_id (keys[i]);
-      Entry *val =
-	entry_lookup (minis, &minis->shards[shard_id], keys[i], now_us);
+      int shard_id = get_shard_id (keys[i], key_lens[i]);
+      Entry *val = entry_lookup (minis, &minis->shards[shard_id], keys[i],
+				 key_lens[i], now_us);
       // Like Redis, other types read as missing. Visitors use ent->val,
       // which for them is a pointer to the container.
       if (val && val->type != T_STR)
@@ -168,12 +170,12 @@ minis_mget (Minis *minis, const char **keys, size_t count,
 }
 
 MinisError
-minis_incr (Minis *minis, const char *key, int64_t delta, int64_t *out_val,
+minis_incr (Minis *minis, const char *key, size_t key_len, int64_t delta, int64_t *out_val,
 	    uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
   int64_t val = 0;
 
   if (ent)
@@ -207,7 +209,7 @@ minis_incr (Minis *minis, const char *key, int64_t delta, int64_t *out_val,
   // Simplified inline set logic
   bool stored;
   if (!ent)
-    stored = entry_new_str (minis, key, val_str, strlen (val_str)) != NULL;
+    stored = entry_new_str (minis, key, key_len, val_str, strlen (val_str)) != NULL;
   else
     stored = entry_set_str (ent, val_str, strlen (val_str));
 

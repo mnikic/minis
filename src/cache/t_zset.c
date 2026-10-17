@@ -9,16 +9,16 @@
 #include "cache/entry.h"
 
 MinisError
-minis_zadd (Minis *minis, const char *key, double score, const char *name,
+minis_zadd (Minis *minis, const char *key, size_t key_len, double score, const char *name,
 	    size_t name_len, int *out_added, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
 
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {
-      ent = entry_new_zset (minis, key);
+      ent = entry_new_zset (minis, key, key_len);
     }
 
   if (!ent)
@@ -49,11 +49,11 @@ minis_zadd (Minis *minis, const char *key, double score, const char *name,
 }
 
 MinisError
-minis_zrem (Minis *minis, const char *key, const char *name,
+minis_zrem (Minis *minis, const char *key, size_t key_len, const char *name,
 	    size_t name_len, int *out_removed, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {
@@ -90,11 +90,11 @@ minis_zrem (Minis *minis, const char *key, const char *name,
 }
 
 MinisError
-minis_zscore (Minis *minis, const char *key, const char *name,
+minis_zscore (Minis *minis, const char *key, size_t key_len, const char *name,
 	      size_t name_len, double *out_score, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {
@@ -120,12 +120,12 @@ minis_zscore (Minis *minis, const char *key, const char *name,
 }
 
 MinisError
-minis_zquery (Minis *minis, const char *key, double score, const char *name,
+minis_zquery (Minis *minis, const char *key, size_t key_len, double score, const char *name,
 	      size_t name_len, int64_t offset, int64_t limit, MinisZSetCb cb,
 	      void *ctx, uint64_t now_us)
 {
-  Shard *shard = lock_shard_for_key (minis, key);
-  Entry *ent = entry_lookup (minis, shard, key, now_us);
+  Shard *shard = lock_shard_for_key (minis, key, key_len);
+  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
 
   if (!ent)
     {

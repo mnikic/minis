@@ -44,8 +44,8 @@ typedef enum
 // other types instead of failing with WRONGTYPE, so that a client whose
 // key was overwritten keeps waiting, like in Redis. cache_execute runs
 // these with a timeout that is already over.
-BPopResult cache_bpop (Cache * cache, const char **cmd, size_t size,
-		       bool retry, Buffer * out, uint64_t now_us,
+BPopResult cache_bpop (Cache * cache, const char **cmd, const size_t *lens,
+		       size_t size, bool retry, Buffer * out, uint64_t now_us,
 		       uint64_t * out_timeout_us);
 
 // Changes whenever a list push happens

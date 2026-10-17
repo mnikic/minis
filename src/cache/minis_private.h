@@ -33,10 +33,11 @@ struct Minis
   uint64_t list_pushes;		// Pushes so far, for waking BLPOP clients
 };
 
+// Keys may hold NUL bytes, hence their lengths
 static ALWAYS_INLINE int
-get_shard_id (const char *key)
+get_shard_id (const char *key, size_t key_len)
 {
-  uint64_t hash = cstr_hash (key);
+  uint64_t hash = str_hash ((const uint8_t *) key, key_len);
   return hash & SHARD_MASK;
 }
 
@@ -48,9 +49,9 @@ lock_shard (Shard *shard)
 }
 
 static ALWAYS_INLINE Shard *
-lock_shard_for_key (struct Minis *minis, const char *key)
+lock_shard_for_key (struct Minis *minis, const char *key, size_t key_len)
 {
-  Shard *shard = &minis->shards[get_shard_id (key)];
+  Shard *shard = &minis->shards[get_shard_id (key, key_len)];
   ENGINE_LOCK (&shard->lock);
   return shard;
 }
@@ -77,12 +78,14 @@ unlock_heap (struct Minis *minis)
 }
 
 static ALWAYS_INLINE size_t
-lock_shards_batch (struct Minis *minis, const char **keys, size_t count,
+lock_shards_batch (struct Minis *minis, const char **keys,
+		   const size_t *key_lens, size_t count,
 		   size_t stride, int *out_shards_buf)
 {
   (void) minis;
   (void) count;
   (void) keys;
+  (void) key_lens;
   (void) stride;
   (void) out_shards_buf;
 #ifdef MINIS_EMBEDDED
@@ -92,7 +95,7 @@ lock_shards_batch (struct Minis *minis, const char **keys, size_t count,
   // Generic loop handling both MSET (stride 2) and MGET/MDEL (stride 1)
   for (size_t i = 0; i < count; i += stride)
     {
-      int shard_id = get_shard_id (keys[i]);
+      int shard_id = get_shard_id (keys[i], key_lens[i]);
       if (!(shard_map & (1 << shard_id)))
 	{
 	  shard_map |= (1 << shard_id);

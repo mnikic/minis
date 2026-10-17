@@ -9,30 +9,30 @@
 
 // LPUSH/RPUSH: pushes vals in order, creating the list if needed
 // lens[i] is vals[i]'s length, which may hold NUL bytes; NULL: C strings
-MinisError minis_push (Minis * minis, const char *key, const char **vals,
+MinisError minis_push (Minis * minis, const char *key, size_t key_len, const char **vals,
 		       const size_t *lens, size_t count, bool front,
 		       size_t *out_len, uint64_t now_us);
 
 // LPOP/RPOP: visits up to count elements from one end, then removes
 // them. If the visitor fails nothing is removed. MINIS_ERR_NIL if the
 // key is missing.
-MinisError minis_pop (Minis * minis, const char *key, size_t count,
+MinisError minis_pop (Minis * minis, const char *key, size_t key_len, size_t count,
 		      bool front, MinisListCb cb, void *ctx,
 		      uint64_t now_us);
 
 // LRANGE: visits elements start..stop inclusive. Negative indexes count
 // from the end, out of range ones are clamped like in Redis.
-MinisError minis_lrange (Minis * minis, const char *key, int64_t start,
+MinisError minis_lrange (Minis * minis, const char *key, size_t key_len, int64_t start,
 			 int64_t stop, MinisListCb cb, void *ctx,
 			 uint64_t now_us);
 
 // LREM: removes elements equal to val, see list_remove for count.
 // Deletes the key if the list empties.
-MinisError minis_lrem (Minis * minis, const char *key, int64_t count,
+MinisError minis_lrem (Minis * minis, const char *key, size_t key_len, int64_t count,
 		       const char *val, size_t val_len, size_t *out_removed,
 		       uint64_t now_us);
 
-MinisError minis_llen (Minis * minis, const char *key, size_t *out_len,
+MinisError minis_llen (Minis * minis, const char *key, size_t key_len, size_t *out_len,
 		       uint64_t now_us);
 
 #endif // _T_LIST_H_

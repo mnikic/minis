@@ -34,6 +34,17 @@ throw_exception(JNIEnv *env, const char *className, const char *msg) {
     if (exClass) (*env)->ThrowNew(env, exClass, msg);
 }
 
+// Lengths of C strings, for the minis calls that take key arrays. Java
+// strings reach us as modified UTF-8, which has no NUL bytes. Free it.
+static size_t *
+string_lens(const char **strs, jsize count) {
+    size_t *lens = malloc(sizeof(size_t) * (count > 0 ? (size_t) count : 1));
+    if (lens)
+        for (jsize i = 0; i < count; i++)
+            lens[i] = strs[i] ? strlen(strs[i]) : 0;
+    return lens;
+}
+
 static ALWAYS_INLINE uint64_t
 get_us (void) {
     struct timespec tvs = { 0, 0 };
@@ -141,7 +152,7 @@ Java_com_minis_Minis_nativeSet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKe
     const char *val = (*env)->GetStringUTFChars(env, jVal, 0);
 
     // Java strings reach us as modified UTF-8, which has no NUL bytes
-    minis_set(minis, key, val, strlen(val), get_us());
+    minis_set(minis, key, strlen(key), val, strlen(val), get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     (*env)->ReleaseStringUTFChars(env, jVal, val);
@@ -172,7 +183,8 @@ Java_com_minis_Minis_nativeGet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKe
     
     // 1. LOCK -> COPY -> UNLOCK
     // This critical section is now extremely short (just a malloc/memcpy)
-    MinisError err = minis_get(minis, key, jni_get_visitor_fast, &ctx, get_us());
+    MinisError err = minis_get(minis, key, strlen(key), jni_get_visitor_fast,
+                               &ctx, get_us());
     
     (*env)->ReleaseStringUTFChars(env, jKey, key);
 
@@ -197,7 +209,7 @@ Java_com_minis_Minis_nativeDel(JNIEnv *env, jobject thiz, jlong ptr, jstring jKe
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
 
     int deleted = 0;
-    minis_del(minis, key, &deleted, get_us());
+    minis_del(minis, key, strlen(key), &deleted, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     return (jint) deleted;
@@ -210,7 +222,7 @@ Java_com_minis_Minis_nativePexpire(JNIEnv *env, jobject thiz, jlong ptr, jstring
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
 
     int set = 0;
-    minis_expire(minis, key, (int64_t)ttlMs, &set, get_us());
+    minis_expire(minis, key, strlen(key), (int64_t)ttlMs, &set, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     return (jint) set;
@@ -223,7 +235,7 @@ Java_com_minis_Minis_nativePttl(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
 
     int64_t ttl = 0;
-    minis_ttl(minis, key, &ttl, get_us());
+    minis_ttl(minis, key, strlen(key), &ttl, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     return (jlong) ttl;
@@ -302,7 +314,11 @@ Java_com_minis_Minis_nativeMGet(JNIEnv *env, jobject thiz, jlong ptr, jobjectArr
             .index = 0
     };
 
-    minis_mget(minis, cKeys, count, jni_mget_visitor, &visitorCtx, get_us());
+    size_t *keyLens = string_lens(cKeys, count);
+    if (keyLens)
+        minis_mget(minis, cKeys, keyLens, count, jni_mget_visitor, &visitorCtx,
+                   get_us());
+    free(keyLens);
 
     for (int i = 0; i < count; i++) {
         jstring js = (jstring) (*env)->GetObjectArrayElement(env, jKeys, i);
@@ -347,7 +363,10 @@ Java_com_minis_Minis_nativeMDel(JNIEnv *env, jobject thiz, jlong ptr, jobjectArr
 
     uint64_t deleted = 0;
     if (!failed) {
-        minis_mdel(minis, cKeys, count, &deleted, get_us());
+        size_t *keyLens = string_lens(cKeys, count);
+        if (keyLens)
+            minis_mdel(minis, cKeys, keyLens, count, &deleted, get_us());
+        free(keyLens);
     }
 
     for (int i = 0; i < successCount; i++) {
@@ -399,7 +418,10 @@ Java_com_minis_Minis_nativeMSet(JNIEnv *env, jobject thiz, jlong ptr, jobjectArr
     }
 
     if (!failed) {
-        minis_mset(minis, cKeyVals, NULL, (size_t)count, get_us());
+        size_t *lens = string_lens(cKeyVals, count);
+        if (lens)
+            minis_mset(minis, cKeyVals, lens, (size_t)count, get_us());
+        free(lens);
     }
 
     for (int i = 0; i < successCount; i++) {
@@ -425,7 +447,7 @@ Java_com_minis_Minis_nativeHSet(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     const char *value = (*env)->GetStringUTFChars(env, jValue, 0);
 
     int added = 0;
-    MinisError err = minis_hset(minis, key, field, strlen(field), value,
+    MinisError err = minis_hset(minis, key, strlen(key), field, strlen(field), value,
                                 strlen(value), &added, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
@@ -467,7 +489,7 @@ Java_com_minis_Minis_nativeHGet(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     JniHGetCtx ctx = { .env = env, .result = NULL };
     
     // Using the Visitor version of hget you implemented earlier
-    MinisError err = minis_hget(minis, key, field, strlen(field),
+    MinisError err = minis_hget(minis, key, strlen(key), field, strlen(field),
                                 jni_hget_visitor, &ctx, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
@@ -507,7 +529,7 @@ Java_com_minis_Minis_nativeHDel(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     }
 
     int deleted = 0;
-    MinisError err = minis_hdel(minis, key, cFields, NULL, count, &deleted,
+    MinisError err = minis_hdel(minis, key, strlen(key), cFields, NULL, count, &deleted,
                                 get_us());
 
     // Cleanup
@@ -534,7 +556,7 @@ Java_com_minis_Minis_nativeHExists(JNIEnv *env, jobject thiz, jlong ptr, jstring
     const char *field = (*env)->GetStringUTFChars(env, jField, 0);
 
     int exists = 0;
-    MinisError err = minis_hexists(minis, key, field, strlen(field), &exists,
+    MinisError err = minis_hexists(minis, key, strlen(key), field, strlen(field), &exists,
                                    get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
@@ -553,7 +575,7 @@ Java_com_minis_Minis_nativeHLen(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
 
     size_t len = 0;
-    MinisError err = minis_hlen(minis, key, &len, get_us());
+    MinisError err = minis_hlen(minis, key, strlen(key), &len, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
 
@@ -605,7 +627,8 @@ Java_com_minis_Minis_nativeHGetall(JNIEnv *env, jobject thiz, jlong ptr, jstring
         .putMethod = putMethod
     };
 
-    MinisError err = minis_hgetall(minis, key, jni_hgetall_visitor, &ctx, get_us());
+    MinisError err = minis_hgetall(minis, key, strlen(key), jni_hgetall_visitor,
+                                   &ctx, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
 

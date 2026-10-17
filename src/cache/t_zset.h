@@ -7,14 +7,14 @@
 
 
 // Members may hold NUL bytes, hence their lengths
-MinisError minis_zadd (Minis * minis, const char *key, double score,
+MinisError minis_zadd (Minis * minis, const char *key, size_t key_len, double score,
 		       const char *name, size_t name_len, int *out_added,
 		       uint64_t now_us);
-MinisError minis_zrem (Minis * minis, const char *key, const char *name,
+MinisError minis_zrem (Minis * minis, const char *key, size_t key_len, const char *name,
 		       size_t name_len, int *out_removed, uint64_t now_us);
-MinisError minis_zscore (Minis * minis, const char *key, const char *name,
+MinisError minis_zscore (Minis * minis, const char *key, size_t key_len, const char *name,
 			 size_t name_len, double *out_score, uint64_t now_us);
-MinisError minis_zquery (Minis * minis, const char *key, double score,
+MinisError minis_zquery (Minis * minis, const char *key, size_t key_len, double score,
 			 const char *name, size_t name_len, int64_t offset,
 			 int64_t limit, MinisZSetCb cb, void *ctx,
 			 uint64_t now_us);

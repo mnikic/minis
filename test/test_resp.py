@@ -1822,7 +1822,67 @@ class TestBinarySafe(MinisTestCase):
         self.assertIsNone(self.b.zscore("bin_zset", b"m\x00a"))
         self.assertEqual(self.b.zscore("bin_zset", b"m"), 3)
 
+    def test_keys_differing_after_nul_are_different_keys(self):
+        keys = [b"k\x00a", b"k\x00b", b"k", b"\x00", b"\x00\x00"]
+        for i, key in enumerate(keys):
+            self.b.set(key, str(i))
+        for i, key in enumerate(keys):
+            self.assertEqual(self.b.get(key), str(i).encode())
+        self.assertEqual(self.b.mget(keys), [str(i).encode() for i in range(5)])
+        self.assertEqual(self.b.exists(*keys), 5)
+        self.assertTrue(self.b.expire(b"k\x00a", 100))
+        self.assertEqual(self.b.ttl(b"k\x00a"), 100)
+        self.assertEqual(self.b.ttl(b"k\x00b"), -1)
+        self.assertEqual(self.b.delete(b"k\x00a", b"k\x00zz"), 1)
+        self.assertIsNone(self.b.get(b"k\x00a"))
+        self.assertEqual(self.b.get(b"k"), b"2")
+        self.b.mset({b"m\x00a": b"1", b"m\x00b": b"2"})
+        self.assertEqual(self.b.mget([b"m\x00a", b"m\x00b", b"m"]), [b"1", b"2", None])
+        self.assertEqual(self.b.incr(b"n\x00"), 1)
+        self.assertIsNone(self.b.get(b"n"))
+
+    def test_every_type_takes_binary_keys(self):
+        self.b.hset(b"h\x00", b"f", b"v")
+        self.assertEqual(self.b.hgetall(b"h\x00"), {b"f": b"v"})
+        self.assertEqual(self.b.hgetall(b"h"), {})
+        self.b.rpush(b"l\x00", b"x")
+        self.assertEqual(self.b.lrange(b"l\x00", 0, -1), [b"x"])
+        self.assertEqual(self.b.llen(b"l"), 0)
+        self.b.zadd(b"z\x00", {b"m": 1})
+        self.assertEqual(self.b.zscore(b"z\x00", b"m"), 1)
+        self.assertIsNone(self.b.zscore(b"z", b"m"))
+
+    def test_keys_and_scan_return_binary_keys(self):
+        self.b.set(b"bk\x00one", b"1")
+        self.b.set(b"bk\x00two", b"2")
+        self.b.set(b"bkthree", b"3")
+        self.assertEqual(sorted(self.b.keys(b"bk*")),
+                         [b"bk\x00one", b"bk\x00two", b"bkthree"])
+        # A pattern holding a NUL byte
+        self.assertEqual(sorted(self.b.keys(b"bk\x00*")), [b"bk\x00one", b"bk\x00two"])
+        self.assertEqual(sorted(self.b.scan_iter(match=b"bk\x00t*")), [b"bk\x00two"])
+
+    def test_blpop_on_a_binary_key(self):
+        result = {}
+
+        def wait():
+            c = redis.Redis(port=self.server.port, socket_timeout=10)
+            result["got"] = c.blpop(b"q\x00", timeout=5)
+            c.close()
+
+        t = threading.Thread(target=wait)
+        t.start()
+        time.sleep(0.2)
+        self.b.rpush(b"q", b"wrong queue")
+        time.sleep(0.2)
+        self.assertTrue(t.is_alive())
+        self.b.rpush(b"q\x00", b"\x00right")
+        t.join(5)
+        self.assertEqual(result["got"], (b"q\x00", b"\x00right"))
+
     def test_survives_restart(self):
+        self.b.set(b"rk\x00", b"bin key", ex=100)
+        self.b.set(b"rk", b"plain key")
         self.b.zadd("bin_keep_zset", {b"\x00z": 5})
         self.b.hset("bin_keep_hash", b"k\x00", b"\x00v")
         self.b.rpush("bin_keep_list", b"\x00", b"x\x00y")
@@ -1836,6 +1896,9 @@ class TestBinarySafe(MinisTestCase):
                          [b"\x00", b"x\x00y"])
         self.assertEqual(self.b.hgetall("bin_keep_hash"), {b"k\x00": b"\x00v"})
         self.assertEqual(self.b.zscore("bin_keep_zset", b"\x00z"), 5)
+        self.assertEqual(self.b.get(b"rk\x00"), b"bin key")
+        self.assertIn(self.b.ttl(b"rk\x00"), (99, 100))
+        self.assertEqual(self.b.get(b"rk"), b"plain key")
 
 
 class TestDel(MinisTestCase):

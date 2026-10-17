@@ -24,7 +24,8 @@ typedef enum
 // Callback Types (Visitor Pattern)
 
 // For KEYS/SCAN
-typedef void (*MinisKeyCb) (const char *key, void *ctx);
+// Keys may hold NUL bytes, hence key_len
+typedef void (*MinisKeyCb) (const char *key, size_t key_len, void *ctx);
 
 // For HGETALL
 typedef bool (*MinisHashCb) (const HashEntry * entry, void *ctx);
@@ -53,22 +54,23 @@ uint64_t minis_next_expiry (Minis * minis);
 
 // Basic Key Operations
 
-MinisError minis_del (Minis * minis, const char *key, int *out_deleted,
-		      uint64_t now_us);
+// Keys may hold NUL bytes, hence their lengths
+MinisError minis_del (Minis * minis, const char *key, size_t key_len,
+		      int *out_deleted, uint64_t now_us);
 MinisError
-minis_mdel (Minis * minis, const char **keys, size_t count,
-	    uint64_t * out_deleted, uint64_t now_us);
+minis_mdel (Minis * minis, const char **keys, const size_t *key_lens,
+	    size_t count, uint64_t * out_deleted, uint64_t now_us);
 
 
 MinisError
-minis_exists (Minis * minis, const char **keys, size_t nkeys,
-	      int64_t * out_exists, uint64_t now_us);
-MinisError minis_expire (Minis * minis, const char *key, int64_t ttl_ms,
-			 int *out_set, uint64_t now_us);
-MinisError minis_ttl (Minis * minis, const char *key, int64_t * out_ttl_ms,
-		      uint64_t now_us);
-MinisError minis_keys (Minis * minis, const char *pattern, MinisKeyCb cb,
-		       void *ctx, uint64_t now_us);
+minis_exists (Minis * minis, const char **keys, const size_t *key_lens,
+	      size_t nkeys, int64_t * out_exists, uint64_t now_us);
+MinisError minis_expire (Minis * minis, const char *key, size_t key_len,
+			 int64_t ttl_ms, int *out_set, uint64_t now_us);
+MinisError minis_ttl (Minis * minis, const char *key, size_t key_len,
+		      int64_t * out_ttl_ms, uint64_t now_us);
+MinisError minis_keys (Minis * minis, const char *pattern, size_t pattern_len,
+		       MinisKeyCb cb, void *ctx, uint64_t now_us);
 
 // SCAN: visits about count keys from cursor (0 starts a new scan) and
 // sets *out_cursor to where to go on, 0 when done. pattern (or NULL)
@@ -76,8 +78,9 @@ MinisError minis_keys (Minis * minis, const char *pattern, MinisKeyCb cb,
 // keys looked at, like Redis. Read only, so two calls with the same
 // arguments see the same keys if nothing changed in between.
 MinisError minis_scan (Minis * minis, uint64_t cursor, size_t count,
-		       const char *pattern, int type, MinisKeyCb cb,
-		       void *ctx, uint64_t now_us, uint64_t * out_cursor);
+		       const char *pattern, size_t pattern_len, int type,
+		       MinisKeyCb cb, void *ctx, uint64_t now_us,
+		       uint64_t * out_cursor);
 
 // Persistence
 MinisError minis_save (Minis * minis, const char *base_dir, uint64_t now_us);
