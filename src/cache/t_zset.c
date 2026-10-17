@@ -37,6 +37,9 @@ minis_zadd (Minis *minis, const char *key, double score, const char *name,
 
   if (res >= 0)
     __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
+  // A failed add must not leave a new key behind empty
+  else if (hm_size (&ent->zset->hmap) == 0)
+    entry_dispose_atomic (minis, ent);
 
   if (out_added)
     *out_added = res;

@@ -154,7 +154,8 @@ zset_update (ZSet *zset, ZNode *node, double score)
 int
 zset_add (ZSet *zset, const char *name, size_t len, double score)
 {
-  if (!zset || !name || len == 0)
+  // An empty member is a member, like in Redis
+  if (!zset || !name)
     {
       return -1;
     }

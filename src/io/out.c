@@ -134,7 +134,8 @@ out_str (Buffer *out, const char *val)
 HOT bool
 out_str_size (Buffer *out, const char *string, size_t size)
 {
-  if (unlikely (!string || size == 0))
+  // An empty string is a string, only NULL is nil
+  if (unlikely (!string))
     {
       return out_nil (out);
     }

@@ -1715,6 +1715,15 @@ class TestDaemon(unittest.TestCase):
             daemon.stop()
 
 
+class TestEmptyStrings(MinisTestCase):
+    def test_empty_values_are_not_nil(self):
+        self.r.set("es_str", "")
+        self.assertEqual(self.r.get("es_str"), "")
+        self.r.zadd("es_zset", {"": 1})
+        self.assertEqual(self.r.execute_command("ZQUERY", "es_zset", 0, "", 0, 10),
+                         ["", "1"])
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

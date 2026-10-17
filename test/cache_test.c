@@ -1621,6 +1621,39 @@ test_resp_framing (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6q: Empty strings are values, not nil
+// ============================================================================
+
+static void
+test_empty_strings (void)
+{
+  printf ("TEST: Empty strings... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  RUN (cache, now, "zadd", "ze", "1", "");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "zscore", "ze", "");
+  ASSERT_FALSE (is_nil_response (&buf));
+
+  // ZQUERY in RESP: the member is $0, not $-1
+  const char *query[] = { "zquery", "ze", "0", "", "0", "10" };
+  buf = init_test_buffer (PROTO_RESP);
+  ASSERT_TRUE (cache_execute (cache, query, 6, &buf, now));
+  ASSERT_STR_EQ ((const char *) buf_data (&buf), "*2\r\n$0\r\n\r\n$1\r\n1\r\n");
+
+  RUN (cache, now, "zrem", "ze", "");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "exists", "ze");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -2225,6 +2258,7 @@ main (void)
   test_scan_command ();
   test_bpop ();
   test_resp_framing ();
+  test_empty_strings ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

@@ -1146,6 +1146,16 @@ $ {client_executable-abs_path} del k0 k1 k2 k3 k4 k5 k6 k7 k8 k9 k10 k11 k12 k13
 (err) 5 Too many arguments.
 $ {client_executable-abs_path} ping
 (str) PONG
+# Test: an empty zset member comes back empty, not nil
+$ {client_executable-abs_path} zadd zempty 1 ""
+(int) 1
+$ {client_executable-abs_path} zquery zempty 0 "" 0 10
+(arr) len=2
+(str) 
+(dbl) 1
+(arr) end
+$ {client_executable-abs_path} del zempty
+(int) 1
 '''
 
 
