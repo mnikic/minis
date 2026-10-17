@@ -5,6 +5,8 @@
 
 // bind_addr: an IPv4 address to listen on, NULL for all of them.
 // db_dir: where snapshots are saved and loaded from.
-int server_run (int port, const char *bind_addr, const char *db_dir);
+// ready_fd: written to and closed once serving, -1 for none.
+int server_run (int port, const char *bind_addr, const char *db_dir,
+		int ready_fd);
 
 #endif //SERVER_LOOP_H

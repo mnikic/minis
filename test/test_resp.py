@@ -1633,6 +1633,27 @@ class TestDaemon(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_serving_when_start_returns(self):
+        # The launcher waits until the daemon listens
+        daemon = Daemon(self.tmp.name, self.port).start()
+        try:
+            self.assertEqual(daemon.returncode, 0, daemon.output)
+            self.assertIn("started in the background", daemon.output)
+            self.assertTrue(redis.Redis(port=self.port).ping())
+        finally:
+            daemon.stop()
+
+    def test_failed_start_is_reported(self):
+        with socket.socket() as taken:
+            taken.bind(("0.0.0.0", self.port))
+            taken.listen()
+            daemon = Daemon(self.tmp.name, self.port).start()
+            try:
+                self.assertEqual(daemon.returncode, 1, daemon.output)
+                self.assertIn("failed to start", daemon.output)
+            finally:
+                daemon.stop()
+
     def test_snapshots_survive_a_daemon_restart(self):
         # The daemon changes to /, snapshots must still go to ./shards
         daemon = Daemon(self.tmp.name, self.port).start()

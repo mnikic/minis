@@ -788,7 +788,8 @@ server_shutdown (Cache *cache, int listen_fd, int epfd)
 }
 
 int
-server_run (int port, const char *bind_addr, const char *db_dir)
+server_run (int port, const char *bind_addr, const char *db_dir,
+	    int ready_fd)
 {
   g_data.db_dir = db_dir;
   struct epoll_event events[MAX_EVENTS];
@@ -804,6 +805,14 @@ server_run (int port, const char *bind_addr, const char *db_dir)
 
   if (!initialize_server_core (port, bind_addr, &listen_fd, &epfd) != 0)
     return -1;
+
+  // Loaded and listening: tell whoever waits on the daemon
+  if (ready_fd >= 0)
+    {
+      ssize_t ret = write (ready_fd, "1", 1);
+      (void) ret;
+      close (ready_fd);
+    }
 
   while (!g_data.terminate_flag)
     {

@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <limits.h>
+#include <errno.h>
 #include <string.h>
 
 #include "io/server_loop.h"
@@ -117,16 +118,38 @@ parse_args (int argc, char *argv[], MinisConfig *cfg)
     }
 }
 
-// Simple Daemonizer (POSIX)
-void
+// Simple Daemonizer (POSIX). Returns the write end of a pipe the daemon
+// writes a byte to once it is serving; the process the user started
+// waits for that byte, so it can say whether the daemon really started.
+int
 daemonize_process (void)
 {
+  int ready[2];
+  if (pipe (ready) < 0)
+    die ("pipe()");
+
   // Fork off the parent process
   pid_t pid = fork ();
   if (pid < 0)
     exit (EXIT_FAILURE);
   if (pid > 0)
-    exit (EXIT_SUCCESS);	// Parent exits
+    {
+      // Wait for the daemon: a byte when it serves, EOF if it died
+      close (ready[1]);
+      char byte;
+      ssize_t got;
+      do
+	got = read (ready[0], &byte, 1);
+      while (got < 0 && errno == EINTR);
+      if (got == 1)
+	{
+	  msg ("  > Minis started in the background.");
+	  exit (EXIT_SUCCESS);
+	}
+      msg ("  > Minis failed to start, run it without -d to see why.");
+      exit (EXIT_FAILURE);
+    }
+  close (ready[0]);
 
   // Create a new SID for the child process
   if (setsid () < 0)
@@ -143,7 +166,6 @@ daemonize_process (void)
   if (pid > 0)
     {
       msgf ("  > PID:  %d\n", pid);
-      msg ("  > Minis started in the background.");
       fflush (stderr);
       exit (EXIT_SUCCESS);	// Parent exits
     }
@@ -171,6 +193,7 @@ daemonize_process (void)
       if (file_desc > 2)
 	close (file_desc);
     }
+  return ready[1];
 }
 
 void
@@ -205,9 +228,10 @@ main (int argc, char *argv[])
   strcat (db_dir, "/" MINIS_DB_DIR);
   msgf ("  > Data: %s\n", db_dir);
 
+  int ready_fd = -1;
   if (config.daemonize)
     {
-      daemonize_process ();
+      ready_fd = daemonize_process ();
     }
   else
     {
@@ -222,5 +246,5 @@ main (int argc, char *argv[])
   // Start the Engine
   // You might need to update server_run to accept the config struct 
   // or just pass the port for now.
-  return server_run (config.port, config.bind_addr, db_dir);
+  return server_run (config.port, config.bind_addr, db_dir, ready_fd);
 }
