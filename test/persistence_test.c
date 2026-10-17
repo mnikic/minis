@@ -22,6 +22,11 @@
 #define QUEUE_KEY "queue"
 #define BIG_QUEUE_KEY "big queue"
 #define BIG_QUEUE_LEN 1000
+// Entries much bigger than K_MAX_MSG, which snapshots used to skip
+#define HUGE_HASH_KEY "huge hash"
+#define HUGE_LIST_KEY "huge list"
+#define HUGE_COUNT 200
+#define HUGE_VALUE_LEN 10000
 #define TEMP_KEY "temp"
 #define LONG_EXPIRED_KEY "long expired"
 #define RECENTLY_EXPIRED_KEY "recently expired"
@@ -100,7 +105,21 @@ main (void)
     }
   entry_set_expiration (cache1, ent_big, 123456789);
 
-  // E. Add Expiration
+  // E. Add a hash and a list of ~2MB each
+  msgf ("   -> Adding ~2MB Hash 'huge hash' and List 'huge list'");
+  static char huge_value[HUGE_VALUE_LEN + 1];
+  memset (huge_value, 'h', HUGE_VALUE_LEN);
+  Entry *ent_huge_hash = entry_new_hash (cache1, HUGE_HASH_KEY);
+  Entry *ent_huge_list = entry_new_list (cache1, HUGE_LIST_KEY);
+  for (int i = 0; i < HUGE_COUNT; i++)
+    {
+      char field[32];
+      snprintf (field, sizeof (field), "field-%d", i);
+      hash_set (ent_huge_hash->hash, field, huge_value);
+      list_push (ent_huge_list->list, huge_value, false);
+    }
+
+  // F. Add Expiration
   msgf ("   -> Adding Expiring Key 'temp' (TTL 5000ms)");
   Entry *ent3 = entry_new_str (cache1, TEMP_KEY, "I will survive");
   ent3->expire_at_us = 123456789;	// Arbitrary future timestamp
@@ -228,6 +247,24 @@ main (void)
   assert (res_big->expire_at_us == 123456789);
   assert (res_big->heap_idx != (size_t) -1);
   msgf ("   [PASS] Lists match.");
+
+  // Verify the huge entries
+  Entry *res_huge_hash = find_entry (cache2, HUGE_HASH_KEY);
+  assert (res_huge_hash != NULL);
+  assert (res_huge_hash->type == T_HASH);
+  assert (hm_size (res_huge_hash->hash) == HUGE_COUNT);
+  HashEntry *h_last = hash_lookup (res_huge_hash->hash, "field-199");
+  (void) h_last;
+  assert (h_last != NULL);
+  assert (strcmp (h_last->value, huge_value) == 0);
+
+  Entry *res_huge_list = find_entry (cache2, HUGE_LIST_KEY);
+  assert (res_huge_list != NULL);
+  assert (res_huge_list->type == T_LIST);
+  assert (list_len (res_huge_list->list) == HUGE_COUNT);
+  assert (strcmp (list_at (res_huge_list->list, HUGE_COUNT - 1), huge_value)
+	  == 0);
+  msgf ("   [PASS] Entries larger than K_MAX_MSG match.");
 
   // Verify Expiration
   Entry *res3 = find_entry (cache2, TEMP_KEY);

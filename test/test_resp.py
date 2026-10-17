@@ -694,6 +694,40 @@ class TestMget(MinisTestCase):
         self.assertEqual(self.r.lrange("mget_l", 0, -1), ["a"])
 
 
+class TestLargeEntryPersistence(MinisTestCase):
+    """Entries far bigger than one request survive a restart. They used to
+    be left out of snapshots."""
+
+    def test_large_entries_survive_restart(self):
+        blob = "x" * 10_000
+        # Like leadgrep_pending: one hash of many payloads, ~1MB
+        for i in range(100):
+            self.r.hset("big_hash", f"alert_{i}", f"{i}:{blob}")
+        # A backed up queue, ~3MB
+        for i in range(0, 300, 10):
+            self.r.rpush("big_list", *[f"{j}:{blob}" for j in range(i, i + 10)])
+        # ~400KB of zset members, ZADD takes one member at a time
+        pipe = self.r.pipeline(transaction=False)
+        for j in range(2000):
+            pipe.zadd("big_zset", {f"{j:04d}" + "m" * 200: j})
+        pipe.execute()
+        self.r.set("small", "v")
+        self.r.close()
+
+        self.server.restart()
+
+        # A 1MB HGETALL would not fit in one reply, read field by field
+        pipe = self.r.pipeline(transaction=False)
+        for i in range(100):
+            pipe.hget("big_hash", f"alert_{i}")
+        self.assertEqual(pipe.execute(), [f"{i}:{blob}" for i in range(100)])
+        self.assertEqual(self.r.llen("big_list"), 300)
+        self.assertEqual(self.r.lrange("big_list", 299, 299), [f"299:{blob}"])
+        self.assertEqual(self.r.zscore("big_zset", "1999" + "m" * 200), 1999)
+        self.assertEqual(self.r.zscore("big_zset", "0000" + "m" * 200), 0)
+        self.assertEqual(self.r.get("small"), "v")
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

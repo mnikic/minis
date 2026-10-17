@@ -574,9 +574,37 @@ cleanup_failed_save (FILE *file_ptr, const char *tmp_filename)
 // CORE SERIALIZATION LOGIC (Refactored)
 // ============================================================================
 
+// Serializes entry into buf, growing buf (malloc'd memory) until it
+// fits. Snapshots run in the child or at shutdown, not on the request
+// path, so this allocation is fine.
+static bool
+serialize_entry_growing (Buffer *buf, Entry *entry)
+{
+  // Only running out of space is worth retrying
+  if (entry->type != T_STR && entry->type != T_ZSET
+      && entry->type != T_HASH && entry->type != T_LIST)
+    return false;
+
+  while (true)
+    {
+      buf_clear (buf);
+      if (serialize_entry (buf, entry))
+	return true;
+
+      size_t new_cap = buf->capacity * 2;
+      if (new_cap < buf->capacity || new_cap > ((size_t) 1 << 40))
+	return false;
+      uint8_t *mem = realloc (buf->data, new_cap);
+      if (!mem)
+	return false;
+      buf->data = mem;
+      buf->capacity = new_cap;
+    }
+}
+
 /**
  * Serializes all entries in a single Shard to the file stream.
- * * @param buf Scratch buffer (caller owns logic to reuse/clear it)
+ * * @param buf Scratch buffer of malloc'd memory, which may be grown
  * @param shard The locked shard to save
  * @param running_crc Pointer to accumulate CRC
  * @param file_ptr Destination file stream
@@ -603,12 +631,13 @@ save_shard_entries_to_stream (Buffer *buf, const Shard *shard,
 	  || (entry->expire_at_us != 0 && entry->expire_at_us < now_us))
 	continue;
 
-      buf_clear (buf);
-
-      if (!serialize_entry (buf, entry))
+      // Fail the save rather than skip the entry: the new file replaces
+      // the old one, which may hold the entry.
+      if (!serialize_entry_growing (buf, entry))
 	{
-	  msgf ("Snapshot: entry too large, skipping: %s", entry->key);
-	  continue;
+	  msgf ("Snapshot: cannot serialize %s (%zu bytes tried)",
+		entry->key, buf->capacity);
+	  return false;
 	}
 
       *running_crc = crc32_update (*running_crc, buf->data, buf->length);
@@ -655,11 +684,11 @@ minis_save_shard_file (const Shard *shard, const char *filename,
   if (!save_shard_entries_to_stream
       (&buf, shard, &running_crc, file_ptr, now_us))
     {
-      free (raw_mem);
+      free (buf.data);
       cleanup_failed_save (file_ptr, tmp_filename);
       return false;
     }
-  free (raw_mem);
+  free (buf.data);
   if (!patch_crc (file_ptr, crc_offset, running_crc))
     {
       cleanup_failed_save (file_ptr, tmp_filename);
@@ -726,12 +755,12 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
       if (!save_shard_entries_to_stream
 	  (&buf, &minis->shards[i], &running_crc, file_ptr, now_us))
 	{
-	  free (raw_mem);
+	  free (buf.data);
 	  cleanup_failed_save (file_ptr, tmp_filename);
 	  return false;
 	}
     }
-  free (raw_mem);
+  free (buf.data);
 
   // 4. Finalize
   if (!patch_crc (file_ptr, crc_offset, running_crc))
