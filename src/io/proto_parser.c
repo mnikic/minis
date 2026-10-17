@@ -149,11 +149,13 @@ scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
       if (status != PROTO_DECISION_OK)
 	return status;
 
-      if (unlikely (len > (int64_t) K_MAX_MSG))
-	return PROTO_DECISION_INCOMPLETE;
-
       // Calculate where data ends
       size_t data_end = pos + (size_t) len;
+
+      // The whole request has to fit in the read buffer. The lengths
+      // tell before the bytes arrive, so do not wait for them.
+      if (unlikely (len > (int64_t) K_MAX_MSG || data_end + 2 > K_RBUF_SIZE))
+	return PROTO_DECISION_TOO_BIG;
 
       // Check: Data + \r\n must fit
       if (data_end + 2 > limit)

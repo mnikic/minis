@@ -1474,6 +1474,21 @@ class TestProtocolErrors(MinisTestCase):
         self.assertEqual(self.raw(raw_command("PING") + b"*1\r\n$x\r\n"),
                          b"+PONG\r\n-ERR Protocol error: invalid bulk length\r\n")
 
+    def test_request_too_large(self):
+        # Known from the length header, without waiting for the data
+        self.assertEqual(
+            self.raw(b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$300000\r\n"),
+            b"-ERR request too large\r\n")
+        for size in (300_000, 5_000_000):
+            with self.subTest(size=size):
+                start = time.time()
+                with self.assertRaisesRegex(redis.ResponseError,
+                                            "request too large"):
+                    self.r.set("too_large", "x" * size)
+                self.assertLess(time.time() - start, 1)
+        self.assertTrue(self.r.set("fits", "x" * 200_000))
+        self.assertEqual(len(self.r.get("fits")), 200_000)
+
     def test_1024_arguments_work(self):
         keys = [f"limit:{i}" for i in range(1023)]
         self.r.mset({k: "v" for k in keys[:511]})

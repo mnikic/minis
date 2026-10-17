@@ -1606,6 +1606,14 @@ test_resp_framing (void)
   check_framing ("*1\r\n$3\r\nabc\r", 0, PROTO_DECISION_INCOMPLETE, 0,
 		 NULL);
   check_framing ("*12", 0, PROTO_DECISION_INCOMPLETE, 0, NULL);
+  // Too big for the read buffer, known from the lengths alone
+  check_framing ("*1\r\n$300000\r\n", 0, PROTO_DECISION_TOO_BIG, 0, NULL);
+  check_framing ("*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$204790\r\n", 0,
+		 PROTO_DECISION_TOO_BIG, 0, NULL);
+  check_framing ("*1\r\n$99999999999\r\n", 0, PROTO_DECISION_TOO_BIG, 0,
+		 NULL);
+  check_framing ("*1\r\n$200000\r\n", 0, PROTO_DECISION_INCOMPLETE, 0, NULL);
+
   // Empty requests, which get no reply
   check_framing ("*0\r\n", 0, PROTO_DECISION_OK, 4, NULL);
   check_framing ("*-1\r\n", 0, PROTO_DECISION_OK, 5, NULL);
