@@ -48,13 +48,15 @@ validate_request_header (const uint8_t * req, uint32_t reqlen,
 HOT ParseResult proto_parse_arguments (ProtoRequest * proto_request);
 
 /**
- * @brief Scans a buffer to determine the total length of the next RESP message.
- * Used by connection_handler to frame messages.
- * * @param buf Pointer to the start of the buffer
+ * @brief Frames the next RESP message: its total length, whether more
+ * bytes are needed, or why it can never be valid.
+ * * @param buf Pointer to the start of the buffer, at a '*'
  * @param limit Total bytes available in the buffer
- * @return ssize_t The total length of the message in bytes, or -1 if incomplete.
+ * @param out_len The message length, for PROTO_DECISION_OK
+ * @param out_error Why, for PROTO_DECISION_INVALID
  */
-HOT ssize_t scan_resp_message_length (const uint8_t * buf, size_t limit);
+HOT ProtoStatus scan_resp_message (const uint8_t * buf, size_t limit,
+				   size_t *out_len, const char **out_error);
 
 /**
  * @brief Parses a RESP Array message into the cmd array using Zero-Copy.

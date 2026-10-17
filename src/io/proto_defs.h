@@ -76,6 +76,7 @@ typedef struct
   uint32_t header_len;		// Bytes used by framing (4 for Bin, 0 for RESP)
   uint32_t payload_len;		// Actual data length
   uint32_t total_len;		// header_len + payload_len
+  const char *error;		// Why, for PROTO_DECISION_INVALID
 } ProtoMessageInfo;
 
 #endif /* PROTO_DEFS_H_ */

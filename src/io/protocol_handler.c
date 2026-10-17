@@ -230,6 +230,9 @@ protocol_try_one_request (RequestContext *ctx)
   if (msg.status == PROTO_DECISION_INCOMPLETE)
     return false;
 
+  // Set protocol type, before any error is sent in it
+  conn->proto = msg.type;
+
   if (unlikely (msg.status == PROTO_DECISION_TOO_BIG))
     {
       protocol_send_error (conn, ERR_2BIG, "request too large");
@@ -237,8 +240,14 @@ protocol_try_one_request (RequestContext *ctx)
       return false;
     }
 
-  // Set protocol type
-  conn->proto = msg.type;
+  // Like Redis, answer a request that can never be parsed with an error
+  // and close: the rest of the stream cannot be trusted
+  if (unlikely (msg.status == PROTO_DECISION_INVALID))
+    {
+      protocol_send_error (conn, ERR_MALFORMED, msg.error);
+      conn->read_offset = conn->rbuf_size;
+      return false;
+    }
 
   // Prepare output buffer. A wrap moves wbuf_head, which a request that
   // blocks has to put back since it commits nothing.

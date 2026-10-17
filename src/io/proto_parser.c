@@ -24,6 +24,9 @@
  * Packed Binary, Network Byte Order (Big Endian), and the Zero-Copy Hack colliding 
  * here, after this size we start corrupting.
  */
+#define STRINGIFY_(x) #x
+#define STRINGIFY(x) STRINGIFY_ (x)
+
 _Static_assert (K_MAX_MSG < 16777215,
 		"K_MAX_MSG is too large for zero-copy binary protocol hack.");
 
@@ -87,58 +90,68 @@ read_resp_int (const uint8_t *buf, size_t limit, size_t *pos,
  * Format: *<count>\r\n...
  * Marked HOT as it runs on every packet.
  */
-HOT ssize_t
-scan_resp_message_length (const uint8_t *buf, size_t limit)
+HOT ProtoStatus
+scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
+		   const char **out_error)
 {
   if (unlikely (limit < 4))
-    return -1;
+    return PROTO_DECISION_INCOMPLETE;
 
   size_t pos = 0;
   if (unlikely (buf[pos] != '*'))
-    return -1;
+    return PROTO_DECISION_INCOMPLETE;
   pos++;
 
   int64_t count = 0;
   if (!read_resp_int (buf, limit, &pos, &count))
-    return -1;
+    return PROTO_DECISION_INCOMPLETE;
 
-  if (unlikely (count < 0 || count > K_MAX_ARGS))
-    return -1;
+  if (unlikely (count < 0))
+    return PROTO_DECISION_INCOMPLETE;
+
+  // Waiting for the rest would never end: the request cannot be parsed
+  if (unlikely (count > K_MAX_ARGS))
+    {
+      *out_error = "Protocol error: too many arguments (at most "
+	STRINGIFY (K_MAX_ARGS) ")";
+      return PROTO_DECISION_INVALID;
+    }
 
   // Loop through arguments
   for (int i = 0; i < count; i++)
     {
       // Check space for header "$0\r\n" (at least 4 bytes)
       if (unlikely (pos + 4 > limit))
-	return -1;
+	return PROTO_DECISION_INCOMPLETE;
 
       if (unlikely (buf[pos] != '$'))
-	return -1;
+	return PROTO_DECISION_INCOMPLETE;
       pos++;
 
       int64_t len = 0;
       if (!read_resp_int (buf, limit, &pos, &len))
-	return -1;
+	return PROTO_DECISION_INCOMPLETE;
 
       if (unlikely (len < 0 || len > (int64_t) K_MAX_MSG))
-	return -1;
+	return PROTO_DECISION_INCOMPLETE;
 
       // Calculate where data ends
       size_t data_end = pos + (size_t) len;
 
       // Check: Data + \r\n must fit
       if (data_end + 2 > limit)
-	return -1;
+	return PROTO_DECISION_INCOMPLETE;
 
       // STRICT CHECK: Verify tail is actually \r\n
       // Previous code trusted 'len', allowing garbage delimiters.
       if (unlikely (buf[data_end] != '\r' || buf[data_end + 1] != '\n'))
-	return -1;
+	return PROTO_DECISION_INCOMPLETE;
 
       pos = data_end + 2;
     }
 
-  return (ssize_t) pos;
+  *out_len = pos;
+  return PROTO_DECISION_OK;
 }
 
 HOT ProtoMessageInfo
@@ -156,16 +169,11 @@ proto_identify_message (const uint8_t *buf, size_t len)
   if (likely (buf[0] == '*'))
     {
       info.type = PROTO_RESP;
-      ssize_t ret = scan_resp_message_length (buf, len);
-
-      if (ret < 0)
+      size_t msg_len = 0;
+      info.status = scan_resp_message (buf, len, &msg_len, &info.error);
+      if (info.status == PROTO_DECISION_OK)
 	{
-	  info.status = PROTO_DECISION_INCOMPLETE;
-	}
-      else
-	{
-	  info.status = PROTO_DECISION_OK;
-	  info.payload_len = (uint32_t) ret;
+	  info.payload_len = (uint32_t) msg_len;
 	  info.header_len = 0;
 	  info.total_len = info.payload_len;
 	}
@@ -280,7 +288,7 @@ parse_resp_arguments (ProtoRequest *req)
   uint8_t *buf = req->req;
   size_t limit = req->reqlen;
 
-  // We skip checks done in scan_resp_message_length
+  // We skip checks done in scan_resp_message
   // But we must re-parse to locate pointers.
   if (unlikely (buf[pos] != '*'))
     return PARSE_BAD_PROTOCOL;

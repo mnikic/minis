@@ -14,6 +14,7 @@
 #include "common/glob.h"
 #include "io/buffer.h"
 #include "io/proto_defs.h"
+#include "io/proto_parser.h"
 
 // ============================================================================
 // Test utilities
@@ -1530,6 +1531,53 @@ test_bpop (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6p: RESP framing
+// ============================================================================
+
+// Frames msg (of len bytes, or strlen) and checks the decision, the
+// length for OK and part of the error for INVALID
+static void
+check_framing (const char *msg, size_t len, ProtoStatus want,
+	       size_t want_len, const char *want_error)
+{
+  if (len == 0)
+    len = strlen (msg);
+  size_t got_len = 0;
+  const char *error = NULL;
+  ProtoStatus got = scan_resp_message ((const uint8_t *) msg, len, &got_len,
+				       &error);
+  if (got != want || (want == PROTO_DECISION_OK && got_len != want_len)
+      || (want == PROTO_DECISION_INVALID
+	  && (!error || !strstr (error, want_error))))
+    {
+      msgf ("ASSERTION FAILED: framing '%.40s': got %d len %zu error %s",
+	    msg, got, got_len, error ? error : "-");
+      exit (1);
+    }
+}
+
+static void
+test_resp_framing (void)
+{
+  printf ("TEST: RESP framing... ");
+
+  const char *get = "*2\r\n$3\r\nGET\r\n$1\r\nk\r\n";
+  check_framing (get, 0, PROTO_DECISION_OK, strlen (get), NULL);
+  // Every prefix needs more bytes
+  for (size_t i = 1; i < strlen (get); i++)
+    check_framing (get, i, PROTO_DECISION_INCOMPLETE, 0, NULL);
+
+  // Too many arguments is known from the header alone
+  check_framing ("*1025\r\n", 0, PROTO_DECISION_INVALID, 0,
+		 "too many arguments (at most 1024)");
+  check_framing ("*99999999\r\n$3\r\n", 0, PROTO_DECISION_INVALID, 0,
+		 "too many arguments");
+  check_framing ("*1024\r\n", 0, PROTO_DECISION_INCOMPLETE, 0, NULL);
+
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -2133,6 +2181,7 @@ main (void)
   test_hm_scan_step ();
   test_scan_command ();
   test_bpop ();
+  test_resp_framing ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

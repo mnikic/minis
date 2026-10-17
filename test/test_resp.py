@@ -1410,6 +1410,45 @@ class TestErrorClose(MinisTestCase):
         self.assertAlive()
 
 
+class TestProtocolErrors(MinisTestCase):
+    """Requests that can never be parsed get an error and a close, like in
+    Redis, instead of a connection waiting forever"""
+
+    def raw(self, data):
+        """Sends data on a fresh connection and returns everything the
+        server sends back until it closes"""
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(3)
+            sock.sendall(data)
+            got = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    return got
+                got += chunk
+
+    def test_too_many_arguments(self):
+        want = b"-ERR Protocol error: too many arguments (at most 1024)\r\n"
+        self.assertEqual(self.raw(b"*1025\r\n"), want)
+        self.assertEqual(self.raw(raw_command("DEL", *["k"] * 2000)), want)
+        self.assertAlive()
+
+    def test_too_many_arguments_with_redis_py(self):
+        for _ in range(20):
+            start = time.time()
+            with self.assertRaisesRegex(redis.ResponseError,
+                                        "too many arguments"):
+                self.r.delete(*[f"many:{i}" for i in range(1100)])
+            self.assertLess(time.time() - start, 1)
+            # The client reconnects
+            self.assertTrue(self.r.ping())
+
+    def test_1024_arguments_work(self):
+        keys = [f"limit:{i}" for i in range(1023)]
+        self.r.mset({k: "v" for k in keys[:511]})
+        self.assertEqual(self.r.delete(*keys), 511)
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

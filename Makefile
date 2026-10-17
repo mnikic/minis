@@ -73,6 +73,7 @@ TEST_CACHE_SRCS := test/cache_test.c \
                    src/cache/list.c src/cache/t_list.c \
                    src/cache/deque.c src/cache/hash.c src/cache/minis.c \
                    src/io/buffer.c src/io/out.c src/cache/entry.c \
+                   src/io/proto_parser.c \
                    src/common/common.c src/common/glob.c src/cache/persistence.c
 
 TEST_PERSIST_SRCS := test/persistence_test.c \
