@@ -149,9 +149,9 @@ serialize_hash (Buffer *buf, HMap *hmap)
 #pragma GCC diagnostic ignored "-Wcast-align"
       HashEntry *hash_entry = container_of (node, HashEntry, node);
 #pragma GCC diagnostic pop
-      if (!out_raw_str (buf, hash_entry->field, strlen (hash_entry->field)))
+      if (!out_raw_str (buf, hash_entry->field, hash_entry->field_len))
 	return false;
-      if (!out_raw_str (buf, hash_entry->value, strlen (hash_entry->value)))
+      if (!out_raw_str (buf, hash_entry->value, hash_entry->value_len))
 	return false;
     }
   return true;
@@ -401,7 +401,7 @@ load_hash_entry (FILE *file_ptr, Minis *minis, const char *key,
 	  // Insert into Hash
 	  if (ent)
 	    {
-	      hash_set (ent->hash, field_buf, val_buf);
+	      hash_set (ent->hash, field_buf, flen, val_buf, vlen);
 	    }
 	  free (val_buf);
 	}

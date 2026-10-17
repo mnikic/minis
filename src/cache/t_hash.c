@@ -10,7 +10,8 @@
 
 MinisError
 minis_hset (Minis *minis, const char *key, const char *field,
-	    const char *value, int *out_added, uint64_t now_us)
+	    size_t field_len, const char *value, size_t value_len,
+	    int *out_added, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
 
@@ -30,7 +31,7 @@ minis_hset (Minis *minis, const char *key, const char *field,
       return MINIS_ERR_TYPE;
     }
 
-  int res = hash_set (ent->hash, field, value);
+  int res = hash_set (ent->hash, field, field_len, value, value_len);
   if (res)
     __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
 
@@ -43,7 +44,7 @@ minis_hset (Minis *minis, const char *key, const char *field,
 
 MinisError
 minis_hget (Minis *minis, const char *key, const char *field,
-	    MinisHashCb func, void *ctx, uint64_t now_us)
+	    size_t field_len, MinisHashCb func, void *ctx, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
 
@@ -60,7 +61,7 @@ minis_hget (Minis *minis, const char *key, const char *field,
       return MINIS_ERR_TYPE;
     }
 
-  HashEntry *hash_entry = hash_lookup (ent->hash, field);
+  HashEntry *hash_entry = hash_lookup (ent->hash, field, field_len);
   if (!hash_entry)
     {
       unlock_shard (shard);
@@ -75,7 +76,8 @@ minis_hget (Minis *minis, const char *key, const char *field,
 
 MinisError
 minis_hdel (Minis *minis, const char *key, const char **fields,
-	    size_t field_count, int *out_deleted, uint64_t now_us)
+	    const size_t *field_lens, size_t field_count, int *out_deleted,
+	    uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
   Entry *ent = entry_lookup (minis, shard, key, now_us);
@@ -98,7 +100,8 @@ minis_hdel (Minis *minis, const char *key, const char **fields,
 
   int total = 0;
   for (size_t i = 0; i < field_count; i++)
-    if (hash_del (ent->hash, fields[i]))
+    if (hash_del (ent->hash, fields[i],
+		  field_lens ? field_lens[i] : strlen (fields[i])))
       total++;
 
   if (total > 0)
@@ -122,7 +125,7 @@ minis_hdel (Minis *minis, const char *key, const char **fields,
 
 MinisError
 minis_hexists (Minis *minis, const char *key, const char *field,
-	       int *out_exists, uint64_t now_us)
+	       size_t field_len, int *out_exists, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
 
@@ -140,7 +143,7 @@ minis_hexists (Minis *minis, const char *key, const char *field,
       return MINIS_ERR_TYPE;
     }
 
-  HashEntry *hash_entry = hash_lookup (ent->hash, field);
+  HashEntry *hash_entry = hash_lookup (ent->hash, field, field_len);
   *out_exists = hash_entry ? 1 : 0;
 
   unlock_shard (shard);

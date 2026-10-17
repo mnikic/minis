@@ -425,7 +425,8 @@ Java_com_minis_Minis_nativeHSet(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     const char *value = (*env)->GetStringUTFChars(env, jValue, 0);
 
     int added = 0;
-    MinisError err = minis_hset(minis, key, field, value, &added, get_us());
+    MinisError err = minis_hset(minis, key, field, strlen(field), value,
+                                strlen(value), &added, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     (*env)->ReleaseStringUTFChars(env, jField, field);
@@ -466,7 +467,8 @@ Java_com_minis_Minis_nativeHGet(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     JniHGetCtx ctx = { .env = env, .result = NULL };
     
     // Using the Visitor version of hget you implemented earlier
-    MinisError err = minis_hget(minis, key, field, jni_hget_visitor, &ctx, get_us());
+    MinisError err = minis_hget(minis, key, field, strlen(field),
+                                jni_hget_visitor, &ctx, get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     (*env)->ReleaseStringUTFChars(env, jField, field);
@@ -505,7 +507,8 @@ Java_com_minis_Minis_nativeHDel(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     }
 
     int deleted = 0;
-    MinisError err = minis_hdel(minis, key, cFields, count, &deleted, get_us());
+    MinisError err = minis_hdel(minis, key, cFields, NULL, count, &deleted,
+                                get_us());
 
     // Cleanup
     for(int i=0; i<count; i++) {
@@ -531,7 +534,8 @@ Java_com_minis_Minis_nativeHExists(JNIEnv *env, jobject thiz, jlong ptr, jstring
     const char *field = (*env)->GetStringUTFChars(env, jField, 0);
 
     int exists = 0;
-    MinisError err = minis_hexists(minis, key, field, &exists, get_us());
+    MinisError err = minis_hexists(minis, key, field, strlen(field), &exists,
+                                   get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     (*env)->ReleaseStringUTFChars(env, jField, field);

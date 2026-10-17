@@ -1721,6 +1721,21 @@ test_binary_strings (void)
   RUN (cache, now, "lpop", "bl");
   assert_str_bytes (&buf, "a", 1);
 
+  // Hash fields and values: "h\0a" and "h\0b" are two fields
+  const size_t hset_lens[] = { 4, 2, 3, 2 };
+  RUN_N (cache, now, hset_lens, "hset", "bh", "h\0a", "\0x");
+  RUN_N (cache, now, hset_lens, "hset", "bh", "h\0b", "\0y");
+  const size_t hget_lens[] = { 4, 2, 3 };
+  RUN_N (cache, now, hget_lens, "hget", "bh", "h\0a");
+  assert_str_bytes (&buf, "\0x", 2);
+  RUN_N (cache, now, hget_lens, "hget", "bh", "h\0b");
+  assert_str_bytes (&buf, "\0y", 2);
+  const size_t hdel_lens[] = { 4, 2, 3 };
+  RUN_N (cache, now, hdel_lens, "hdel", "bh", "h\0a");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN_N (cache, now, hget_lens, "hexists", "bh", "h\0b");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+
   // INCR needs every byte to be the number
   const size_t num_lens[] = { 3, 4, 3 };
   RUN_N (cache, now, num_lens, "set", "bnum", "1\02");

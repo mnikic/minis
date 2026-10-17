@@ -102,8 +102,10 @@ main (void)
   // C. Add a Hash (NEW)
   msgf ("   -> Adding Hash 'user:100' with 2 fields");
   Entry *ent_hash = entry_new_hash (cache1, USER_HASH_KEY);
-  hash_set (ent_hash->hash, "username", "jdoe");
-  hash_set (ent_hash->hash, "role", "admin");
+  hash_set (ent_hash->hash, "username", 8, "jdoe", 4);
+  hash_set (ent_hash->hash, "role", 4, "admin", 5);
+  // A field and a value holding NUL bytes
+  hash_set (ent_hash->hash, "b\0in", 4, "\0v\0", 3);
 
   // D. Add Lists: one built from both ends, and one long enough to
   // wrap and grow the ring buffer, with a TTL
@@ -135,7 +137,8 @@ main (void)
     {
       char field[32];
       snprintf (field, sizeof (field), "field-%d", i);
-      hash_set (ent_huge_hash->hash, field, huge_value);
+      hash_set (ent_huge_hash->hash, field, strlen (field), huge_value,
+		HUGE_VALUE_LEN);
       list_push (ent_huge_list->list, huge_value, HUGE_VALUE_LEN, false);
     }
 
@@ -238,19 +241,26 @@ main (void)
   assert (res_hash->type == T_HASH);
   assert (res_hash->hash != NULL);
 
-  HashEntry *h_user = hash_lookup (res_hash->hash, "username");
+  HashEntry *h_user = hash_lookup (res_hash->hash, "username", 8);
   (void) h_user;
   assert (h_user != NULL);
   assert (strcmp (h_user->value, "jdoe") == 0);
 
-  HashEntry *h_role = hash_lookup (res_hash->hash, "role");
+  HashEntry *h_role = hash_lookup (res_hash->hash, "role", 4);
   (void) h_role;
   assert (h_role != NULL);
   assert (strcmp (h_role->value, "admin") == 0);
 
-  HashEntry *h_missing = hash_lookup (res_hash->hash, "missing");
+  HashEntry *h_missing = hash_lookup (res_hash->hash, "missing", 7);
   (void) h_missing;
   assert (h_missing == NULL);
+
+  HashEntry *h_bin = hash_lookup (res_hash->hash, "b\0in", 4);
+  (void) h_bin;
+  assert (h_bin != NULL);
+  assert (h_bin->value_len == 3 && memcmp (h_bin->value, "\0v\0", 3) == 0);
+  // "b" alone is another field
+  assert (hash_lookup (res_hash->hash, "b", 1) == NULL);
 
   msgf ("   [PASS] Hash fields and values match.");
 
@@ -285,7 +295,7 @@ main (void)
   assert (res_huge_hash != NULL);
   assert (res_huge_hash->type == T_HASH);
   assert (hm_size (res_huge_hash->hash) == HUGE_COUNT);
-  HashEntry *h_last = hash_lookup (res_huge_hash->hash, "field-199");
+  HashEntry *h_last = hash_lookup (res_huge_hash->hash, "field-199", 9);
   (void) h_last;
   assert (h_last != NULL);
   assert (strcmp (h_last->value, huge_value) == 0);

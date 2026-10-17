@@ -497,11 +497,12 @@ do_incr (Cache *cache, const char *key, int64_t delta, Buffer *out,
 // Hash Operations
 
 static bool
-do_hset (Cache *cache, const char *key, const char *field, const char *value,
-	 Buffer *out, uint64_t now_us)
+do_hset (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
+	 uint64_t now_us)
 {
   int added = 0;
-  MinisError err = minis_hset (cache, key, field, value, &added, now_us);
+  MinisError err = minis_hset (cache, cmd[1], cmd[2], lens[2], cmd[3],
+			       lens[3], &added, now_us);
   if (err == MINIS_OK)
     return out_int (out, added);
   return reply_with_error (out, err);
@@ -511,35 +512,37 @@ static bool
 hget_visitor (const HashEntry *entry, void *arg)
 {
   Buffer *out = (Buffer *) arg;
-  return out_str (out, entry->value);
+  return out_str_size (out, entry->value, entry->value_len);
 }
 
 static bool
-do_hget (Cache *cache, const char *key, const char *field, Buffer *out,
+do_hget (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 	 uint64_t now_us)
 {
-  MinisError err = minis_hget (cache, key, field, hget_visitor, out, now_us);
+  MinisError err = minis_hget (cache, cmd[1], cmd[2], lens[2], hget_visitor,
+			       out, now_us);
   return reply_with_error (out, err);
 }
 
 static bool
-do_hdel (Cache *cache, const char **cmd, size_t argc, Buffer *out,
-	 uint64_t now_us)
+do_hdel (Cache *cache, const char **cmd, const size_t *lens, size_t argc,
+	 Buffer *out, uint64_t now_us)
 {
   int total = 0;
   MinisError err =
-    minis_hdel (cache, cmd[1], cmd + 2, argc - 2, &total, now_us);
+    minis_hdel (cache, cmd[1], cmd + 2, lens + 2, argc - 2, &total, now_us);
   if (err == MINIS_OK)
     return out_int (out, total);
   return reply_with_error (out, err);
 }
 
 static bool
-do_hexists (Cache *cache, const char *key, const char *field, Buffer *out,
+do_hexists (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
 	    uint64_t now_us)
 {
   int exists = 0;
-  MinisError err = minis_hexists (cache, key, field, &exists, now_us);
+  MinisError err = minis_hexists (cache, cmd[1], cmd[2], lens[2], &exists,
+				  now_us);
   if (err == MINIS_OK)
     return out_int (out, exists);
   return reply_with_error (out, err);
@@ -557,12 +560,12 @@ cb_hash_visitor (const HashEntry *entry, void *arg)
   HashVisitorCtx *ctx = (HashVisitorCtx *) arg;
   if (!ctx->result)
     return false;
-  if (!out_str (ctx->out, entry->field))
+  if (!out_str_size (ctx->out, entry->field, entry->field_len))
     {
       ctx->result = false;
       return false;
     }
-  if (!out_str (ctx->out, entry->value))
+  if (!out_str_size (ctx->out, entry->value, entry->value_len))
     {
       ctx->result = false;
       return false;
@@ -1013,15 +1016,15 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   if (size >= 2 && cmd_is (cmd[0], "exists"))
     return do_exists (cache, cmd + 1, size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "hget"))
-    return do_hget (cache, cmd[1], cmd[2], out, now_us);
+    return do_hget (cache, cmd, lens, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "hset"))
-    return do_hset (cache, cmd[1], cmd[2], cmd[3], out, now_us);
+    return do_hset (cache, cmd, lens, out, now_us);
   if (size > 2 && cmd_is (cmd[0], "hdel"))
-    return do_hdel (cache, cmd, size, out, now_us);
+    return do_hdel (cache, cmd, lens, size, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "hgetall"))
     return do_hgetall (cache, cmd[1], out, now_us);
   if (size == 3 && cmd_is (cmd[0], "hexists"))
-    return do_hexists (cache, cmd[1], cmd[2], out, now_us);
+    return do_hexists (cache, cmd, lens, out, now_us);
 
   return out_err (out, ERR_UNKNOWN, "Unknown cmd");
 }

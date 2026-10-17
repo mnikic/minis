@@ -1,11 +1,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-
 #include "cache/hash.h"
 #include "cache/hashtable.h"
 #include "common/macros.h"
 #include "common/common.h"
+
+// What hm_lookup compares fields against
+typedef struct
+{
+  const char *field;
+  size_t len;
+} FieldKey;
 
 HashEntry *
 fetch_hash_entry (HNode *node)
@@ -16,69 +22,78 @@ fetch_hash_entry (HNode *node)
 #pragma GCC diagnostic pop
 }
 
-bool
-hash_entry_eq_str (HNode *node, const void *key)
+static bool
+hash_entry_eq (HNode *node, const void *key)
 {
   HashEntry *hent = fetch_hash_entry (node);
-  return strcmp (hent->field, (const char *) key) == 0;
+  const FieldKey *fkey = (const FieldKey *) key;
+  return hent->field_len == fkey->len
+    && memcmp (hent->field, fkey->field, fkey->len) == 0;
+}
+
+// A NUL terminated copy of len bytes
+static char *
+copy_bytes (const char *bytes, size_t len)
+{
+  char *copy = malloc (len + 1);
+  if (copy)
+    {
+      memcpy (copy, bytes, len);
+      copy[len] = '\0';
+    }
+  return copy;
 }
 
 HashEntry *
-hash_lookup (HMap *hmap, const char *field)
+hash_lookup (HMap *hmap, const char *field, size_t field_len)
 {
   if (!hmap)
     return NULL;
-
-  uint64_t hcode = cstr_hash (field);
-  HNode *node = hm_lookup (hmap, field, hcode, &hash_entry_eq_str);
-
+  FieldKey key = {.field = field,.len = field_len };
+  uint64_t hcode = str_hash ((const uint8_t *) field, field_len);
+  HNode *node = hm_lookup (hmap, &key, hcode, &hash_entry_eq);
   if (!node)
     return NULL;
-
   return fetch_hash_entry (node);
 }
 
 int
-hash_set (HMap *hmap, const char *field, const char *value)
+hash_set (HMap *hmap, const char *field, size_t field_len, const char *value,
+	  size_t value_len)
 {
-  HashEntry *ent = hash_lookup (hmap, field);
-
+  HashEntry *ent = hash_lookup (hmap, field, field_len);
   if (ent)
     {
-      if (strcmp (ent->value, value) == 0)
+      if (ent->value_len == value_len
+	  && memcmp (ent->value, value, value_len) == 0)
 	return 0;
-
-      free (ent->value);
-      ent->value = malloc (strlen (value) + 1);
-      if (ent->value)
-	strcpy (ent->value, value);
-
+      char *copy = copy_bytes (value, value_len);
+      if (copy)
+	{
+	  free (ent->value);
+	  ent->value = copy;
+	  ent->value_len = value_len;
+	}
       return 0;
     }
 
   ent = malloc (sizeof (HashEntry));
   if (!ent)
     return 0;
-
-  ent->field = malloc (strlen (field) + 1);
-  ent->value = malloc (strlen (value) + 1);
-
+  ent->field = copy_bytes (field, field_len);
+  ent->value = copy_bytes (value, value_len);
   if (!ent->field || !ent->value)
     {
-      if (ent->field)
-	free (ent->field);
-      if (ent->value)
-	free (ent->value);
+      free (ent->field);
+      free (ent->value);
       free (ent);
       return 0;
     }
-
-  strcpy (ent->field, field);
-  strcpy (ent->value, value);
-
-  ent->node.hcode = cstr_hash (field);
-
-  hm_insert (hmap, &ent->node, field, &hash_entry_eq_str);
+  ent->field_len = field_len;
+  ent->value_len = value_len;
+  ent->node.hcode = str_hash ((const uint8_t *) field, field_len);
+  FieldKey key = {.field = field,.len = field_len };
+  hm_insert (hmap, &ent->node, &key, &hash_entry_eq);
   return 1;
 }
 
@@ -93,9 +108,11 @@ cb_hash_entry_destroy (HNode *node, void *arg)
 }
 
 int
-hash_del (HMap *hmap, const char *field)
+hash_del (HMap *hmap, const char *field, size_t field_len)
 {
-  HNode *popped = hm_pop (hmap, field, cstr_hash (field), &hash_entry_eq_str);
+  FieldKey key = {.field = field,.len = field_len };
+  HNode *popped = hm_pop (hmap, &key, str_hash ((const uint8_t *) field,
+						field_len), &hash_entry_eq);
   if (popped)
     {
       cb_hash_entry_destroy (popped, NULL);

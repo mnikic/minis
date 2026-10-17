@@ -1789,7 +1789,25 @@ class TestBinarySafe(MinisTestCase):
         self.assertEqual(self.b.lrem("bin_lrem", 0, b"a"), 1)
         self.assertEqual(self.b.lrange("bin_lrem", 0, -1), [b"a\x00c"])
 
+    def test_hash_fields_and_values(self):
+        fields = {b"f\x00a": b"\x00one", b"f\x00b": b"two\x00", b"f": b"",
+                  b"": b"empty field", b"\xff": bytes(range(256))}
+        for field, value in fields.items():
+            self.assertEqual(self.b.hset("bin_hash", field, value), 1)
+        # Fields differing only after a NUL are different fields
+        self.assertEqual(self.b.hgetall("bin_hash"), fields)
+        for field, value in fields.items():
+            self.assertEqual(self.b.hget("bin_hash", field), value)
+            self.assertTrue(self.b.hexists("bin_hash", field))
+        self.assertFalse(self.b.hexists("bin_hash", b"f\x00c"))
+        self.assertEqual(self.b.hset("bin_hash", b"f\x00a", b"\x00one\x00"), 0)
+        self.assertEqual(self.b.hget("bin_hash", b"f\x00a"), b"\x00one\x00")
+        self.assertEqual(self.b.hdel("bin_hash", b"f\x00b", b"f\x00zz"), 1)
+        self.assertIsNone(self.b.hget("bin_hash", b"f\x00b"))
+        self.assertEqual(self.b.hget("bin_hash", b"f"), b"")
+
     def test_survives_restart(self):
+        self.b.hset("bin_keep_hash", b"k\x00", b"\x00v")
         self.b.rpush("bin_keep_list", b"\x00", b"x\x00y")
         self.b.set("bin_keep", bytes(range(256)))
         self.b.set("bin_keep_ttl", b"\x00x\x00", ex=100)
@@ -1799,6 +1817,7 @@ class TestBinarySafe(MinisTestCase):
         self.assertEqual(self.b.get("bin_keep_ttl"), b"\x00x\x00")
         self.assertEqual(self.b.lrange("bin_keep_list", 0, -1),
                          [b"\x00", b"x\x00y"])
+        self.assertEqual(self.b.hgetall("bin_keep_hash"), {b"k\x00": b"\x00v"})
 
 
 class TestDel(MinisTestCase):
