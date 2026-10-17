@@ -11,6 +11,8 @@ MINIS_BIN selects the binary (default: build/bin/release/minis).
 import collections
 import os
 import random
+import re
+import signal
 import socket
 import struct
 import subprocess
@@ -1588,6 +1590,72 @@ class TestBind(unittest.TestCase):
                               capture_output=True, text=True, timeout=10)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("Invalid bind address: nope", proc.stdout + proc.stderr)
+
+
+class Daemon:
+    """minis -d, which detaches: its PID comes from the startup output"""
+
+    def __init__(self, workdir, port):
+        self.workdir, self.port = workdir, port
+
+    def start(self):
+        out = subprocess.run([MINIS_BIN, "-p", str(self.port), "-d"],
+                             cwd=self.workdir, capture_output=True,
+                             text=True, timeout=10)
+        self.output = out.stdout + out.stderr
+        self.returncode = out.returncode
+        match = re.search(r"PID:\s+(\d+)", self.output)
+        self.pid = int(match.group(1)) if match else None
+        return self
+
+    def stop(self):
+        if self.pid is None:
+            return
+        try:
+            os.kill(self.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                os.kill(self.pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(self.pid, signal.SIGKILL)
+
+
+class TestDaemon(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="minis-daemon-")
+        self.port = free_port()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_snapshots_survive_a_daemon_restart(self):
+        # The daemon changes to /, snapshots must still go to ./shards
+        daemon = Daemon(self.tmp.name, self.port).start()
+        try:
+            self.assertEqual(daemon.returncode, 0, daemon.output)
+            r = redis.Redis(port=self.port, decode_responses=True)
+            r.set("dk", "v")
+            r.set("dk_ttl", "x", ex=100)
+            r.rpush("dk_list", "a", "b")
+            r.close()
+        finally:
+            daemon.stop()
+        self.assertTrue(os.listdir(os.path.join(self.tmp.name, "shards")))
+
+        daemon = Daemon(self.tmp.name, self.port).start()
+        try:
+            r = redis.Redis(port=self.port, decode_responses=True)
+            self.assertEqual(r.get("dk"), "v")
+            self.assertIn(r.ttl("dk_ttl"), (99, 100))
+            self.assertEqual(r.lrange("dk_list", 0, -1), ["a", "b"])
+            r.close()
+        finally:
+            daemon.stop()
 
 
 class TestDel(MinisTestCase):

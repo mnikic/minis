@@ -21,6 +21,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <limits.h>
+#include <string.h>
 
 #include "io/server_loop.h"
 
@@ -195,6 +197,14 @@ main (int argc, char *argv[])
   if (config.verbose)
     msgf ("  > Verbose: Enabled\n");
 
+  // The daemon changes to /, so a relative snapshot directory has to be
+  // made absolute first
+  static char db_dir[PATH_MAX];
+  if (!getcwd (db_dir, sizeof (db_dir) - sizeof ("/" MINIS_DB_DIR)))
+    die ("getcwd()");
+  strcat (db_dir, "/" MINIS_DB_DIR);
+  msgf ("  > Data: %s\n", db_dir);
+
   if (config.daemonize)
     {
       daemonize_process ();
@@ -212,5 +222,5 @@ main (int argc, char *argv[])
   // Start the Engine
   // You might need to update server_run to accept the config struct 
   // or just pass the port for now.
-  return server_run (config.port, config.bind_addr);
+  return server_run (config.port, config.bind_addr, db_dir);
 }

@@ -71,6 +71,7 @@ static struct
   uint64_t last_snapshot_mod_count;
   uint64_t last_snapshot_mod_count_at_fork;
   volatile sig_atomic_t terminate_flag;
+  const char *db_dir;		// Snapshot directory
   // Written by the signal handler to wake epoll_wait, -1 until set up
   volatile sig_atomic_t wake_fd;
 } g_data;
@@ -143,7 +144,7 @@ rdb_save_background (Cache *cache, uint64_t now_us)
 
   if (child_pid == 0)
     {
-      bool status = cache_save (cache, MINIS_DB_DIR, now_us);
+      bool status = cache_save (cache, g_data.db_dir, now_us);
       msgf ("Background saving terminated with success in %llu ms.",
 	    (get_monotonic_usec () - g_data.last_snapshot_time) / 1000);
       _exit (status ? 0 : 1);
@@ -685,9 +686,9 @@ init_cache (uint64_t now_us)
 {
   Cache *cache = cache_init ();
 
-  if (cache_load (cache, MINIS_DB_DIR, now_us))
+  if (cache_load (cache, g_data.db_dir, now_us))
     {
-      msgf ("[Minis] DB loaded from directory %s in %llu ms.", MINIS_DB_DIR,
+      msgf ("[Minis] DB loaded from directory %s in %llu ms.", g_data.db_dir,
 	    (get_monotonic_usec () - now_us) / 1000);
     }
   else
@@ -695,12 +696,12 @@ init_cache (uint64_t now_us)
       if (errno != ENOENT)
 	{
 	  msgf ("[Minis] Warning: Failed to load %s (Starting empty).",
-		MINIS_DB_DIR);
+		g_data.db_dir);
 	}
       else
 	{
 	  msgf ("[Minis] No existing DB found. Starting fresh.",
-		MINIS_DB_DIR);
+		g_data.db_dir);
 	}
     }
   return cache;
@@ -768,7 +769,7 @@ save_sync (Cache *cache)
     }
   msg ("Saving DB to disk (Synchronous)...");
   uint64_t now_us = get_monotonic_usec ();
-  if (cache_save (cache, MINIS_DB_DIR, now_us))
+  if (cache_save (cache, g_data.db_dir, now_us))
     {
       msg ("DB saved successfully.");
     }
@@ -787,8 +788,9 @@ server_shutdown (Cache *cache, int listen_fd, int epfd)
 }
 
 int
-server_run (int port, const char *bind_addr)
+server_run (int port, const char *bind_addr, const char *db_dir)
 {
+  g_data.db_dir = db_dir;
   struct epoll_event events[MAX_EVENTS];
   int listen_fd = -1;
   int epfd = -1;
