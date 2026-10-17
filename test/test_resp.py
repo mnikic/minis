@@ -1443,6 +1443,37 @@ class TestProtocolErrors(MinisTestCase):
             # The client reconnects
             self.assertTrue(self.r.ping())
 
+    def test_malformed_requests(self):
+        cases = [
+            (b"*x\r\n", b"invalid multibulk length"),
+            (b"*99999999999999999999\r\n", b"invalid multibulk length"),
+            (b"*1\r\n:3\r\n", b"expected '$', got ':'"),
+            (b"*1\r\n\r\n", b"expected '$', got ' '"),
+            (b"*1\r\n$x\r\n", b"invalid bulk length"),
+            (b"*1\r\n$-5\r\n", b"invalid bulk length"),
+            (b"*1\r\n$4\r\nPINGxx", b"invalid CRLF in request"),
+        ]
+        for data, msg in cases:
+            with self.subTest(data=data):
+                self.assertEqual(self.raw(data),
+                                 b"-ERR Protocol error: " + msg + b"\r\n")
+        self.assertAlive()
+
+    def test_garbage_is_caught_without_waiting(self):
+        # Valkey waits for a CR (or 64KB) here, minis knows sooner
+        self.assertEqual(self.raw(b"*1garbage"),
+                         b"-ERR Protocol error: invalid multibulk length\r\n")
+
+    def test_empty_requests_get_no_reply(self):
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(3)
+            sock.sendall(b"*0\r\n*-1\r\n" + raw_command("PING"))
+            self.assertEqual(sock.recv(100), b"+PONG\r\n")
+
+    def test_commands_before_garbage_are_answered(self):
+        self.assertEqual(self.raw(raw_command("PING") + b"*1\r\n$x\r\n"),
+                         b"+PONG\r\n-ERR Protocol error: invalid bulk length\r\n")
+
     def test_1024_arguments_work(self):
         keys = [f"limit:{i}" for i in range(1023)]
         self.r.mset({k: "v" for k in keys[:511]})

@@ -32,57 +32,48 @@ _Static_assert (K_MAX_MSG < 16777215,
 
 
 
-// Helper: Read a line like "123\r\n" and parse the integer. 
-static ALWAYS_INLINE bool
+// Helper: Read a line like "123\r\n" and parse the integer. INCOMPLETE
+// only while the bytes so far can still become one, so garbage is caught
+// at once instead of waiting for a CR that may never come.
+static ALWAYS_INLINE ProtoStatus
 read_resp_int (const uint8_t *buf, size_t limit, size_t *pos,
 	       int64_t *out_val)
 {
-  const uint8_t *start_ptr = buf + *pos;
-  size_t remaining = limit - *pos;
+  const uint8_t *curr = buf + *pos;
+  const uint8_t *end = buf + limit;
 
-  const uint8_t *cr_ptr = memchr (start_ptr, '\r', remaining);
-
-  // Incomplete (no CR found) or split buffer
-  if (unlikely (!cr_ptr))
-    return false;
-
-  // Check bounds for \n (Need at least 1 byte after \r)
-  // cr_ptr points to \r. We need cr_ptr + 1 to be valid.
-  if (unlikely (cr_ptr + 1 >= buf + limit))
-    return false;
-
-  // Strict Protocol Check: Must be followed by \n
-  if (unlikely (*(cr_ptr + 1) != '\n'))
-    return false;
-
-  // Parse Integer
-  int64_t val = 0;
   bool neg = false;
-  const uint8_t *curr = start_ptr;
-
-  if (*curr == '-')
+  if (curr < end && *curr == '-')
     {
       neg = true;
       curr++;
     }
 
-  // Loop only over the digits (pointer math is fast)
-  while (curr < cr_ptr)
+  int64_t val = 0;
+  size_t digits = 0;
+  while (curr < end && *curr >= '0' && *curr <= '9')
     {
-      uint8_t cur = *curr;
-      if (unlikely (cur < '0' || cur > '9'))
-	return false;		// Not a number
-
-      val = (val * 10) + (cur - '0');
+      int digit = *curr - '0';
+      if (unlikely (val > (INT64_MAX - digit) / 10))
+	return PROTO_DECISION_INVALID;	// Overflow
+      val = (val * 10) + digit;
+      digits++;
       curr++;
     }
 
-  if (neg)
-    val = -val;
+  if (curr == end)
+    return PROTO_DECISION_INCOMPLETE;
+  // Strict Protocol Check: digits, then \r\n
+  if (unlikely (*curr != '\r' || digits == 0))
+    return PROTO_DECISION_INVALID;
+  if (curr + 1 == end)
+    return PROTO_DECISION_INCOMPLETE;
+  if (unlikely (*(curr + 1) != '\n'))
+    return PROTO_DECISION_INVALID;
 
-  *out_val = val;
-  *pos = (size_t) (cr_ptr - buf) + 2;	// Skip \r\n
-  return true;
+  *out_val = neg ? -val : val;
+  *pos = (size_t) (curr - buf) + 2;	// Skip \r\n
+  return PROTO_DECISION_OK;
 }
 
 /**
@@ -94,20 +85,32 @@ HOT ProtoStatus
 scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
 		   const char **out_error)
 {
-  if (unlikely (limit < 4))
-    return PROTO_DECISION_INCOMPLETE;
-
   size_t pos = 0;
-  if (unlikely (buf[pos] != '*'))
+  if (unlikely (limit == 0))
     return PROTO_DECISION_INCOMPLETE;
+  if (unlikely (buf[pos] != '*'))
+    {
+      *out_error = "Protocol error: expected '*'";
+      return PROTO_DECISION_INVALID;
+    }
   pos++;
 
   int64_t count = 0;
-  if (!read_resp_int (buf, limit, &pos, &count))
-    return PROTO_DECISION_INCOMPLETE;
+  ProtoStatus status = read_resp_int (buf, limit, &pos, &count);
+  if (status == PROTO_DECISION_INVALID)
+    {
+      *out_error = "Protocol error: invalid multibulk length";
+      return PROTO_DECISION_INVALID;
+    }
+  if (status != PROTO_DECISION_OK)
+    return status;
 
-  if (unlikely (count < 0))
-    return PROTO_DECISION_INCOMPLETE;
+  // Like Redis, *0 and *-1 are empty requests, which get no reply
+  if (count <= 0)
+    {
+      *out_len = pos;
+      return PROTO_DECISION_OK;
+    }
 
   // Waiting for the rest would never end: the request cannot be parsed
   if (unlikely (count > K_MAX_ARGS))
@@ -120,19 +123,33 @@ scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
   // Loop through arguments
   for (int i = 0; i < count; i++)
     {
-      // Check space for header "$0\r\n" (at least 4 bytes)
-      if (unlikely (pos + 4 > limit))
+      if (pos >= limit)
 	return PROTO_DECISION_INCOMPLETE;
 
       if (unlikely (buf[pos] != '$'))
-	return PROTO_DECISION_INCOMPLETE;
+	{
+	  // Single threaded. Like Redis, a CR or LF, which would break
+	  // the error line, shows as a space.
+	  static char expected[] = "Protocol error: expected '$', got ' '";
+	  bool newline = buf[pos] == '\r' || buf[pos] == '\n';
+	  expected[sizeof (expected) - 3] = newline ? ' ' : (char) buf[pos];
+	  *out_error = expected;
+	  return PROTO_DECISION_INVALID;
+	}
       pos++;
 
       int64_t len = 0;
-      if (!read_resp_int (buf, limit, &pos, &len))
-	return PROTO_DECISION_INCOMPLETE;
+      status = read_resp_int (buf, limit, &pos, &len);
+      if (status == PROTO_DECISION_INVALID || (status == PROTO_DECISION_OK
+					       && len < 0))
+	{
+	  *out_error = "Protocol error: invalid bulk length";
+	  return PROTO_DECISION_INVALID;
+	}
+      if (status != PROTO_DECISION_OK)
+	return status;
 
-      if (unlikely (len < 0 || len > (int64_t) K_MAX_MSG))
+      if (unlikely (len > (int64_t) K_MAX_MSG))
 	return PROTO_DECISION_INCOMPLETE;
 
       // Calculate where data ends
@@ -145,7 +162,10 @@ scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
       // STRICT CHECK: Verify tail is actually \r\n
       // Previous code trusted 'len', allowing garbage delimiters.
       if (unlikely (buf[data_end] != '\r' || buf[data_end + 1] != '\n'))
-	return PROTO_DECISION_INCOMPLETE;
+	{
+	  *out_error = "Protocol error: invalid CRLF in request";
+	  return PROTO_DECISION_INVALID;
+	}
 
       pos = data_end + 2;
     }

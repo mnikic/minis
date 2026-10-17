@@ -1575,6 +1575,41 @@ test_resp_framing (void)
 		 "too many arguments");
   check_framing ("*1024\r\n", 0, PROTO_DECISION_INCOMPLETE, 0, NULL);
 
+  // Malformed requests are invalid as soon as the bytes show it
+  struct
+  {
+    const char *msg;
+    const char *error;
+  } bad[] = {
+    {"*x\r\n", "invalid multibulk length"},
+    {"*x", "invalid multibulk length"},
+    {"*\r\n", "invalid multibulk length"},
+    {"*1\rX", "invalid multibulk length"},
+    {"*1 \r\n", "invalid multibulk length"},
+    {"*99999999999999999999\r\n", "invalid multibulk length"},
+    {"*1\r\n:3\r\n", "expected '$', got ':'"},
+    {"*1\r\n\r\n", "expected '$', got ' '"},
+    {"*2\r\n$1\r\na\r\nGET", "expected '$', got 'G'"},
+    {"*1\r\n$x\r\n", "invalid bulk length"},
+    {"*1\r\n$-5\r\n", "invalid bulk length"},
+    {"*1\r\n$\r\n", "invalid bulk length"},
+    {"*1\r\n$3\r\nabcXY", "invalid CRLF in request"},
+    {"*1\r\n$3\r\nabc\rX", "invalid CRLF in request"},
+    {"PING\r\n", "expected '*'"},
+  };
+  for (size_t i = 0; i < sizeof (bad) / sizeof (bad[0]); i++)
+    check_framing (bad[i].msg, 0, PROTO_DECISION_INVALID, 0, bad[i].error);
+
+  // Still fine so far
+  check_framing ("*1\r\n$3", 0, PROTO_DECISION_INCOMPLETE, 0, NULL);
+  check_framing ("*1\r\n$3\r\nab", 0, PROTO_DECISION_INCOMPLETE, 0, NULL);
+  check_framing ("*1\r\n$3\r\nabc\r", 0, PROTO_DECISION_INCOMPLETE, 0,
+		 NULL);
+  check_framing ("*12", 0, PROTO_DECISION_INCOMPLETE, 0, NULL);
+  // Empty requests, which get no reply
+  check_framing ("*0\r\n", 0, PROTO_DECISION_OK, 4, NULL);
+  check_framing ("*-1\r\n", 0, PROTO_DECISION_OK, 5, NULL);
+
   printf ("PASSED\n");
 }
 

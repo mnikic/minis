@@ -109,7 +109,8 @@ typedef enum
 {
   EXEC_OK,
   EXEC_FAIL,			// An error was sent, the connection closes
-  EXEC_BLOCK			// BLPOP/BRPOP has to wait, nothing was written
+  EXEC_BLOCK,			// BLPOP/BRPOP has to wait, nothing was written
+  EXEC_SKIP			// An empty request, which gets no reply
 } ExecResult;
 
 static ALWAYS_INLINE bool
@@ -191,6 +192,12 @@ execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
 
   DBG_LOGF ("FD %d: Executing command with %zu arguments",
 	    ctx->conn->fd, proto_req.cmd_size);
+
+  if (proto_req.cmd_size == 0)
+    {
+      restore_all_bytes (&restore);
+      return EXEC_SKIP;
+    }
 
   ExecResult result;
   if (proto_req.cmd_size > 0 && is_blocking_pop (global_cmd_scratch[0]))
@@ -281,6 +288,13 @@ protocol_try_one_request (RequestContext *ctx)
       conn->wbuf_head = head_before;
       blocking_park (conn, ctx->block_timeout_us, ctx->now_us);
       return false;
+    }
+
+  if (result == EXEC_SKIP)
+    {
+      conn->wbuf_head = head_before;
+      conn->read_offset += msg.total_len;
+      return true;
     }
 
   // Commit response
