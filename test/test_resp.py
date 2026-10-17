@@ -37,15 +37,16 @@ def free_port():
 
 
 class MinisServer:
-    def __init__(self):
+    def __init__(self, extra_args=()):
         self.workdir = tempfile.TemporaryDirectory(prefix="minis-test-")
         self.port = free_port()
+        self.extra_args = list(extra_args)
         self.log = open(os.path.join(self.workdir.name, "server.log"), "w")
         self.start()
 
     def start(self):
         self.proc = subprocess.Popen(
-            [MINIS_BIN, "-p", str(self.port)],
+            [MINIS_BIN, "-p", str(self.port)] + self.extra_args,
             cwd=self.workdir.name,
             stdout=self.log,
             stderr=subprocess.STDOUT,
@@ -1537,6 +1538,56 @@ class TestTtlPersistence(MinisTestCase):
         self.assertEqual(self.r.get("tp_soon"), "v")
         time.sleep(1.7)
         self.assertIsNone(self.r.get("tp_soon"))
+
+
+def lan_address():
+    """This machine's address on its network, None if it has none. (No
+    packet is sent: a UDP connect only picks the route.)"""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.connect(("192.0.2.1", 9))
+            address = sock.getsockname()[0]
+        except OSError:
+            return None
+    return None if address.startswith("127.") else address
+
+
+def reachable(address, port):
+    try:
+        socket.create_connection((address, port), 1).close()
+        return True
+    except OSError:
+        return False
+
+
+class TestBind(unittest.TestCase):
+    def test_bind_to_loopback(self):
+        lan = lan_address()
+        if lan is None:
+            self.skipTest("no network address to check against")
+        server = MinisServer(["-b", "127.0.0.1"])
+        try:
+            self.assertTrue(reachable("127.0.0.1", server.port))
+            self.assertFalse(reachable(lan, server.port))
+        finally:
+            server.stop()
+
+    def test_default_is_all_addresses(self):
+        lan = lan_address()
+        if lan is None:
+            self.skipTest("no network address to check against")
+        server = MinisServer()
+        try:
+            self.assertTrue(reachable("127.0.0.1", server.port))
+            self.assertTrue(reachable(lan, server.port))
+        finally:
+            server.stop()
+
+    def test_invalid_address_stops_startup(self):
+        proc = subprocess.run([MINIS_BIN, "-p", str(free_port()), "-b", "nope"],
+                              capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Invalid bind address: nope", proc.stdout + proc.stderr)
 
 
 class TestDel(MinisTestCase):

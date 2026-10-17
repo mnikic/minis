@@ -37,6 +37,7 @@
 typedef struct
 {
   int port;
+  const char *bind_addr;	// NULL: all addresses
   bool daemonize;
   bool verbose;
 } MinisConfig;
@@ -49,6 +50,8 @@ print_usage (const char *prog_name)
   msgf ("Usage: %s [options]\n\n", prog_name);
   msgf ("Options:\n");
   msgf ("  -p, --port <port>    Set TCP port (default: %d)\n", DEFAULT_PORT);
+  msgf ("  -b, --bind <addr>    Listen on this IPv4 address only, like\n"
+	"                       127.0.0.1 (default: all addresses)\n");
   msgf ("  -d, --daemonize      Run as a background daemon\n");
   msgf ("  -v, --verbose        Enable verbose logging\n");
   msgf ("  -h, --help           Show this help message\n");
@@ -60,11 +63,13 @@ parse_args (int argc, char *argv[], MinisConfig *cfg)
 {
   // Set defaults
   cfg->port = DEFAULT_PORT;
+  cfg->bind_addr = NULL;
   cfg->daemonize = false;
   cfg->verbose = false;
 
   static struct option long_options[] = {
     {"port", required_argument, 0, 'p'},
+    {"bind", required_argument, 0, 'b'},
     {"daemonize", no_argument, 0, 'd'},
     {"verbose", no_argument, 0, 'v'},
     {"help", no_argument, 0, 'h'},
@@ -75,7 +80,7 @@ parse_args (int argc, char *argv[], MinisConfig *cfg)
   int option_index = 0;
 
   while ((opt =
-	  getopt_long (argc, argv, "p:dvh", long_options,
+	  getopt_long (argc, argv, "p:b:dvh", long_options,
 		       &option_index)) != -1)
     {
       switch (opt)
@@ -87,6 +92,9 @@ parse_args (int argc, char *argv[], MinisConfig *cfg)
 	      msgf ("Error: Invalid port number %s\n", optarg);
 	      exit (EXIT_FAILURE);
 	    }
+	  break;
+	case 'b':
+	  cfg->bind_addr = optarg;
 	  break;
 	case 'd':
 	  cfg->daemonize = true;
@@ -204,5 +212,5 @@ main (int argc, char *argv[])
   // Start the Engine
   // You might need to update server_run to accept the config struct 
   // or just pass the port for now.
-  return server_run (config.port);
+  return server_run (config.port, config.bind_addr);
 }

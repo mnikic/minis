@@ -554,7 +554,8 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
 }
 
 static bool COLD
-initialize_server_core (int port, int *listen_fd, int *epfd)
+initialize_server_core (int port, const char *bind_addr, int *listen_fd,
+			int *epfd)
 {
   struct sockaddr_in addr = { 0 };
   int err, val = 1;
@@ -568,7 +569,13 @@ initialize_server_core (int port, int *listen_fd, int *epfd)
 
   addr.sin_family = AF_INET;
   addr.sin_port = htons ((__uint16_t) port);
-  addr.sin_addr.s_addr = htonl (0);
+  addr.sin_addr.s_addr = htonl (INADDR_ANY);
+  if (bind_addr && inet_pton (AF_INET, bind_addr, &addr.sin_addr) != 1)
+    {
+      close (*listen_fd);
+      msgf ("Invalid bind address: %s", bind_addr);
+      die ("inet_pton()");
+    }
 
   err = bind (*listen_fd, (const struct sockaddr *) &addr, sizeof (addr));
   if (unlikely (err))
@@ -584,7 +591,8 @@ initialize_server_core (int port, int *listen_fd, int *epfd)
       die ("listen()");
     }
 
-  msgf ("The server is listening on port %i.", port);
+  msgf ("The server is listening on %s port %i.",
+	bind_addr ? bind_addr : "all addresses,", port);
 
   g_data.fd2conn = connpool_new (MAX_CONNECTIONS);
   fd_set_nb (*listen_fd);
@@ -779,7 +787,7 @@ server_shutdown (Cache *cache, int listen_fd, int epfd)
 }
 
 int
-server_run (int port)
+server_run (int port, const char *bind_addr)
 {
   struct epoll_event events[MAX_EVENTS];
   int listen_fd = -1;
@@ -792,7 +800,7 @@ server_run (int port)
   dlist_init (&g_data.idle_list);
   Cache *cache = init_cache (get_monotonic_usec ());
 
-  if (!initialize_server_core (port, &listen_fd, &epfd) != 0)
+  if (!initialize_server_core (port, bind_addr, &listen_fd, &epfd) != 0)
     return -1;
 
   while (!g_data.terminate_flag)
