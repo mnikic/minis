@@ -64,6 +64,7 @@ static struct
   DList idle_list;
   int epfd;
   uint64_t last_snapshot_time;
+  uint64_t next_snapshot_check;	// When the save rules are next checked
   pid_t snapshot_child_pid;
   uint64_t last_snapshot_mod_count;
   uint64_t last_snapshot_mod_count_at_fork;
@@ -491,6 +492,8 @@ initialize_server_core (int port, int *listen_fd, int *epfd)
     }
   // No need to make a snapshot immidiatelly afer we start!
   g_data.last_snapshot_time = get_monotonic_usec ();
+  g_data.next_snapshot_check =
+    g_data.last_snapshot_time + SNAPSHOT_INTERVAL_US;
   return true;
 }
 
@@ -514,10 +517,9 @@ next_timer_ms (Cache *cache, uint64_t now_us)
   // Only schedule if interval is set and no child is currently running
   if (SNAPSHOT_INTERVAL_US > 0 && g_data.snapshot_child_pid == 0)
     {
-      uint64_t next_snap = g_data.last_snapshot_time + SNAPSHOT_INTERVAL_US;
-      if (next_snap < next_us)
+      if (g_data.next_snapshot_check < next_us)
 	{
-	  next_us = next_snap;
+	  next_us = g_data.next_snapshot_check;
 	}
     }
 
@@ -567,6 +569,13 @@ process_snapshots (Cache *cache, uint64_t now_us)
 
   if (g_data.snapshot_child_pid != 0)
     return;
+
+  // Check the rules every SNAPSHOT_INTERVAL_US. The check time must move
+  // on even when no snapshot is taken, or once it is due every epoll
+  // wait gets a zero timeout and the idle server spins.
+  if (now_us < g_data.next_snapshot_check)
+    return;
+  g_data.next_snapshot_check = now_us + SNAPSHOT_INTERVAL_US;
 
   uint64_t dirty_diff =
     cache_dirty_count (cache) - g_data.last_snapshot_mod_count;

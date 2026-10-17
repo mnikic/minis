@@ -636,6 +636,31 @@ class TestListPersistence(MinisTestCase):
                          values[::1000])
 
 
+def cpu_seconds(pid):
+    """User plus system CPU time of a process"""
+    with open(f"/proc/{pid}/stat") as f:
+        fields = f.read().rsplit(")", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+
+class TestIdle(MinisTestCase):
+    # The server checks its snapshot rules every 10s
+    SNAPSHOT_INTERVAL = 10
+
+    def test_idle_server_sleeps(self):
+        # One change, so there is something to save but no rule is met
+        self.r.set("idle_key", "v")
+        self.r.close()
+        time.sleep(self.SNAPSHOT_INTERVAL + 1.5)
+
+        pid = self.server.proc.pid
+        before = cpu_seconds(pid)
+        time.sleep(2)
+        used = cpu_seconds(pid) - before
+        self.assertLess(used, 0.2, f"idle server used {used:.2f}s CPU in 2s")
+        self.assertAlive()
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")
