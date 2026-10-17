@@ -69,6 +69,15 @@ MinisError minis_ttl (Minis * minis, const char *key, int64_t * out_ttl_ms,
 MinisError minis_keys (Minis * minis, const char *pattern, MinisKeyCb cb,
 		       void *ctx, uint64_t now_us);
 
+// SCAN: visits about count keys from cursor (0 starts a new scan) and
+// sets *out_cursor to where to go on, 0 when done. pattern (or NULL)
+// and type (or -1) filter the keys passed to cb, but count counts all
+// keys looked at, like Redis. Read only, so two calls with the same
+// arguments see the same keys if nothing changed in between.
+MinisError minis_scan (Minis * minis, uint64_t cursor, size_t count,
+		       const char *pattern, int type, MinisKeyCb cb,
+		       void *ctx, uint64_t now_us, uint64_t * out_cursor);
+
 // Persistence
 MinisError minis_save (Minis * minis, const char *base_dir, uint64_t now_us);
 MinisError minis_load (Minis * minis, const char *base_dir, uint64_t now_us);

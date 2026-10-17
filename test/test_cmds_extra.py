@@ -1065,6 +1065,46 @@ $ {client_executable-abs_path} keys 'glob:a\*c'
 (arr) end
 $ {client_executable-abs_path} del glob:hello glob:hallo glob:hxllo glob:a*c
 (int) 4
+# Test: SCAN (unique prefixes and a big COUNT make it one call)
+$ {client_executable-abs_path} mset scanone:a v scanone:b v scanone_x v
+(str) OK
+$ {client_executable-abs_path} rpush scanone:list a
+(int) 1
+$ {client_executable-abs_path} scan 0 match scanone:? count 100000
+(arr) len=2
+(str) 0
+(arr) len=2
+(str) scanone:b
+(str) scanone:a
+(arr) end
+(arr) end
+$ {client_executable-abs_path} scan 0 match scanone* type list count 100000
+(arr) len=2
+(str) 0
+(arr) len=1
+(str) scanone:list
+(arr) end
+(arr) end
+$ {client_executable-abs_path} scan 0 match nothing_matches_this* count 100000
+(arr) len=2
+(str) 0
+(arr) len=0
+(arr) end
+(arr) end
+$ {client_executable-abs_path} scan x
+(err) 4 invalid cursor
+$ {client_executable-abs_path} scan -1
+(err) 4 invalid cursor
+$ {client_executable-abs_path} scan 0 count 0
+(err) 4 syntax error
+$ {client_executable-abs_path} scan 0 count x
+(err) 4 value is not an integer or out of range
+$ {client_executable-abs_path} scan 0 match
+(err) 4 syntax error
+$ {client_executable-abs_path} scan 0 type set
+(err) 4 unknown type name 'set'
+$ {client_executable-abs_path} del scanone:a scanone:b scanone_x scanone:list
+(int) 4
 '''
 
 

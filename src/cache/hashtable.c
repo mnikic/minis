@@ -403,6 +403,88 @@ hm_iter_next (HMIter *iter)
   return NULL;
 }
 
+// Visits the nodes whose home bucket is 'bucket'. Robin Hood probing
+// keeps them in one run at or after the bucket, behind any nodes from
+// earlier buckets.
+static void
+h_scan_bucket (const HTab *htab, size_t bucket,
+	       void (*func) (HNode *, void *), void *arg)
+{
+  if (!htab->tab)
+    return;
+
+  size_t pos = bucket;
+  for (size_t dist = 0; dist <= htab->mask; dist++)
+    {
+      const HTabEntry *entry = &htab->tab[pos];
+      if (entry->node == NULL)
+	return;
+
+      size_t entry_dist =
+	probe_distance (entry->hcode_cached, pos, htab->mask);
+      // Home is past the bucket, so the run is over
+      if (entry_dist < dist)
+	return;
+      if (entry_dist == dist)
+	func (entry->node, arg);
+
+      pos = (pos + 1) & htab->mask;
+    }
+}
+
+static size_t
+rev_bits (size_t v)
+{
+  size_t r = 0;
+  for (size_t i = 0; i < sizeof (v) * 8; i++)
+    {
+      r = (r << 1) | (v & 1);
+      v >>= 1;
+    }
+  return r;
+}
+
+// Increments the cursor's bits under mask in reverse order, so that a
+// bucket's position stays valid when the table doubles (Redis dictScan)
+static size_t
+scan_next (size_t cursor, size_t mask)
+{
+  cursor |= ~mask;
+  cursor = rev_bits (cursor);
+  cursor++;
+  return rev_bits (cursor);
+}
+
+size_t
+hm_scan_step (const HMap *hmap, size_t cursor,
+	      void (*func) (HNode *, void *), void *arg)
+{
+  if (!hmap->ht2.tab)
+    {
+      size_t mask = hmap->ht1.mask;
+      h_scan_bucket (&hmap->ht1, cursor & mask, func, arg);
+      return scan_next (cursor, mask);
+    }
+
+  // Resizing: ht2 is the old, smaller table and ht1 the new one. Visit
+  // the small bucket and every big bucket it splits into.
+  const HTab *small = &hmap->ht2;
+  const HTab *big = &hmap->ht1;
+  size_t m0 = small->mask;
+  size_t m1 = big->mask;
+
+  h_scan_bucket (small, cursor & m0, func, arg);
+  do
+    {
+      h_scan_bucket (big, cursor & m1, func, arg);
+      // Increment the bits of the big mask not in the small one
+      cursor = (((cursor | m0) + 1) & ~m0) | (cursor & m0);
+    }
+  while (cursor & (m0 ^ m1));
+
+  return scan_next (cursor, m0);
+}
+
 size_t
 hm_size (const HMap *hmap)
 {

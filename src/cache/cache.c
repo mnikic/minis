@@ -8,6 +8,7 @@
 #include <math.h>
 #include <errno.h>
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdint.h>
 
 #include "cache/hash.h"
@@ -239,6 +240,100 @@ do_keys (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   ctx.counting_only = false;
   minis_keys (cache, cmd[1], cb_keys_visitor, &ctx, now_us);
 
+  return ctx.result;
+}
+
+// SCAN cursors are unsigned. Like valkey, leading space and '+' pass.
+static bool
+str2cursor (const char *string, uint64_t *out)
+{
+  const char *p = string;
+  while (isspace ((unsigned char) *p))
+    p++;
+  if (*p == '\0' || *p == '-')
+    return false;
+  char *endp = NULL;
+  errno = 0;
+  unsigned long long val = strtoull (p, &endp, 10);
+  if (errno == ERANGE || *endp != '\0')
+    return false;
+  *out = val;
+  return true;
+}
+
+// Type names as Redis TYPE prints them, -1 if unknown
+static int
+type_from_name (const char *name)
+{
+  if (cmd_is (name, "string"))
+    return T_STR;
+  if (cmd_is (name, "list"))
+    return T_LIST;
+  if (cmd_is (name, "hash"))
+    return T_HASH;
+  if (cmd_is (name, "zset"))
+    return T_ZSET;
+  return -1;
+}
+
+// SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]
+static bool
+do_scan (Cache *cache, const char **cmd, size_t size, Buffer *out,
+	 uint64_t now_us)
+{
+  uint64_t cursor = 0;
+  if (!str2cursor (cmd[1], &cursor))
+    return out_err (out, ERR_ARG, "invalid cursor");
+
+  const char *pattern = NULL;
+  int64_t count = 10;
+  int type = -1;
+  // Options can repeat, the last one wins
+  for (size_t i = 2; i < size; i += 2)
+    {
+      if (i + 1 >= size)
+	return out_err (out, ERR_ARG, "syntax error");
+      const char *val = cmd[i + 1];
+      if (cmd_is (cmd[i], "match"))
+	pattern = val;
+      else if (cmd_is (cmd[i], "count"))
+	{
+	  if (!str2int (val, &count))
+	    return out_err (out, ERR_ARG, ERR_NOT_INT);
+	  if (count < 1)
+	    return out_err (out, ERR_ARG, "syntax error");
+	}
+      else if (cmd_is (cmd[i], "type"))
+	{
+	  type = type_from_name (val);
+	  if (type < 0)
+	    {
+	      char msg[128];
+	      snprintf (msg, sizeof (msg), "unknown type name '%s'", val);
+	      return out_err (out, ERR_ARG, msg);
+	    }
+	}
+      else
+	return out_err (out, ERR_ARG, "syntax error");
+    }
+
+  // Count, then write: the scan is read only and the server single
+  // threaded, so both passes see the same keys
+  VisitCtx ctx = {.out = out,.counting_only = true,.count = 0,.result = true
+  };
+  uint64_t next = 0;
+  minis_scan (cache, cursor, (size_t) count, pattern, type,
+	      cb_keys_visitor, &ctx, now_us, &next);
+
+  char next_str[24];
+  snprintf (next_str, sizeof (next_str), "%" PRIu64, next);
+  if (!out_arr (out, 2) || !out_str (out, next_str)
+      || !out_arr (out, ctx.count))
+    return false;
+
+  ctx.counting_only = false;
+  minis_scan (cache, cursor, (size_t) count, pattern, type,
+	      cb_keys_visitor, &ctx, now_us, &next);
   return ctx.result;
 }
 
@@ -732,6 +827,8 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
     return do_ping (cache, cmd, size, out);
   if (size > 0 && cmd_is (cmd[0], "config"))
     return do_config (cache, cmd, size, out);
+  if (size >= 2 && cmd_is (cmd[0], "scan"))
+    return do_scan (cache, cmd, size, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "keys"))
     return do_keys (cache, cmd, out, now_us);
   if (size > 2 && size % 2 == 1 && cmd_is (cmd[0], "mset"))

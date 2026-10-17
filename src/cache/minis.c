@@ -316,6 +316,83 @@ minis_keys (Minis *minis, const char *pattern, MinisKeyCb cb, void *ctx,
   return MINIS_OK;
 }
 
+typedef struct
+{
+  const char *pattern;
+  int type;
+  MinisKeyCb cb;
+  void *ctx;
+  uint64_t now_us;
+  size_t seen;
+} ScanCtx;
+
+static void
+cb_scan_step (HNode *node, void *arg)
+{
+  ScanCtx *ctx = (ScanCtx *) arg;
+  const Entry *ent = entry_fetch (node);
+
+  // Skip without deleting: deleting would move entries mid scan
+  if (ent->expire_at_us != 0 && ent->expire_at_us < ctx->now_us)
+    return;
+  ctx->seen++;
+
+  if (ctx->type >= 0 && (int) ent->type != ctx->type)
+    return;
+  if (ctx->pattern && !glob_match (ctx->pattern, ent->key))
+    return;
+  ctx->cb (ent->key, ctx->ctx);
+}
+
+// The cursor is the shard in its low bits and the shard's hm_scan_step
+// cursor above them
+#define SCAN_SHARD_BITS 4
+_Static_assert ((1 << SCAN_SHARD_BITS) == NUM_SHARDS,
+		"SCAN cursor packs the shard id in SCAN_SHARD_BITS bits");
+
+MinisError
+minis_scan (Minis *minis, uint64_t cursor, size_t count, const char *pattern,
+	    int type, MinisKeyCb cb, void *ctx, uint64_t now_us,
+	    uint64_t *out_cursor)
+{
+  ScanCtx sctx = {
+    .pattern = pattern,
+    .type = type,
+    .cb = cb,
+    .ctx = ctx,
+    .now_us = now_us,
+    .seen = 0
+  };
+
+  size_t shard_id = cursor & SHARD_MASK;
+  size_t step_cursor = (size_t) (cursor >> SCAN_SHARD_BITS);
+  // Like Redis, bound the work when few keys are found
+  size_t max_steps = count > SIZE_MAX / 10 ? SIZE_MAX : count * 10;
+
+  for (size_t steps = 0; steps < max_steps && sctx.seen < count; steps++)
+    {
+      Shard *shard = &minis->shards[shard_id];
+      lock_shard (shard);
+      // Tables never shrink, so walking an emptied one could take many
+      // calls. Its keys would only be ones added during the scan.
+      if (hm_size (&shard->db) == 0)
+	step_cursor = 0;
+      else
+	step_cursor = hm_scan_step (&shard->db, step_cursor, cb_scan_step,
+				    &sctx);
+      unlock_shard (shard);
+
+      if (step_cursor == 0 && ++shard_id == NUM_SHARDS)
+	{
+	  *out_cursor = 0;
+	  return MINIS_OK;
+	}
+    }
+
+  *out_cursor = ((uint64_t) step_cursor << SCAN_SHARD_BITS) | shard_id;
+  return MINIS_OK;
+}
+
 MinisError
 minis_save (Minis *minis, const char *base_dir, uint64_t now_us)
 {

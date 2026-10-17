@@ -6,8 +6,10 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <inttypes.h>
 
 #include "cache/cache.h"
+#include "cache/hashtable.h"
 #include "common/common.h"
 #include "common/glob.h"
 #include "io/buffer.h"
@@ -1133,6 +1135,271 @@ test_glob (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6m: hm_scan_step across resizes
+// ============================================================================
+
+typedef struct
+{
+  HNode node;
+  int id;
+} ScanNode;
+
+static bool
+scan_node_eq (HNode *node, const void *key)
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  return container_of (node, ScanNode, node)->id == *(const int *) key;
+#pragma GCC diagnostic pop
+}
+
+#define SCAN_STABLE 1000
+#define SCAN_MAX_NODES 40000
+
+static int scan_visits[SCAN_MAX_NODES];
+
+static void
+cb_scan_visit (HNode *node, void *arg)
+{
+  (void) arg;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  scan_visits[container_of (node, ScanNode, node)->id]++;
+#pragma GCC diagnostic pop
+}
+
+static void
+scan_insert (HMap *map, ScanNode *nodes, int id)
+{
+  nodes[id].id = id;
+  nodes[id].node.hcode = str_hash ((const uint8_t *) &id, sizeof (id));
+  hm_insert (map, &nodes[id].node, &id, scan_node_eq);
+}
+
+// The SCAN guarantee at the table level: nodes there for the whole scan
+// are visited, while the map grows through many resizes (some steps
+// landing mid resize) and other nodes are deleted, shifting entries back
+static void
+test_hm_scan_step (void)
+{
+  printf ("TEST: hm_scan_step across resizes... ");
+
+  static ScanNode nodes[SCAN_MAX_NODES];
+  HMap map;
+  ASSERT_TRUE (hm_init (&map, 8));
+  memset (scan_visits, 0, sizeof (scan_visits));
+
+  int next_id = 0;
+  for (; next_id < SCAN_STABLE; next_id++)
+    scan_insert (&map, nodes, next_id);
+
+  size_t steps = 0;
+  size_t steps_mid_resize = 0;
+  int deleted = 0;
+  size_t cursor = 0;
+  do
+    {
+      // A cursor that never returns to 0 fails instead of hanging
+      ASSERT_TRUE (steps < 1000000);
+      if (map.ht2.tab != NULL)
+	steps_mid_resize++;
+      cursor = hm_scan_step (&map, cursor, cb_scan_visit, NULL);
+      steps++;
+
+      // Grow by more than one step visits, so tables keep resizing
+      for (int i = 0; i < 3 && next_id < SCAN_MAX_NODES; i++)
+	scan_insert (&map, nodes, next_id++);
+      // And delete some of the added nodes
+      if (steps % 4 == 0 && SCAN_STABLE + deleted < next_id)
+	{
+	  int id = SCAN_STABLE + deleted++;
+	  ASSERT_TRUE (hm_pop (&map, &id, nodes[id].node.hcode,
+			       scan_node_eq) != NULL);
+	}
+    }
+  while (cursor != 0);
+
+  for (int id = 0; id < SCAN_STABLE; id++)
+    ASSERT_TRUE (scan_visits[id] >= 1);
+  ASSERT_TRUE (steps_mid_resize > 0);
+
+  // Without changes, a scan visits each node exactly once
+  memset (scan_visits, 0, sizeof (scan_visits));
+  cursor = 0;
+  steps = 0;
+  do
+    {
+      ASSERT_TRUE (steps++ < 1000000);
+      cursor = hm_scan_step (&map, cursor, cb_scan_visit, NULL);
+    }
+  while (cursor != 0);
+  size_t live = 0;
+  for (int id = 0; id < next_id; id++)
+    {
+      ASSERT_TRUE (scan_visits[id] <= 1);
+      live += (size_t) scan_visits[id];
+    }
+  ASSERT_EQ (live, hm_size (&map));
+
+  hm_destroy (&map);
+  printf ("PASSED\n");
+}
+
+// ============================================================================
+// Test 6n: SCAN command
+// ============================================================================
+
+// Runs SCAN and parses the binary reply: returns the next cursor and
+// fills keys (pointers into buf) and *nkeys
+static uint64_t
+scan_reply (Buffer *buf, const char **keys, size_t max_keys, size_t *nkeys)
+{
+  const uint8_t *data = buf_data (buf);
+  ASSERT_EQ (data[0], SER_ARR);
+  ASSERT_EQ (data[5], SER_STR);
+  uint32_t len;
+  memcpy (&len, &data[6], 4);
+  len = ntoh_u32 (len);
+  char cursor_str[32] = { 0 };
+  ASSERT_TRUE (len < sizeof (cursor_str));
+  memcpy (cursor_str, &data[10], len);
+
+  size_t pos = 10 + len;
+  ASSERT_EQ (data[pos], SER_ARR);
+  uint32_t count;
+  memcpy (&count, &data[pos + 1], 4);
+  count = ntoh_u32 (count);
+  ASSERT_TRUE (count <= max_keys);
+  pos += 5;
+  for (uint32_t i = 0; i < count; i++)
+    {
+      ASSERT_EQ (data[pos], SER_STR);
+      uint32_t klen;
+      memcpy (&klen, &data[pos + 1], 4);
+      klen = ntoh_u32 (klen);
+      // The test buffer is zeroed and keys are followed by a type byte,
+      // so copy each key out
+      static char key_store[4096][64];
+      ASSERT_TRUE (klen < 64);
+      memcpy (key_store[i], &data[pos + 5], klen);
+      key_store[i][klen] = '\0';
+      keys[i] = key_store[i];
+      pos += 5 + klen;
+    }
+  ASSERT_EQ (pos, buf_len (buf));
+  *nkeys = count;
+  return strtoull (cursor_str, NULL, 10);
+}
+
+static void
+test_scan_command (void)
+{
+  printf ("TEST: SCAN command... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+  const char *keys[4096];
+  size_t nkeys = 0;
+
+  RUN (cache, now, "scan", "0");
+  ASSERT_EQ (scan_reply (&buf, keys, 4096, &nkeys), 0);
+  ASSERT_EQ (nkeys, 0);
+
+  // 500 strings, a list, and 50 keys that expire
+  static bool seen[500];
+  for (int i = 0; i < 500; i++)
+    {
+      char key[32];
+      snprintf (key, sizeof (key), "sc:%d", i);
+      RUN (cache, now, "set", key, "v");
+    }
+  RUN (cache, now, "rpush", "sc_list", "a");
+  for (int i = 0; i < 50; i++)
+    {
+      char key[32];
+      snprintf (key, sizeof (key), "sc_dying:%d", i);
+      RUN (cache, now, "set", key, "v", "PX", "100");
+    }
+  uint64_t later = now + 1000000;
+
+  // COUNT 1 walks the keyspace one bucket family at a time
+  char cursor_str[32] = "0";
+  size_t total = 0;
+  int calls = 0;
+  do
+    {
+      RUN (cache, later, "scan", cursor_str, "count", "1");
+      uint64_t next = scan_reply (&buf, keys, 4096, &nkeys);
+      for (size_t i = 0; i < nkeys; i++)
+	{
+	  int id;
+	  ASSERT_TRUE (strncmp (keys[i], "sc_dying", 8) != 0);
+	  if (sscanf (keys[i], "sc:%d", &id) == 1)
+	    {
+	      ASSERT_FALSE (seen[id]);
+	      seen[id] = true;
+	    }
+	  total++;
+	}
+      snprintf (cursor_str, sizeof (cursor_str), "%" PRIu64, next);
+      calls++;
+    }
+  while (strcmp (cursor_str, "0") != 0);
+  ASSERT_EQ (total, 501);
+  ASSERT_TRUE (calls > 1);
+  for (int i = 0; i < 500; i++)
+    ASSERT_TRUE (seen[i]);
+
+  // The dying keys were skipped, not deleted, scanning is read only
+  RUN (cache, now, "exists", "sc_dying:0");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+
+  // A big COUNT finishes in one call; MATCH and TYPE filter
+  RUN (cache, later, "scan", "0", "COUNT", "100000");
+  ASSERT_EQ (scan_reply (&buf, keys, 4096, &nkeys), 0);
+  ASSERT_EQ (nkeys, 501);
+  RUN (cache, later, "scan", "0", "MATCH", "sc:4?", "COUNT", "100000");
+  ASSERT_EQ (scan_reply (&buf, keys, 4096, &nkeys), 0);
+  ASSERT_EQ (nkeys, 10);
+  RUN (cache, later, "scan", "0", "TYPE", "LIST", "COUNT", "100000");
+  ASSERT_EQ (scan_reply (&buf, keys, 4096, &nkeys), 0);
+  ASSERT_EQ (nkeys, 1);
+  ASSERT_STR_EQ (keys[0], "sc_list");
+
+  // Errors, with the valkey texts
+  RUN (cache, now, "scan", "x");
+  assert_err_msg (&buf, "invalid cursor");
+  RUN (cache, now, "scan", "-1");
+  assert_err_msg (&buf, "invalid cursor");
+  RUN (cache, now, "scan", "18446744073709551616");
+  assert_err_msg (&buf, "invalid cursor");
+  RUN (cache, now, "scan", "0", "COUNT", "0");
+  assert_err_msg (&buf, "syntax error");
+  RUN (cache, now, "scan", "0", "COUNT", "x");
+  assert_err_msg (&buf, "value is not an integer or out of range");
+  RUN (cache, now, "scan", "0", "MATCH");
+  assert_err_msg (&buf, "syntax error");
+  RUN (cache, now, "scan", "0", "TYPE", "set");
+  assert_err_msg (&buf, "unknown type name 'set'");
+  RUN (cache, now, "scan", "0", "BOGUS", "1");
+  assert_err_msg (&buf, "syntax error");
+
+  // Any cursor value terminates
+  snprintf (cursor_str, sizeof (cursor_str), "%s", "18446744073709551615");
+  for (calls = 0; strcmp (cursor_str, "0") != 0; calls++)
+    {
+      ASSERT_TRUE (calls < 100000);
+      RUN (cache, later, "scan", cursor_str, "count", "10");
+      snprintf (cursor_str, sizeof (cursor_str), "%" PRIu64,
+		scan_reply (&buf, keys, 4096, &nkeys));
+    }
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -1733,6 +2000,8 @@ main (void)
   test_list_rem ();
   test_mget_other_types ();
   test_glob ();
+  test_hm_scan_step ();
+  test_scan_command ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

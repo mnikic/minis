@@ -792,6 +792,235 @@ class TestGlob(MinisTestCase):
                 self.assertEqual(sorted(self.r.keys(pattern)), want)
 
 
+def scan_all(r, **kwargs):
+    """Every key a full SCAN returns, with repeats, and the call count"""
+    keys, cursor, calls = [], 0, 0
+    while True:
+        cursor, batch = r.scan(cursor, **kwargs)
+        keys += batch
+        calls += 1
+        if cursor == 0:
+            return keys, calls
+
+
+class TestScan(MinisTestCase):
+    def setUp(self):
+        super().setUp()
+        # Each test owns the whole keyspace
+        self.delete_all(self.r.scan_iter(count=100))
+
+    def delete_all(self, keys):
+        # A request takes at most 1024 arguments and 200KB
+        keys = list(keys)
+        for i in range(0, len(keys), 100):
+            self.r.delete(*keys[i:i + 100])
+
+    def fill(self, keys, value="v"):
+        pipe = self.r.pipeline(transaction=False)
+        for k in keys:
+            pipe.set(k, value)
+        pipe.execute()
+
+    def test_empty(self):
+        self.assertEqual(self.r.scan(0), (0, []))
+
+    def test_emptied_keyspace_finishes_at_once(self):
+        # Tables keep their size after the keys go
+        self.fill(f"gone:{i}" for i in range(5000))
+        self.delete_all(f"gone:{i}" for i in range(5000))
+        self.assertEqual(self.r.scan(0), (0, []))
+
+    def test_full_iteration(self):
+        for n in (1, 10, 1000, 20000):
+            for count in (1, 10, 1000):
+                if n == 20000 and count == 1:
+                    continue  # too slow, covered by count 10
+                with self.subTest(n=n, count=count):
+                    keys = {f"full:{n}:{i}" for i in range(n)}
+                    self.fill(keys)
+                    got, _ = scan_all(self.r, count=count)
+                    self.assertEqual(set(got), keys)
+                    self.delete_all(keys)
+
+    def test_no_repeats_without_changes(self):
+        keys = {f"norep:{i}" for i in range(3000)}
+        self.fill(keys)
+        got, _ = scan_all(self.r, count=7)
+        self.assertEqual(len(got), len(keys))
+
+    def test_big_count_finishes_in_one_call(self):
+        self.fill(f"one:{i}" for i in range(500))
+        got, calls = scan_all(self.r, count=100000)
+        self.assertEqual((len(got), calls), (500, 1))
+
+    def test_match(self):
+        keys = ([f"seen:{i}" for i in range(300)] +
+                [f"shared_lead:{i}" for i in range(50)] + ["seen", "xseen:1"])
+        self.fill(keys)
+        cases = {
+            "seen:*": {k for k in keys if k.startswith("seen:")},
+            "seen:?": {f"seen:{i}" for i in range(10)},
+            "seen:1[0-2]": {"seen:10", "seen:11", "seen:12"},
+            "*lead*": {k for k in keys if "lead" in k},
+            "seen": {"seen"},
+            "nothing*": set(),
+        }
+        for pattern, want in cases.items():
+            with self.subTest(pattern=pattern):
+                got, _ = scan_all(self.r, match=pattern, count=10)
+                self.assertEqual(set(got), want)
+                self.assertEqual(set(self.r.scan_iter(match=pattern)), want)
+
+    def test_type(self):
+        self.r.set("t_str", "v")
+        self.r.rpush("t_list", "a")
+        self.r.hset("t_hash", "f", "v")
+        self.r.zadd("t_zset", {"m": 1})
+        for name, key in (("string", "t_str"), ("list", "t_list"),
+                          ("hash", "t_hash"), ("zset", "t_zset"),
+                          ("LIST", "t_list"), ("ZSet", "t_zset")):
+            with self.subTest(name=name):
+                got, _ = scan_all(self.r, _type=name)
+                self.assertEqual(got, [key])
+        got, _ = scan_all(self.r, match="t_*", _type="hash")
+        self.assertEqual(got, ["t_hash"])
+
+    def test_expired_keys_are_skipped(self):
+        self.fill(f"live:{i}" for i in range(50))
+        pipe = self.r.pipeline(transaction=False)
+        for i in range(50):
+            pipe.set(f"dying:{i}", "v", px=50)
+        pipe.execute()
+        time.sleep(0.2)
+        got, _ = scan_all(self.r, count=5)
+        self.assertEqual(set(got), {f"live:{i}" for i in range(50)})
+
+    def test_keys_present_throughout_survive_changes(self):
+        # The SCAN guarantee: keys there for the whole scan come back at
+        # least once, while others are added (growing and resizing the
+        # tables) and deleted (shifting entries back) between calls
+        for seed in range(5):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                stable = {f"stable:{seed}:{i}" for i in range(rng.randint(5, 400))}
+                self.fill(stable)
+                churn = [f"churn:{seed}:{i}" for i in range(200)]
+                self.fill(churn)
+                added = 0
+                got, cursor = [], 0
+                while True:
+                    cursor, batch = self.r.scan(cursor, count=rng.randint(1, 20))
+                    got += batch
+                    if cursor == 0:
+                        break
+                    # Fewer than the scan takes per call, or it never ends
+                    # (true for Redis too), and capped so tables still
+                    # resize several times mid scan
+                    new = [f"new:{seed}:{added + i}"
+                           for i in range(rng.randint(0, 3) if added < 3000 else 0)]
+                    added += len(new)
+                    self.fill(new)
+                    if churn:
+                        doomed = rng.sample(churn, min(len(churn), rng.randint(0, 20)))
+                        self.delete_all(doomed)
+                        churn = [c for c in churn if c not in doomed]
+                self.assertEqual(stable - set(got), set())
+                # Only keys that ever existed come back
+                self.assertTrue(all(k.split(":")[0] in ("stable", "churn", "new")
+                                    for k in got))
+                self.delete_all(self.r.scan_iter(count=100))
+
+    def test_growth_from_tiny_tables(self):
+        # Start small, then grow every shard's table many times over in
+        # the first calls of the scan, so it resumes on much bigger
+        # tables (and on tables caught mid resize)
+        stable = {f"tiny:{i}" for i in range(5)}
+        self.fill(stable)
+        got, cursor, calls = [], 0, 0
+        while True:
+            cursor, batch = self.r.scan(cursor, count=1)
+            got += batch
+            calls += 1
+            if cursor == 0:
+                break
+            if calls <= 20:
+                self.fill(f"grow:{calls}:{i}" for i in range(300))
+        self.assertEqual(stable - set(got), set())
+
+    def test_any_cursor_terminates(self):
+        self.fill(f"cur:{i}" for i in range(100))
+        for start in (1, 7, 12345, 2**63, 2**64 - 1):
+            with self.subTest(start=start):
+                cursor, calls = start, 0
+                while True:
+                    cursor, _ = self.r.scan(cursor, count=10)
+                    calls += 1
+                    if cursor == 0:
+                        break
+                    self.assertLess(calls, 10000)
+
+    def test_errors(self):
+        cases = [
+            (["x"], "invalid cursor"),
+            (["-1"], "invalid cursor"),
+            (["18446744073709551616"], "invalid cursor"),
+            ([""], "invalid cursor"),
+            (["0", "COUNT", "0"], "syntax error"),
+            (["0", "COUNT", "-1"], "syntax error"),
+            (["0", "COUNT", "x"], "not an integer"),
+            (["0", "MATCH"], "syntax error"),
+            (["0", "BOGUS", "1"], "syntax error"),
+            (["0", "TYPE", "bogus"], "unknown type name 'bogus'"),
+        ]
+        for args, msg in cases:
+            with self.subTest(args=args):
+                with self.assertRaisesRegex(redis.ResponseError, msg):
+                    self.r.execute_command("SCAN", *args)
+        self.assertAlive()
+
+    def test_lenient_cursor_and_repeated_options(self):
+        self.fill(["opt_a", "opt_b"])
+        for start in ("00", "+0", " 0"):
+            with self.subTest(cursor=start):
+                cursor, keys = self.r.execute_command("SCAN", start)
+                self.assertEqual(cursor, self.r.scan(0)[0])
+        # The last MATCH and COUNT win
+        cursor, got = 0, []
+        while True:
+            cursor, keys = self.r.execute_command(
+                "SCAN", cursor, "MATCH", "opt_a", "MATCH", "opt_b",
+                "COUNT", "1", "COUNT", "1000")
+            got += keys
+            if int(cursor) == 0:
+                break
+        self.assertEqual(got, ["opt_b"])
+
+    def test_reply_too_big(self):
+        long_keys = [f"long:{i}:" + "k" * 1000 for i in range(300)]
+        self.fill(long_keys)
+        # 300KB of keys do not fit in one reply
+        with self.assertRaises(redis.RedisError):
+            self.r.scan(0, count=100000)
+        self.r.close()
+        got, _ = scan_all(self.r, count=50)
+        self.assertEqual(set(got), set(long_keys))
+        self.delete_all(long_keys)
+
+    def test_leadgrep_seen_posts(self):
+        # yield_all_recent_posts_for_seo
+        posts = {f"seen:rss_https://reddit.com/r/x/{i}": f'{{"title": "{i}"}}'
+                 for i in range(2000)}
+        pipe = self.r.pipeline(transaction=False)
+        for k, v in posts.items():
+            pipe.set(k, v, ex=604800)
+        pipe.execute()
+        self.r.hset("leadgrep_pending", "a", "b")
+        found = {}
+        for key in self.r.scan_iter(match="seen:*", count=1000):
+            found[key] = self.r.get(key)
+        self.assertEqual(found, posts)
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

@@ -59,6 +59,13 @@ void hm_insert (HMap * hmap, HNode * node, const void *key, h_cmp_fn cmp);
 HNode *hm_pop (HMap * hmap, const void *key, uint64_t hcode, h_cmp_fn cmp);
 void hm_scan (HMap * hmap, void (*func) (HNode *, void *), void *arg);
 size_t hm_size (const HMap * hmap);
+
+// One SCAN step: visits every node of one home bucket family and
+// returns the next cursor, 0 once all buckets are done. Start at 0.
+// Nodes present for a whole scan are visited at least once, even if the
+// map grows between steps; some may be visited twice. Read only.
+size_t hm_scan_step (const HMap * hmap, size_t cursor,
+		     void (*func) (HNode *, void *), void *arg);
 void hm_destroy (HMap * hmap);
 
 // Helper to check if currently resizing
