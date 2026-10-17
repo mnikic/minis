@@ -1625,6 +1625,42 @@ class Daemon:
         os.kill(self.pid, signal.SIGKILL)
 
 
+def ignores_sigchld(pid):
+    with open(f"/proc/{pid}/status") as f:
+        mask = next(line for line in f if line.startswith("SigIgn:"))
+    return bool(int(mask.split()[1], 16) & (1 << (signal.SIGCHLD - 1)))
+
+
+class TestSigchld(unittest.TestCase):
+    """An ignored SIGCHLD reaps background snapshot children before
+    minis waits for them, so it must not stay ignored"""
+
+    def test_inherited_ignore_is_reset(self):
+        port = free_port()
+        with tempfile.TemporaryDirectory() as workdir:
+            proc = subprocess.Popen(
+                [MINIS_BIN, "-p", str(port)], cwd=workdir,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                preexec_fn=lambda: signal.signal(signal.SIGCHLD, signal.SIG_IGN))
+            try:
+                deadline = time.time() + 5
+                while not reachable("127.0.0.1", port):
+                    self.assertLess(time.time(), deadline)
+                    time.sleep(0.05)
+                self.assertFalse(ignores_sigchld(proc.pid))
+            finally:
+                proc.terminate()
+                proc.wait(5)
+
+    def test_daemon_does_not_ignore_it(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            daemon = Daemon(workdir, free_port()).start()
+            try:
+                self.assertFalse(ignores_sigchld(daemon.pid))
+            finally:
+                daemon.stop()
+
+
 class TestDaemon(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="minis-daemon-")

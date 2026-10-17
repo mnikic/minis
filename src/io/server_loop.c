@@ -123,6 +123,15 @@ setup_signal_handlers (void)
   sigemptyset (&sa_ign.sa_mask);
 
   sigaction (SIGPIPE, &sa_ign, NULL);
+
+  // Background snapshots are waited for. An ignored SIGCHLD, which the
+  // daemon setup leaves behind and a parent can pass down, would reap
+  // them first: waitpid then fails, the snapshot never counts as done
+  // and the same changes are saved again at every check.
+  struct sigaction sa_dfl = { 0 };
+  sa_dfl.sa_handler = SIG_DFL;
+  sigemptyset (&sa_dfl.sa_mask);
+  sigaction (SIGCHLD, &sa_dfl, NULL);
 }
 
 static void
