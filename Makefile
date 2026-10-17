@@ -174,10 +174,12 @@ android:
 
 # --- Linkage Rules ---
 
+# -lm: x86-64 inlines ceill and friends, but on aarch64 (a Raspberry Pi)
+# long double is a software type and they come from libm
 $(TARGET_MINIS): $(MINIS_OBJS)
 	@mkdir -p $(dir $@)
 	@echo "  LD      $@"
-	@$(CC) $(MINIS_OBJS) -o $@ $(LDFLAGS)
+	@$(CC) $(MINIS_OBJS) -o $@ $(LDFLAGS) -lm
 
 $(TARGET_CLI): $(CLI_OBJS)
 	@mkdir -p $(dir $@)
