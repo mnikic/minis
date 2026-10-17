@@ -87,6 +87,12 @@ typedef struct __attribute__((aligned (64))) Conn
   uint64_t idle_start;
   DList idle_list;
 
+  // BLPOP/BRPOP waiting, see io/blocking.h
+  bool blocked;
+  bool yield;			// Pushed with clients waiting: stop, let them go first
+  uint64_t block_deadline_us;	// 0 is forever
+  DList block_node;
+
 } Conn;
 
 _Static_assert (sizeof (Conn) % 64 == 0,

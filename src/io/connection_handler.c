@@ -36,6 +36,16 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
       if (q_status == QUEUE_ERROR || conn->state == STATE_CLOSE)
 	break;
 
+      // The server loop serves the waiting clients and calls us again
+      if (q_status == QUEUE_YIELD)
+	{
+	  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
+	  if (conn_has_pending_write (conn))
+	    events |= IO_EVENT_WRITE;
+	  conn_set_events (conn, events);
+	  break;
+	}
+
       if (unlikely
 	  ((q_status != QUEUE_PROGRESSED && q_status != QUEUE_DONE)
 	   && read_status == IO_BUF_FULL))

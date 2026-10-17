@@ -87,4 +87,8 @@ void minis_incremental_save (Minis * minis, const char *base_dir,
 
 uint64_t minis_dirty_count (Minis * minis);
 
+// How many LPUSH/RPUSH calls have added elements so far. Blocked BLPOP
+// clients only need another look when this moves.
+uint64_t minis_list_pushes (Minis * minis);
+
 #endif // _MINIS_H_

@@ -1,4 +1,5 @@
 #include <string.h>
+#include <strings.h>
 #include <stdint.h>
 
 #include "io/buffer.h"
@@ -7,6 +8,7 @@
 #include "io/out.h"
 #include "io/proto_parser.h"
 #include "io/connection.h"
+#include "io/blocking.h"
 #include "cache/cache.h"
 #include "common/common.h"
 #include "common/macros.h"
@@ -103,8 +105,45 @@ handle_parse_error (Conn *conn, ParseResult result)
   protocol_send_error (conn, ERR_MALFORMED, err_msg);
 }
 
+typedef enum
+{
+  EXEC_OK,
+  EXEC_FAIL,			// An error was sent, the connection closes
+  EXEC_BLOCK			// BLPOP/BRPOP has to wait, nothing was written
+} ExecResult;
+
+static ALWAYS_INLINE bool
+is_blocking_pop (const char *cmd)
+{
+  return strcasecmp (cmd, "blpop") == 0 || strcasecmp (cmd, "brpop") == 0;
+}
+
+// BLPOP/BRPOP. A client that already waits retries: once its timeout is
+// over it gets the null array, until then it keeps waiting.
+static ExecResult
+execute_blocking_pop (RequestContext *ctx, size_t size, Buffer *out_buf)
+{
+  Conn *conn = ctx->conn;
+  uint64_t timeout_us = 0;
+  BPopResult res = cache_bpop (ctx->cache, global_cmd_scratch, size,
+			       conn->blocked, out_buf, ctx->now_us,
+			       &timeout_us);
+  if (res == BPOP_BLOCK)
+    {
+      bool timed_out = conn->blocked && conn->block_deadline_us != 0
+	&& ctx->now_us >= conn->block_deadline_us;
+      if (!timed_out)
+	{
+	  ctx->block_timeout_us = timeout_us;
+	  return EXEC_BLOCK;
+	}
+      res = out_nil_arr (out_buf) ? BPOP_DONE : BPOP_FAIL;
+    }
+  return res == BPOP_DONE ? EXEC_OK : EXEC_FAIL;
+}
+
 // Execute a parsed request
-HOT static bool
+HOT static ExecResult
 execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
 		 Buffer *out_buf)
 {
@@ -131,7 +170,7 @@ execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
       if (unlikely (val_result != VALIDATE_OK))
 	{
 	  handle_validation_error (ctx->conn, val_result);
-	  return false;
+	  return EXEC_FAIL;
 	}
       proto_req.arg_count = arg_count;
       parse_result = proto_parse_arguments (&proto_req);
@@ -147,26 +186,30 @@ execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
 	protocol_send_error (ctx->conn, ERR_ARG, "Too many arguments");
       else
 	handle_parse_error (ctx->conn, parse_result);
-      return false;
+      return EXEC_FAIL;
     }
 
   DBG_LOGF ("FD %d: Executing command with %zu arguments",
 	    ctx->conn->fd, proto_req.cmd_size);
 
-  bool success = TIME_EXPR ("cache_execute",
-			    cache_execute (ctx->cache, global_cmd_scratch,
-					   proto_req.cmd_size,
-					   out_buf, ctx->now_us));
+  ExecResult result;
+  if (proto_req.cmd_size > 0 && is_blocking_pop (global_cmd_scratch[0]))
+    result = execute_blocking_pop (ctx, proto_req.cmd_size, out_buf);
+  else
+    result = TIME_EXPR ("cache_execute",
+			cache_execute (ctx->cache, global_cmd_scratch,
+				       proto_req.cmd_size,
+				       out_buf, ctx->now_us)) ? EXEC_OK :
+      EXEC_FAIL;
   restore_all_bytes (&restore);
 
-  if (unlikely (!success))
+  if (unlikely (result == EXEC_FAIL))
     {
       msg ("cache couldn't write message, no space.");
       protocol_send_error (ctx->conn, ERR_UNKNOWN, "response too large");
-      return false;
     }
 
-  return true;
+  return result;
 }
 
 // Try to parse and execute one request
@@ -197,8 +240,10 @@ protocol_try_one_request (RequestContext *ctx)
   // Set protocol type
   conn->proto = msg.type;
 
-  // Prepare output buffer
+  // Prepare output buffer. A wrap moves wbuf_head, which a request that
+  // blocks has to put back since it commits nothing.
   uint32_t gap = 0;
+  uint32_t head_before = conn->wbuf_head;
   uint8_t *write_ptr = conn_prepare_write_slot (conn, K_MAX_MSG, &gap);
 
   // Buffer full is technically "valid" backpressure, but in this specific logic flow,
@@ -211,18 +256,37 @@ protocol_try_one_request (RequestContext *ctx)
   Buffer out_buf = buf_init (write_ptr + offset, K_MAX_MSG - offset);
   buf_set_proto (&out_buf, conn->proto);
 
-  bool success = execute_request (ctx,
-				  &conn->rbuf[conn->read_offset +
-					      msg.header_len],
-				  msg.payload_len,
-				  &out_buf);
+  uint64_t pushes_before = cache_list_pushes (ctx->cache);
+  ExecResult result = execute_request (ctx,
+				       &conn->rbuf[conn->read_offset +
+						   msg.header_len],
+				       msg.payload_len,
+				       &out_buf);
 
-  if (unlikely (!success))
+  if (unlikely (result == EXEC_FAIL))
     return false;
+
+  if (result == EXEC_BLOCK)
+    {
+      // Leave the request in the buffer, to run again when served
+      conn->wbuf_head = head_before;
+      blocking_park (conn, ctx->block_timeout_us, ctx->now_us);
+      return false;
+    }
 
   // Commit response
   conn_commit_write (conn, write_ptr, buf_len (&out_buf), gap, true);
   conn->read_offset += msg.total_len;
+  blocking_unpark (conn);
+
+  // Waiting clients get what this pushed before our next command, like
+  // in Redis, so stop here and let the server loop serve them
+  if (cache_list_pushes (ctx->cache) != pushes_before
+      && blocking_count () > 0 && !blocking_is_serving ())
+    {
+      conn->yield = true;
+      return false;
+    }
 
   DBG_LOGF ("FD %d: Request processed.", conn->fd);
   return true;

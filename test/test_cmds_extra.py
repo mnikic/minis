@@ -1105,6 +1105,42 @@ $ {client_executable-abs_path} scan 0 type set
 (err) 4 unknown type name 'set'
 $ {client_executable-abs_path} del scanone:a scanone:b scanone_x scanone:list
 (int) 4
+# Test: BLPOP/BRPOP that do not have to wait, and timeouts
+$ {client_executable-abs_path} rpush bp_list a b c
+(int) 3
+$ {client_executable-abs_path} blpop bp_missing bp_list 1
+(arr) len=2
+(str) bp_list
+(str) a
+(arr) end
+$ {client_executable-abs_path} brpop bp_list 1
+(arr) len=2
+(str) bp_list
+(str) c
+(arr) end
+$ {client_executable-abs_path} blpop bp_missing 0.1
+(nil)
+$ {client_executable-abs_path} blpop bp_missing x
+(err) 4 timeout is not a float or out of range
+$ {client_executable-abs_path} blpop bp_missing -1
+(err) 4 timeout is negative
+$ {client_executable-abs_path} blpop bp_missing inf
+(err) 4 timeout is out of range
+$ {client_executable-abs_path} blpop bp_missing
+(err) 4 wrong number of arguments for 'blpop' command
+$ {client_executable-abs_path} set bp_str v
+(str) OK
+$ {client_executable-abs_path} blpop bp_str 1
+(err) 3 WRONGTYPE Operation against a key holding the wrong kind of value
+$ {client_executable-abs_path} blpop bp_list bp_str 1
+(arr) len=2
+(str) bp_list
+(str) b
+(arr) end
+$ {client_executable-abs_path} exists bp_list
+(int) 0
+$ {client_executable-abs_path} del bp_str
+(int) 1
 '''
 
 

@@ -648,6 +648,101 @@ do_pop (Cache *cache, const char **cmd, size_t size, bool front,
   return true;
 }
 
+typedef struct
+{
+  Buffer *out;
+  const char *key;
+} BPopReplyCtx;
+
+static bool
+cb_bpop_reply (const char *val, size_t idx, size_t total, void *arg)
+{
+  (void) idx;
+  (void) total;
+  BPopReplyCtx *ctx = (BPopReplyCtx *) arg;
+  return out_arr (ctx->out, 2) && out_str (ctx->out, ctx->key)
+    && out_str (ctx->out, val);
+}
+
+// The BLPOP timeout: seconds as a long double, like Redis
+static const char *
+parse_bpop_timeout (const char *arg, uint64_t *out_us)
+{
+  const char *not_float = "timeout is not a float or out of range";
+  if (arg[0] == '\0' || isspace ((unsigned char) arg[0]))
+    return not_float;
+  char *endp = NULL;
+  errno = 0;
+  long double secs = strtold (arg, &endp);
+  if (*endp != '\0' || isnan (secs))
+    return not_float;
+  if (secs < 0)
+    return "timeout is negative";
+  // Redis's limit, in milliseconds
+  if (errno == ERANGE || isinf (secs) || secs * 1000 > (long double) INT64_MAX)
+    return "timeout is out of range";
+  // Whole milliseconds rounded up, like Redis. Allowed timeouts reach
+  // past what microseconds fit, cap them at what is forever anyway,
+  // leaving room to add the current time.
+  long double usecs = ceill (secs * 1000) * 1000;
+  long double cap = (long double) (UINT64_MAX / 4);
+  *out_us = usecs >= cap ? UINT64_MAX / 4 : (uint64_t) usecs;
+  return NULL;
+}
+
+BPopResult
+cache_bpop (Cache *cache, const char **cmd, size_t size, bool retry,
+	    Buffer *out, uint64_t now_us, uint64_t *out_timeout_us)
+{
+  bool front = cmd_is (cmd[0], "blpop");
+  if (size < 3)
+    {
+      bool ok = out_err (out, ERR_ARG, front
+			 ? "wrong number of arguments for 'blpop' command"
+			 : "wrong number of arguments for 'brpop' command");
+      return ok ? BPOP_DONE : BPOP_FAIL;
+    }
+
+  const char *err = parse_bpop_timeout (cmd[size - 1], out_timeout_us);
+  if (err)
+    return out_err (out, ERR_ARG, err) ? BPOP_DONE : BPOP_FAIL;
+
+  // The first non-empty list in key order wins
+  for (size_t i = 1; i < size - 1; i++)
+    {
+      BPopReplyCtx ctx = {.out = out,.key = cmd[i] };
+      MinisError perr = minis_pop (cache, cmd[i], 1, front, cb_bpop_reply,
+				   &ctx, now_us);
+      if (perr == MINIS_OK)
+	return BPOP_DONE;
+      if (perr == MINIS_ERR_OOM)
+	return BPOP_FAIL;
+      if (perr == MINIS_ERR_TYPE && !retry)
+	return reply_with_error (out, perr) ? BPOP_DONE : BPOP_FAIL;
+      // Missing, or another type on a retry: try the next key
+    }
+  return BPOP_BLOCK;
+}
+
+uint64_t
+cache_list_pushes (Cache *cache)
+{
+  return minis_list_pushes (cache);
+}
+
+// Without a server to wait in, BLPOP times out at once
+static bool
+do_bpop_now (Cache *cache, const char **cmd, size_t size, Buffer *out,
+	     uint64_t now_us)
+{
+  uint64_t timeout_us = 0;
+  BPopResult res = cache_bpop (cache, cmd, size, false, out, now_us,
+			       &timeout_us);
+  if (res == BPOP_BLOCK)
+    return out_nil_arr (out);
+  return res == BPOP_DONE;
+}
+
 // LRANGE key start stop
 static bool
 do_lrange (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
@@ -892,6 +987,8 @@ cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
     return do_pop (cache, cmd, size, false, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "lrange"))
     return do_lrange (cache, cmd, out, now_us);
+  if (size >= 1 && (cmd_is (cmd[0], "blpop") || cmd_is (cmd[0], "brpop")))
+    return do_bpop_now (cache, cmd, size, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "lrem"))
     return do_lrem (cache, cmd, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "llen"))

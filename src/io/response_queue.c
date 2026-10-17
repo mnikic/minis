@@ -90,6 +90,9 @@ response_queue_process_buffered_data (Cache *cache, Conn *conn,
 	    }
 	}
 
+      if (conn->yield)
+	return QUEUE_YIELD;
+
       if (conn_is_res_queue_full (conn))
 	{
 	  return QUEUE_STALLED;

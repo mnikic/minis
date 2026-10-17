@@ -58,6 +58,7 @@ minis_push (Minis *minis, const char *key, const char **vals, size_t count,
       }
 
   __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
+  __atomic_fetch_add (&minis->list_pushes, 1, __ATOMIC_RELAXED);
   if (out_len)
     *out_len = list_len (ent->list);
 

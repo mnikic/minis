@@ -12,6 +12,7 @@ typedef struct
   Cache *cache;
   Conn *conn;
   uint64_t now_us;
+  uint64_t block_timeout_us;	// Set when a request blocks
 } RequestContext;
 
 // Try to parse and execute one request from the connection's read buffer

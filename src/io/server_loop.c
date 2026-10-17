@@ -49,6 +49,7 @@
 #include "cache/cache.h"
 #include "cache/persistence.h"
 #include "io/connection_handler.h"
+#include "io/blocking.h"
 #include "io/conn_pool.h"
 #include "io/server_loop.h"
 #include "io/list.h"
@@ -289,6 +290,8 @@ conn_done (Conn *conn)
       dlist_detach (&conn->idle_list);
     }
 
+  blocking_unpark (conn);
+
   zc_drain_errors (file_desc);
   close (file_desc);
   connpool_release (g_data.fd2conn, conn);
@@ -380,6 +383,74 @@ update_idle_state (Conn *conn, uint64_t now_us)
 }
 
 
+// Clients that failed while being served for BLPOP. They are closed after
+// the event batch, so that no batch entry points at a released Conn.
+static Conn *g_close_later[MAX_CONNECTIONS];
+static size_t g_close_later_count;
+
+static void
+close_later (Conn *conn)
+{
+  if (g_close_later_count < MAX_CONNECTIONS)
+    g_close_later[g_close_later_count++] = conn;
+}
+
+static void
+flush_close_later (void)
+{
+  for (size_t i = 0; i < g_close_later_count; i++)
+    conn_done (g_close_later[i]);
+  g_close_later_count = 0;
+}
+
+// Runs a waiting client's buffered requests again, its BLPOP first, as
+// if it had become readable
+static void
+serve_one (Cache *cache, Conn *conn, uint64_t now_us)
+{
+  if (conn->state != STATE_ACTIVE)
+    return;
+
+  handle_connection_io (cache, conn, now_us, IO_EVENT_READ);
+  if (conn->state == STATE_CLOSE)
+    {
+      close_later (conn);
+      return;
+    }
+
+  update_idle_state (conn, now_us);
+  if (conn->pending_events != conn->last_events)
+    flush_dirty_conns (g_data.epfd, &conn, 1);
+}
+
+// Serves waiting clients oldest first: all of them after a push, or with
+// only_expired those whose timeout is over. Served clients may push in
+// turn, so go on until no push happens.
+static void
+serve_blocked (Cache *cache, uint64_t now_us, bool only_expired)
+{
+  blocking_set_serving (true);
+  uint64_t pushes;
+  do
+    {
+      pushes = cache_list_pushes (cache);
+      size_t count = blocking_count ();
+      for (size_t i = 0; i < count; i++)
+	{
+	  Conn *conn = blocking_rotate ();
+	  if (!conn)
+	    break;
+	  if (only_expired && (conn->block_deadline_us == 0
+			       || conn->block_deadline_us > now_us))
+	    continue;
+	  serve_one (cache, conn, now_us);
+	}
+      only_expired = false;
+    }
+  while (blocking_count () > 0 && cache_list_pushes (cache) != pushes);
+  blocking_set_serving (false);
+}
+
 static HOT ALWAYS_INLINE void
 process_active_events (Cache *cache, struct epoll_event *events, int count,
 		       int listen_fd, uint64_t now_us)
@@ -407,12 +478,24 @@ process_active_events (Cache *cache, struct epoll_event *events, int count,
 	  continue;
 	}
       Conn *conn = connpool_lookup (g_data.fd2conn, file_desc);
-      if (unlikely (!conn))
+      // Closed while being served for BLPOP, it waits in close_later
+      if (unlikely (!conn || conn->state == STATE_CLOSE))
 	continue;
 
       TIME_STMT ("connection_io",
 		 handle_connection_io (cache, conn, now_us,
 				       events[i].events));
+
+      // It pushed with clients waiting: they go first, then the rest of
+      // its requests
+      while (unlikely (conn->yield))
+	{
+	  conn->yield = false;
+	  serve_blocked (cache, now_us, false);
+	  if (conn->state != STATE_ACTIVE)
+	    break;
+	  handle_connection_io (cache, conn, now_us, IO_EVENT_READ);
+	}
       if (unlikely (conn->state == STATE_CLOSE))
 	{
 	  dead_conns[dead_count++] = conn;
@@ -432,6 +515,8 @@ process_active_events (Cache *cache, struct epoll_event *events, int count,
 
   if (unlikely (dead_count > 0))
     flush_dead_conns (dead_conns, dead_count);
+
+  flush_close_later ();
 }
 
 static void COLD
@@ -551,6 +636,10 @@ next_timer_ms (Cache *cache, uint64_t now_us)
   uint64_t from_cache = cache_next_expiry (cache);
   if (from_cache != (uint64_t) - 1 && from_cache < next_us)
     next_us = from_cache;
+
+  uint64_t block_deadline = blocking_next_deadline ();
+  if (block_deadline < next_us)
+    next_us = block_deadline;
   // Only schedule if interval is set and no child is currently running
   if (SNAPSHOT_INTERVAL_US > 0 && g_data.snapshot_child_pid == 0)
     {
@@ -721,6 +810,12 @@ server_run (int port)
 
       process_snapshots (cache, now_us);
       process_timers (cache, now_us);
+
+      if (blocking_next_deadline () <= now_us)
+	{
+	  serve_blocked (cache, now_us, true);
+	  flush_close_later ();
+	}
     }
   server_shutdown (cache, listen_fd, epfd);
   return 0;

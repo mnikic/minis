@@ -30,6 +30,7 @@ struct Minis
   Heap heap;
   ThreadPool tp;
   ENGINE_LOCK_T heap_lock;
+  uint64_t list_pushes;		// Pushes so far, for waking BLPOP clients
 };
 
 static ALWAYS_INLINE int

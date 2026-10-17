@@ -1400,6 +1400,136 @@ test_scan_command (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6o: BLPOP/BRPOP without the waiting (cache_bpop)
+// ============================================================================
+
+// Runs cache_bpop into a fresh 'buf', result in 'res'
+#define BPOP(retry, ...)                                                        \
+	do {                                                                       \
+		const char *bpop_cmd_[] = { __VA_ARGS__ };                             \
+		buf = init_test_buffer (PROTO_BIN);                                    \
+		res = cache_bpop (cache, bpop_cmd_,                                    \
+				  sizeof (bpop_cmd_) / sizeof (bpop_cmd_[0]),       \
+				  (retry), &buf, now, &timeout_us);                 \
+	} while (0)
+
+static void
+test_bpop (void)
+{
+  printf ("TEST: BLPOP/BRPOP (cache_bpop)... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+  uint64_t timeout_us = 0;
+  BPopResult res;
+
+  // Pops from the first non-empty list: [key, value]
+  RUN (cache, now, "rpush", "bp2", "a", "b");
+  BPOP (false, "blpop", "bp1", "bp2", "1");
+  ASSERT_EQ (res, BPOP_DONE);
+  const char *first[] = { "bp2", "a" };
+  assert_str_array (&buf, first, 2);
+  BPOP (false, "brpop", "bp1", "bp2", "1");
+  ASSERT_EQ (res, BPOP_DONE);
+  const char *last[] = { "bp2", "b" };
+  assert_str_array (&buf, last, 2);
+
+  // Nothing there: block, writing nothing, with the timeout parsed
+  struct
+  {
+    const char *arg;
+    uint64_t us;
+  } timeouts[] = {
+    {"0", 0}, {"1", 1000000}, {"1.5", 1500000}, {"0.001", 1000},
+    {"0x10", 16000000}, {"2e3", 2000000000ULL}
+  };
+  for (size_t i = 0; i < sizeof (timeouts) / sizeof (timeouts[0]); i++)
+    {
+      BPOP (false, "blpop", "bp1", "bp2", timeouts[i].arg);
+      ASSERT_EQ (res, BPOP_BLOCK);
+      ASSERT_EQ (buf_len (&buf), 0);
+      ASSERT_EQ (timeout_us, timeouts[i].us);
+    }
+  // The largest allowed timeout is capped instead of overflowing
+  BPOP (false, "blpop", "bp1", "9223372036854775");
+  ASSERT_EQ (res, BPOP_BLOCK);
+  ASSERT_EQ (timeout_us, UINT64_MAX / 4);
+
+  // Errors are replies
+  struct
+  {
+    const char *arg;
+    const char *msg;
+  } bad[] = {
+    {"x", "timeout is not a float or out of range"},
+    {"", "timeout is not a float or out of range"},
+    {" 1", "timeout is not a float or out of range"},
+    {"nan", "timeout is not a float or out of range"},
+    {"-1", "timeout is negative"},
+    {"inf", "timeout is out of range"},
+    {"1e400", "timeout is out of range"},
+    {"9223372036854775807", "timeout is out of range"}
+  };
+  for (size_t i = 0; i < sizeof (bad) / sizeof (bad[0]); i++)
+    {
+      BPOP (false, "blpop", "bp1", bad[i].arg);
+      ASSERT_EQ (res, BPOP_DONE);
+      assert_err_msg (&buf, bad[i].msg);
+    }
+  BPOP (false, "blpop", "bp1");
+  ASSERT_EQ (res, BPOP_DONE);
+  assert_err_msg (&buf, "wrong number of arguments for 'blpop' command");
+  BPOP (false, "brpop", "bp1");
+  ASSERT_EQ (res, BPOP_DONE);
+  assert_err_msg (&buf, "wrong number of arguments for 'brpop' command");
+
+  // Another type: an error the first time, skipped on a retry
+  RUN (cache, now, "set", "bp_str", "v");
+  BPOP (false, "blpop", "bp_str", "1");
+  ASSERT_EQ (res, BPOP_DONE);
+  assert_err_msg (&buf, "WRONGTYPE");
+  BPOP (true, "blpop", "bp_str", "1");
+  ASSERT_EQ (res, BPOP_BLOCK);
+  ASSERT_EQ (buf_len (&buf), 0);
+  RUN (cache, now, "rpush", "bp3", "c");
+  BPOP (true, "blpop", "bp_str", "bp3", "1");
+  ASSERT_EQ (res, BPOP_DONE);
+  const char *third[] = { "bp3", "c" };
+  assert_str_array (&buf, third, 2);
+
+  // A reply that does not fit pops nothing
+  static char big[9000];
+  memset (big, 'x', sizeof (big) - 1);
+  RUN (cache, now, "rpush", "bp_big", big);
+  BPOP (false, "blpop", "bp_big", "1");
+  ASSERT_EQ (res, BPOP_FAIL);
+  RUN (cache, now, "llen", "bp_big");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+
+  // Without a server to wait in, cache_execute times out at once
+  RUN (cache, now, "blpop", "bp_none", "5");
+  ASSERT_TRUE (is_nil_response (&buf));
+  RUN (cache, now, "rpush", "bp4", "d");
+  RUN (cache, now, "brpop", "bp4", "5");
+  const char *fourth[] = { "bp4", "d" };
+  assert_str_array (&buf, fourth, 2);
+
+  // The push counter moves on pushes only
+  uint64_t pushes = cache_list_pushes (cache);
+  RUN (cache, now, "lpush", "bp5", "e");
+  ASSERT_EQ (cache_list_pushes (cache), pushes + 1);
+  RUN (cache, now, "rpush", "bp5", "f", "g");
+  ASSERT_EQ (cache_list_pushes (cache), pushes + 2);
+  RUN (cache, now, "lpop", "bp5");
+  RUN (cache, now, "lpush", "bp_str", "x");
+  ASSERT_EQ (cache_list_pushes (cache), pushes + 2);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -2002,6 +2132,7 @@ main (void)
   test_glob ();
   test_hm_scan_step ();
   test_scan_command ();
+  test_bpop ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

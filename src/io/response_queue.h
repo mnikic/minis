@@ -14,7 +14,8 @@ typedef enum
   QUEUE_ERROR,			// Fatal error (close connection)
   QUEUE_STALLED,		// Blocked on Write (Enable EPOLLOUT immediately)
   QUEUE_PROGRESSED,		// Success: Parsed at least one command (Loop again!)
-  QUEUE_DONE			// Healthy, but no full command ready (Sleep/Wait)
+  QUEUE_DONE,			// Healthy, but no full command ready (Sleep/Wait)
+  QUEUE_YIELD			// Pushed to waiting clients: serve them, then resume
 } QueueStatus;
 
 HOT QueueStatus

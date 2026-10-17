@@ -241,6 +241,11 @@ conn_reset (Conn *conn, int file_desc)
 
   conn->idle_start = 0;		// Will be set externally
   dlist_init (&conn->idle_list);
+
+  conn->blocked = false;
+  conn->yield = false;
+  conn->block_deadline_us = 0;
+  dlist_init (&conn->block_node);
 }
 
 bool

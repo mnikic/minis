@@ -439,6 +439,12 @@ minis_load (Minis *minis, const char *base_dir, uint64_t now_us)
 }
 
 uint64_t
+minis_list_pushes (Minis *minis)
+{
+  return __atomic_load_n (&minis->list_pushes, __ATOMIC_RELAXED);
+}
+
+uint64_t
 minis_dirty_count (Minis *minis)
 {
   uint64_t count = 0;

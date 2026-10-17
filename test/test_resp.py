@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -1019,6 +1020,336 @@ class TestScan(MinisTestCase):
         for key in self.r.scan_iter(match="seen:*", count=1000):
             found[key] = self.r.get(key)
         self.assertEqual(found, posts)
+
+
+class Waiter(threading.Thread):
+    """A client blocked in BLPOP/BRPOP on its own connection"""
+
+    def __init__(self, port, keys, timeout=5, right=False):
+        super().__init__(daemon=True)
+        self.client = redis.Redis(port=port, decode_responses=True,
+                                  socket_timeout=timeout + 5)
+        self.keys, self.timeout, self.right = keys, timeout, right
+        self.result, self.error, self.took = None, None, None
+
+    def run(self):
+        start = time.time()
+        try:
+            pop = self.client.brpop if self.right else self.client.blpop
+            self.result = pop(self.keys, timeout=self.timeout)
+        except Exception as e:
+            self.error = e
+        self.took = time.time() - start
+        self.client.close()
+
+    def started(self, port):
+        """Starts and returns once the server has parked the client"""
+        self.start()
+        # The server parks it at once, a short wait is plenty
+        time.sleep(0.15)
+        return self
+
+
+def raw_command(*args):
+    out = f"*{len(args)}\r\n".encode()
+    for a in args:
+        a = a.encode() if isinstance(a, str) else a
+        out += f"${len(a)}\r\n".encode() + a + b"\r\n"
+    return out
+
+
+class TestBlockingPop(MinisTestCase):
+    def waiter(self, keys, **kwargs):
+        return Waiter(self.server.port, keys, **kwargs).started(self.server.port)
+
+    def test_pops_at_once_when_data_is_there(self):
+        self.r.rpush("bp_now", "a", "b")
+        self.assertEqual(self.r.blpop("bp_now", timeout=1), ("bp_now", "a"))
+        self.assertEqual(self.r.brpop("bp_now", timeout=1), ("bp_now", "b"))
+        self.assertEqual(self.r.exists("bp_now"), 0)
+
+    def test_first_non_empty_key_wins(self):
+        self.r.rpush("bp_k2", "two")
+        self.r.rpush("bp_k3", "three")
+        self.assertEqual(self.r.blpop(["bp_k1", "bp_k2", "bp_k3"], timeout=1),
+                         ("bp_k2", "two"))
+
+    def test_timeout(self):
+        for timeout in (0.1, 0.3, 1):
+            with self.subTest(timeout=timeout):
+                start = time.time()
+                self.assertIsNone(self.r.blpop("bp_empty", timeout=timeout))
+                took = time.time() - start
+                self.assertGreaterEqual(took, timeout * 0.9)
+                self.assertLess(took, timeout + 0.5)
+
+    def test_timeout_reply_is_null_array(self):
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(3)
+            sock.sendall(raw_command("BLPOP", "bp_empty", "0.1"))
+            self.assertEqual(sock.recv(100), b"*-1\r\n")
+
+    def test_errors(self):
+        cases = [
+            (["k", "x"], "timeout is not a float or out of range"),
+            (["k", ""], "timeout is not a float or out of range"),
+            (["k", " 1"], "timeout is not a float or out of range"),
+            (["k", "nan"], "timeout is not a float or out of range"),
+            (["k", "-1"], "timeout is negative"),
+            (["k", "inf"], "timeout is out of range"),
+            (["k", "1e400"], "timeout is out of range"),
+            (["k", "9223372036854775807"], "timeout is out of range"),
+            (["k"], "wrong number of arguments for 'blpop' command"),
+        ]
+        for args, msg in cases:
+            with self.subTest(args=args):
+                with self.assertRaisesRegex(redis.ResponseError, msg):
+                    self.r.execute_command("BLPOP", *args)
+        with self.assertRaisesRegex(redis.ResponseError, "'brpop'"):
+            self.r.execute_command("BRPOP", "k")
+        self.assertAlive()
+
+    def test_wrong_type(self):
+        self.r.set("bp_str", "v")
+        self.r.rpush("bp_list", "a")
+        with self.assertRaisesRegex(redis.ResponseError, "WRONGTYPE"):
+            self.r.blpop(["bp_str", "bp_list"], timeout=1)
+        with self.assertRaisesRegex(redis.ResponseError, "WRONGTYPE"):
+            self.r.blpop(["bp_missing", "bp_str"], timeout=1)
+        # A list ahead of it wins
+        self.assertEqual(self.r.blpop(["bp_list", "bp_str"], timeout=1),
+                         ("bp_list", "a"))
+
+    def test_push_wakes_waiter(self):
+        for push in ("lpush", "rpush"):
+            with self.subTest(push=push):
+                w = self.waiter("bp_wake")
+                start = time.time()
+                getattr(self.r, push)("bp_wake", "hello")
+                w.join(3)
+                self.assertEqual(w.result, ("bp_wake", "hello"))
+                self.assertLess(time.time() - start, 0.5)
+                self.assertEqual(self.r.exists("bp_wake"), 0)
+
+    def test_brpop_takes_the_tail(self):
+        w = self.waiter("bp_tail", right=True)
+        self.r.rpush("bp_tail", "a", "b", "c")
+        w.join(3)
+        self.assertEqual(w.result, ("bp_tail", "c"))
+        self.assertEqual(self.r.lrange("bp_tail", 0, -1), ["a", "b"])
+
+    def test_waiters_are_served_oldest_first(self):
+        waiters = [self.waiter("bp_fifo") for _ in range(3)]
+        self.r.rpush("bp_fifo", "x", "y", "z")
+        for w in waiters:
+            w.join(3)
+        self.assertEqual([w.result for w in waiters],
+                         [("bp_fifo", "x"), ("bp_fifo", "y"), ("bp_fifo", "z")])
+
+    def test_one_element_for_two_waiters(self):
+        first = self.waiter("bp_one", timeout=1)
+        second = self.waiter("bp_one", timeout=1)
+        self.r.rpush("bp_one", "only")
+        first.join(3)
+        second.join(3)
+        self.assertEqual(first.result, ("bp_one", "only"))
+        self.assertIsNone(second.result)
+        self.assertGreaterEqual(second.took, 0.9)
+
+    def test_waiter_on_several_keys(self):
+        w = self.waiter(["bp_m1", "bp_m2", "bp_m3"])
+        self.r.rpush("bp_m3", "three")
+        w.join(3)
+        self.assertEqual(w.result, ("bp_m3", "three"))
+
+    def test_waiter_gets_push_before_the_pushers_next_command(self):
+        # Like Redis: the pipelined LPOP finds nothing
+        w = self.waiter("bp_pipe")
+        pipe = self.r.pipeline(transaction=False)
+        pipe.rpush("bp_pipe", "v")
+        pipe.lpop("bp_pipe")
+        pipe.llen("bp_pipe")
+        self.assertEqual(pipe.execute(), [1, None, 0])
+        w.join(3)
+        self.assertEqual(w.result, ("bp_pipe", "v"))
+
+    def test_overwritten_key_keeps_waiting(self):
+        w = self.waiter("bp_ow")
+        self.r.set("bp_ow", "string now")
+        # Another push makes waiters look again, it must not hand out a
+        # WRONGTYPE
+        self.r.rpush("bp_unrelated", "z")
+        time.sleep(0.2)
+        self.assertTrue(w.is_alive())
+        self.r.delete("bp_ow")
+        self.r.rpush("bp_ow", "late")
+        w.join(3)
+        self.assertIsNone(w.error)
+        self.assertEqual(w.result, ("bp_ow", "late"))
+
+    def test_expired_list_keeps_waiting(self):
+        w = self.waiter("bp_exp")
+        self.r.rpush("bp_exp_other", "a")
+        self.r.pexpire("bp_exp_other", 50)
+        time.sleep(0.2)
+        self.assertTrue(w.is_alive())
+        self.r.rpush("bp_exp", "v")
+        w.join(3)
+        self.assertEqual(w.result, ("bp_exp", "v"))
+
+    def test_forever_waits_until_push(self):
+        w = self.waiter("bp_forever", timeout=0)
+        time.sleep(1.2)
+        self.assertTrue(w.is_alive())
+        self.r.rpush("bp_forever", "finally")
+        w.join(3)
+        self.assertEqual(w.result, ("bp_forever", "finally"))
+
+    def test_disconnected_waiter_loses_nothing(self):
+        sock = socket.create_connection(("127.0.0.1", self.server.port))
+        sock.sendall(raw_command("BLPOP", "bp_gone", "0"))
+        time.sleep(0.1)
+        sock.close()
+        time.sleep(0.1)
+        self.r.rpush("bp_gone", "kept")
+        self.assertEqual(self.r.lrange("bp_gone", 0, -1), ["kept"])
+        self.assertAlive()
+
+    def test_pipelined_commands_wait_behind_it(self):
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(0.3)
+            sock.sendall(raw_command("BLPOP", "bp_behind", "5") +
+                         raw_command("PING"))
+            with self.assertRaises(socket.timeout):
+                sock.recv(100)
+            self.r.rpush("bp_behind", "v")
+            sock.settimeout(3)
+            want = b"*2\r\n$9\r\nbp_behind\r\n$1\r\nv\r\n+PONG\r\n"
+            got = b""
+            while len(got) < len(want):
+                got += sock.recv(100)
+            self.assertEqual(got, want)
+
+    def test_more_data_while_waiting(self):
+        # Requests sent after the client blocked wait too
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(3)
+            sock.sendall(raw_command("BLPOP", "bp_more", "5"))
+            time.sleep(0.1)
+            sock.sendall(raw_command("PING") + raw_command("ECHO", "x"))
+            time.sleep(0.1)
+            self.r.rpush("bp_more", "v")
+            want = b"*2\r\n$7\r\nbp_more\r\n$1\r\nv\r\n+PONG\r\n"
+            got = b""
+            while len(got) < len(want):
+                got += sock.recv(100)
+            self.assertTrue(got.startswith(want), got)
+
+    def test_others_are_served_while_clients_wait(self):
+        waiters = [self.waiter("bp_busy", timeout=10) for _ in range(20)]
+        start = time.time()
+        for i in range(100):
+            self.r.set(f"bp_busy_key{i}", i)
+        self.assertLess(time.time() - start, 1)
+        self.r.rpush("bp_busy", *[str(i) for i in range(20)])
+        for w in waiters:
+            w.join(3)
+        self.assertEqual(sorted(int(w.result[1]) for w in waiters),
+                         list(range(20)))
+
+    def test_many_waiters_each_get_one(self):
+        waiters = [Waiter(self.server.port, "bp_many", timeout=10)
+                   for _ in range(200)]
+        for w in waiters:
+            w.start()
+        time.sleep(0.5)
+        values = [str(i) for i in range(200)]
+        for i in range(0, 200, 50):
+            self.r.rpush("bp_many", *values[i:i + 50])
+        for w in waiters:
+            w.join(10)
+        got = [w.result[1] for w in waiters if w.result]
+        self.assertEqual(sorted(got, key=int), values)
+        self.assertEqual(self.r.exists("bp_many"), 0)
+
+    def test_producers_and_consumers(self):
+        # Every pushed item is popped exactly once
+        items = [f"item-{i}" for i in range(2000)]
+        consumed, lock = [], threading.Lock()
+
+        def consume():
+            c = redis.Redis(port=self.server.port, decode_responses=True,
+                            socket_timeout=10)
+            while True:
+                got = c.blpop(["bp_q1", "bp_q2"], timeout=1)
+                if got is None:
+                    break
+                with lock:
+                    consumed.append(got[1])
+            c.close()
+
+        def produce(chunk, key):
+            c = redis.Redis(port=self.server.port, decode_responses=True)
+            for i in range(0, len(chunk), 7):
+                c.rpush(key, *chunk[i:i + 7])
+            c.close()
+
+        consumers = [threading.Thread(target=consume) for _ in range(4)]
+        producers = [threading.Thread(target=produce, args=(items[:1000], "bp_q1")),
+                     threading.Thread(target=produce, args=(items[1000:], "bp_q2"))]
+        for t in consumers + producers:
+            t.start()
+        for t in producers + consumers:
+            t.join(30)
+        self.assertEqual(sorted(consumed), sorted(items))
+
+    def test_leadgrep_ollama_worker(self):
+        # push_to_seo_ollama_queue / pop_from_seo_ollama_queue
+        got = []
+
+        def worker():
+            c = redis.Redis(port=self.server.port, decode_responses=True,
+                            socket_timeout=10)
+            while len(got) < 50:
+                result = c.blpop("seo_ollama_queue", timeout=5)
+                if result:
+                    got.append(result[1])
+            c.close()
+
+        t = threading.Thread(target=worker)
+        t.start()
+        for i in range(50):
+            self.r.lpush("seo_ollama_queue", f'{{"post": {i}}}')
+            if i % 10 == 0:
+                time.sleep(0.05)
+        t.join(10)
+        self.assertEqual(sorted(got), sorted(f'{{"post": {i}}}' for i in range(50)))
+
+
+class TestBlockingShutdown(MinisTestCase):
+    def test_sigterm_with_clients_waiting(self):
+        # Raw sockets: redis-py would reconnect and wait again
+        socks = []
+        for _ in range(5):
+            sock = socket.create_connection(("127.0.0.1", self.server.port))
+            sock.settimeout(3)
+            sock.sendall(raw_command("BLPOP", "bps_forever", "0"))
+            socks.append(sock)
+        self.r.rpush("bps_kept", "a")
+        self.r.close()
+        time.sleep(0.2)
+
+        start = time.time()
+        self.server.shutdown()
+        self.assertLess(time.time() - start, 2)
+        self.assertEqual(self.server.proc.returncode, 0)
+        # Their connections were closed without a reply
+        for sock in socks:
+            self.assertEqual(sock.recv(100), b"")
+            sock.close()
+
+        self.server.start()
+        self.assertEqual(self.r.lrange("bps_kept", 0, -1), ["a"])
 
 
 class TestDel(MinisTestCase):

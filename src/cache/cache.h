@@ -26,6 +26,26 @@ bool cache_execute (Cache * cache, const char **cmd, size_t size,
 		    Buffer * out, uint64_t now_us);
 uint64_t cache_dirty_count (Cache * cache);
 
+typedef enum
+{
+  BPOP_DONE,			// A reply (element or error) is in out
+  BPOP_BLOCK,			// Nothing to pop, out is untouched
+  BPOP_FAIL			// The reply did not fit in out
+} BPopResult;
+
+// BLPOP/BRPOP key [key ...] timeout, without the waiting: pops from the
+// first non-empty list or returns BPOP_BLOCK with *out_timeout_us set (0
+// is forever). A retry, when the client already waits, skips keys of
+// other types instead of failing with WRONGTYPE, so that a client whose
+// key was overwritten keeps waiting, like in Redis. cache_execute runs
+// these with a timeout that is already over.
+BPopResult cache_bpop (Cache * cache, const char **cmd, size_t size,
+		       bool retry, Buffer * out, uint64_t now_us,
+		       uint64_t * out_timeout_us);
+
+// Changes whenever a list push happens
+uint64_t cache_list_pushes (Cache * cache);
+
 bool cache_load (Cache * cache, const char *dir, uint64_t now_us);
 bool cache_save (Cache * cache, const char *dir, uint64_t now_us);
 
