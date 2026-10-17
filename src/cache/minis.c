@@ -467,7 +467,7 @@ static int compare_dirty_desc(const void *first, const void *second) {
 }
 
 void
-minis_incremental_save_step (Minis *minis, const char *base_dir, uint64_t now_us)
+minis_incremental_save (Minis *minis, const char *base_dir, uint64_t now_us)
 {
   ShardDirtyInfo info[NUM_SHARDS];
   uint_fast8_t count = 0;
@@ -482,6 +482,8 @@ minis_incremental_save_step (Minis *minis, const char *base_dir, uint64_t now_us
   }
 
   if (count == 0) return;
+  if (!ensure_directory (base_dir))
+    return;
 
   qsort(info, count, sizeof(ShardDirtyInfo), compare_dirty_desc);
 
@@ -500,7 +502,10 @@ minis_incremental_save_step (Minis *minis, const char *base_dir, uint64_t now_us
       if (shard->dirty_count > 0)
         {
           char path[512];
-          snprintf (path, sizeof (path), "%s/shard_%d.mds", base_dir, shard_id);
+          // The files minis_save writes and minis_load reads: each
+          // holds a whole shard, so rewriting the changed ones keeps the
+          // set current
+          snprintf (path, sizeof (path), "%s/shard_%d.mdb", base_dir, shard_id);
 
           if (minis_save_shard_file (shard, path, now_us))
               shard->dirty_count = 0;

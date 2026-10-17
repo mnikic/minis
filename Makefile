@@ -154,7 +154,7 @@ TEST_PERSIST_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_PERSIST_SRCS))
 #  RULES
 # ============================================================================
 
-.PHONY: all clean install debug asan ubsan tsan android resp-test resp-test-asan resp-test-ubsan \
+.PHONY: all clean install debug asan ubsan tsan android resp-test resp-test-asan resp-test-ubsan jni-test \
         test test-android test-asan test-ubsan test-tsan test-debug heap-test
 
 # Default: Build all binaries for the selected profile
@@ -254,6 +254,31 @@ resp-test-asan:
 	@$(MAKE) PROFILE=asan resp-test
 resp-test-ubsan:
 	@UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 $(MAKE) PROFILE=ubsan resp-test
+
+# JNI test: builds the Android library for the host, with the sources
+# and flags of android/app/src/main/cpp/CMakeLists.txt, and drives it
+# through the app's own com.minis.Minis class. Needs a JDK.
+JNI_DIR      = $(BIN_DIR)/jni
+JDK_INCLUDE  = $(shell dirname $$(dirname $$(readlink -f $$(command -v javac))))/include
+JNI_SRCS     = android/app/src/main/cpp/minis_jni.c \
+               src/cache/minis.c src/cache/entry.c src/cache/hashtable.c \
+               src/cache/heap.c src/cache/zset.c src/cache/avl.c \
+               src/cache/t_string.c src/cache/t_hash.c src/cache/t_zset.c \
+               src/cache/list.c src/cache/t_list.c src/cache/hash.c \
+               src/cache/thread_pool.c src/cache/deque.c src/cache/persistence.c \
+               src/io/buffer.c src/common/common.c src/common/glob.c
+
+jni-test:
+	@echo "--- Running JNI Test (host build of the Android library) ---"
+	@mkdir -p $(JNI_DIR)/classes
+	@gcc -shared -fPIC -O1 -g -pthread -Wall -Wextra -Werror \
+		-DMINIS_EMBEDDED=1 -D_GNU_SOURCE \
+		-I$(JDK_INCLUDE) -I$(JDK_INCLUDE)/linux -Isrc \
+		-o $(JNI_DIR)/libminis.so $(JNI_SRCS) -Wl,--no-undefined -lm
+	@javac -d $(JNI_DIR)/classes android/app/src/main/java/com/minis/Minis.java \
+		test/jni/MinisJniTest.java
+	@java -Xcheck:jni --enable-native-access=ALL-UNNAMED \
+		-Djava.library.path=$(JNI_DIR) -cp $(JNI_DIR)/classes MinisJniTest
 
 # --- Profile-Specific Test Wrappers ---
 test-android:

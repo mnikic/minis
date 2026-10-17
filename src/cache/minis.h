@@ -82,6 +82,8 @@ MinisError minis_scan (Minis * minis, uint64_t cursor, size_t count,
 MinisError minis_save (Minis * minis, const char *base_dir, uint64_t now_us);
 MinisError minis_load (Minis * minis, const char *base_dir, uint64_t now_us);
 
+// Saves the shards changed since their last save to base_dir, in the
+// files minis_save writes and minis_load reads
 void minis_incremental_save (Minis * minis, const char *base_dir,
 			     uint64_t now_us);
 

@@ -19,7 +19,8 @@ public class SnakeActivity extends AppCompatActivity {
         setContentView(R.layout.activity_snake);
 
         dbPath = getFilesDir().getAbsolutePath() + "/shards";
-        minis = new Minis();
+        // Changes reach dbPath every second, even if onDestroy never runs
+        minis = new Minis(dbPath);
         minis.load(dbPath);
         playManager = new PlayManager(this, minis);
 

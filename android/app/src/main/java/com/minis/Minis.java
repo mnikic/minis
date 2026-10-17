@@ -13,7 +13,21 @@ public class Minis implements AutoCloseable {
 
     public Minis() {
         // Call C to allocate memory and start the thread
-        this.nativeHandle = nativeInit();
+        this.nativeHandle = nativeInit(null);
+    }
+
+    /**
+     * Like Minis(), and every second the background thread saves the
+     * changed shards to basePath, where load() finds them.
+     */
+    public Minis(String basePath) {
+        this.nativeHandle = nativeInit(basePath);
+    }
+
+    /** Saves the changed shards to the basePath now. */
+    public void sync() {
+        checkHandle();
+        nativeSync(this.nativeHandle);
     }
 
     @Override
@@ -169,7 +183,9 @@ public class Minis implements AutoCloseable {
      */
     private native long nativeHLen(long ptr, String key);
 
-    private native long nativeInit();
+    private native long nativeInit(String basePath);
+
+    private native void nativeSync(long ptr);
 
     private native void nativeFree(long ptr);
 

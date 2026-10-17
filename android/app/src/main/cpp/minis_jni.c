@@ -81,10 +81,13 @@ Java_com_minis_Minis_nativeInit(JNIEnv *env, jobject thiz, jstring jBasePath) {
     ctx->minis = minis_init();
     ctx->is_running = 1;
 
-    // Save the path for the background thread
-    const char *path = (*env)->GetStringUTFChars(env, jBasePath, 0);
-    ctx->base_path = strdup(path);
-    (*env)->ReleaseStringUTFChars(env, jBasePath, path);
+    // Save the path for the background thread, none: no background saving
+    ctx->base_path = NULL;
+    if (jBasePath) {
+        const char *path = (*env)->GetStringUTFChars(env, jBasePath, 0);
+        ctx->base_path = strdup(path);
+        (*env)->ReleaseStringUTFChars(env, jBasePath, path);
+    }
 
     if (pthread_create(&ctx->bg_thread, NULL, maintenance_thread, ctx) != 0) {
         LOGE("Failed to create background thread");
