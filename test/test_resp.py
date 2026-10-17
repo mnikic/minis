@@ -1822,6 +1822,13 @@ class TestBinarySafe(MinisTestCase):
         self.assertIsNone(self.b.zscore("bin_zset", b"m\x00a"))
         self.assertEqual(self.b.zscore("bin_zset", b"m"), 3)
 
+    def test_ping_echoes_every_byte(self):
+        # Raw: redis-py turns PING replies into "is it PONG"
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(3)
+            sock.sendall(raw_command("PING", b"a\x00b"))
+            self.assertEqual(sock.recv(100), b"$3\r\na\x00b\r\n")
+
     def test_keys_differing_after_nul_are_different_keys(self):
         keys = [b"k\x00a", b"k\x00b", b"k", b"\x00", b"\x00\x00"]
         for i, key in enumerate(keys):

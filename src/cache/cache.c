@@ -111,13 +111,14 @@ cache_next_expiry (Cache *cache)
 // Server Control Commands
 
 static bool
-do_ping (Cache *cache, const char **args, size_t arg_count, Buffer *out)
+do_ping (Cache *cache, const char **args, const size_t *lens,
+	 size_t arg_count, Buffer *out)
 {
   (void) cache;
   if (arg_count == 1)
     return out_simple_str (out, "PONG");
   if (arg_count == 2)
-    return out_str (out, args[1]);
+    return out_str_size (out, args[1], lens[1]);
   return out_err (out, ERR_ARG,
 		  "wrong number of arguments for 'ping' command");
 }
@@ -972,7 +973,7 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
 		 size_t size, Buffer *out, uint64_t now_us)
 {
   if (size > 0 && cmd_is (cmd[0], "ping"))
-    return do_ping (cache, cmd, size, out);
+    return do_ping (cache, cmd, lens, size, out);
   if (size > 0 && cmd_is (cmd[0], "config"))
     return do_config (cache, cmd, size, out);
   if (size >= 2 && cmd_is (cmd[0], "scan"))
