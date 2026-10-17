@@ -29,8 +29,9 @@ list_lookup (Minis *minis, Shard *shard, const char *key, uint64_t now_us,
 }
 
 MinisError
-minis_push (Minis *minis, const char *key, const char **vals, size_t count,
-	    bool front, size_t *out_len, uint64_t now_us)
+minis_push (Minis *minis, const char *key, const char **vals,
+	    const size_t *lens, size_t count, bool front, size_t *out_len,
+	    uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
 
@@ -51,7 +52,8 @@ minis_push (Minis *minis, const char *key, const char **vals, size_t count,
 
   err = MINIS_OK;
   for (size_t i = 0; i < count; i++)
-    if (!list_push (ent->list, vals[i], front))
+    if (!list_push (ent->list, vals[i], lens ? lens[i] : strlen (vals[i]),
+		    front))
       {
 	err = MINIS_ERR_OOM;
 	break;
@@ -91,8 +93,8 @@ minis_pop (Minis *minis, const char *key, size_t count, bool front,
   // Visit first and remove after, so a failed reply loses nothing
   for (size_t i = 0; i < total; i++)
     {
-      const char *val = list_at (list, front ? i : len - 1 - i);
-      if (!cb (val, i, total, ctx))
+      const ListItem *item = list_at (list, front ? i : len - 1 - i);
+      if (!cb (item->data, item->len, i, total, ctx))
 	{
 	  unlock_shard (shard);
 	  return MINIS_ERR_OOM;
@@ -138,11 +140,14 @@ minis_lrange (Minis *minis, const char *key, int64_t start, int64_t stop,
     {
       size_t total = (size_t) (stop - start + 1);
       for (size_t i = 0; i < total; i++)
-	if (!cb (list_at (list, (size_t) start + i), i, total, ctx))
-	  {
-	    err = MINIS_ERR_OOM;
-	    break;
-	  }
+	{
+	  const ListItem *item = list_at (list, (size_t) start + i);
+	  if (!cb (item->data, item->len, i, total, ctx))
+	    {
+	      err = MINIS_ERR_OOM;
+	      break;
+	    }
+	}
     }
 
   unlock_shard (shard);
@@ -151,7 +156,7 @@ minis_lrange (Minis *minis, const char *key, int64_t start, int64_t stop,
 
 MinisError
 minis_lrem (Minis *minis, const char *key, int64_t count, const char *val,
-	    size_t *out_removed, uint64_t now_us)
+	    size_t val_len, size_t *out_removed, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
 
@@ -160,7 +165,7 @@ minis_lrem (Minis *minis, const char *key, int64_t count, const char *val,
   size_t removed = 0;
   if (ent)
     {
-      removed = list_remove (ent->list, val, count);
+      removed = list_remove (ent->list, val, val_len, count);
       if (removed > 0)
 	__atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
       if (list_len (ent->list) == 0)

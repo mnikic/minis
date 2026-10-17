@@ -166,8 +166,8 @@ serialize_list (Buffer *buf, const List *list)
     return false;
   for (size_t i = 0; i < list_len (list); i++)
     {
-      const char *val = list_at (list, i);
-      if (!out_raw_str (buf, val, strlen (val)))
+      const ListItem *item = list_at (list, i);
+      if (!out_raw_str (buf, item->data, item->len))
 	return false;
     }
   return true;
@@ -449,7 +449,7 @@ load_list_entry (FILE *file_ptr, Minis *minis, const char *key,
 	}
       val_buf[vlen] = '\0';
 
-      bool pushed = !ent || list_push (ent->list, val_buf, false);
+      bool pushed = !ent || list_push (ent->list, val_buf, vlen, false);
       free (val_buf);
       if (!pushed)
 	return false;

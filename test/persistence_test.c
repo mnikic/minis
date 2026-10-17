@@ -109,16 +109,16 @@ main (void)
   // wrap and grow the ring buffer, with a TTL
   msgf ("   -> Adding List 'queue' = [c, a, b] and List 'big queue'");
   Entry *ent_list = entry_new_list (cache1, QUEUE_KEY);
-  list_push (ent_list->list, "a", false);
-  list_push (ent_list->list, "b", false);
-  list_push (ent_list->list, "c", true);
+  list_push (ent_list->list, "a", 1, false);
+  list_push (ent_list->list, "b", 1, false);
+  list_push (ent_list->list, "c\0", 2, true);
 
   Entry *ent_big = entry_new_list (cache1, BIG_QUEUE_KEY);
   for (int i = 0; i < BIG_QUEUE_LEN; i++)
     {
       char val[32];
       snprintf (val, sizeof (val), "item-%d", i);
-      list_push (ent_big->list, val, i % 2 == 0);
+      list_push (ent_big->list, val, strlen (val), i % 2 == 0);
     }
   entry_set_expiration (cache1, ent_big, 123456789);
 
@@ -136,7 +136,7 @@ main (void)
       char field[32];
       snprintf (field, sizeof (field), "field-%d", i);
       hash_set (ent_huge_hash->hash, field, huge_value);
-      list_push (ent_huge_list->list, huge_value, false);
+      list_push (ent_huge_list->list, huge_value, HUGE_VALUE_LEN, false);
     }
 
   // F. Add Expiration
@@ -259,18 +259,21 @@ main (void)
   assert (res_list != NULL);
   assert (res_list->type == T_LIST);
   assert (list_len (res_list->list) == 3);
-  assert (strcmp (list_at (res_list->list, 0), "c") == 0);
-  assert (strcmp (list_at (res_list->list, 1), "a") == 0);
-  assert (strcmp (list_at (res_list->list, 2), "b") == 0);
+  // An element holding a NUL byte
+  assert (list_at (res_list->list, 0)->len == 2);
+  assert (memcmp (list_at (res_list->list, 0)->data, "c\0", 2) == 0);
+  assert (strcmp (list_at (res_list->list, 1)->data, "a") == 0);
+  assert (strcmp (list_at (res_list->list, 2)->data, "b") == 0);
 
   // Even items went to the front, so the head is the last even one
   Entry *res_big = find_entry (cache2, BIG_QUEUE_KEY);
   assert (res_big != NULL);
   assert (res_big->type == T_LIST);
   assert (list_len (res_big->list) == BIG_QUEUE_LEN);
-  assert (strcmp (list_at (res_big->list, 0), "item-998") == 0);
-  assert (strcmp (list_at (res_big->list, BIG_QUEUE_LEN / 2), "item-1") == 0);
-  assert (strcmp (list_at (res_big->list, BIG_QUEUE_LEN - 1), "item-999") ==
+  assert (strcmp (list_at (res_big->list, 0)->data, "item-998") == 0);
+  assert (strcmp (list_at (res_big->list, BIG_QUEUE_LEN / 2)->data, "item-1")
+	  == 0);
+  assert (strcmp (list_at (res_big->list, BIG_QUEUE_LEN - 1)->data, "item-999") ==
 	  0);
   // 6789us were left at the save, 5000 of them passed
   assert (res_big->expire_at_us == new_now_us + 1789);
@@ -291,7 +294,8 @@ main (void)
   assert (res_huge_list != NULL);
   assert (res_huge_list->type == T_LIST);
   assert (list_len (res_huge_list->list) == HUGE_COUNT);
-  assert (strcmp (list_at (res_huge_list->list, HUGE_COUNT - 1), huge_value)
+  assert (strcmp (list_at (res_huge_list->list, HUGE_COUNT - 1)->data,
+		  huge_value)
 	  == 0);
   msgf ("   [PASS] Entries larger than K_MAX_MSG match.");
 

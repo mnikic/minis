@@ -5,11 +5,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// One element: any bytes, NUL included. data is NUL terminated too.
+typedef struct
+{
+  size_t len;
+  char data[];
+} ListItem;
+
 // A list of strings in a ring buffer: O(1) push/pop at both ends and
 // O(1) indexing.
 typedef struct
 {
-  char **items;			// cap slots, NULL when cap == 0
+  ListItem **items;		// cap slots, NULL when cap == 0
   size_t cap;			// 0 or a power of 2
   size_t head;			// Slot of element 0
   size_t len;
@@ -25,20 +32,21 @@ list_len (const List *list)
 }
 
 // Element idx, 0 is the head. idx must be < len.
-static inline const char *
+static inline const ListItem *
 list_at (const List *list, size_t idx)
 {
   return list->items[(list->head + idx) & (list->cap - 1)];
 }
 
-// Copies val in. False on OOM.
-bool list_push (List * list, const char *val, bool front);
+// Copies val (len bytes) in. False on OOM.
+bool list_push (List * list, const char *val, size_t len, bool front);
 
 // Removes and frees count elements from one end, count must be <= len
 void list_drop (List * list, size_t count, bool front);
 
 // Removes elements equal to val: the first count if count > 0, the last
 // -count if count < 0, all if count == 0. Returns how many went.
-size_t list_remove (List * list, const char *val, int64_t count);
+size_t list_remove (List * list, const char *val, size_t len,
+		    int64_t count);
 
 #endif // CACHE_LIST_H_

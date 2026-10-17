@@ -1769,13 +1769,36 @@ class TestBinarySafe(MinisTestCase):
         self.b.set("bin_num", b"12")
         self.assertEqual(self.b.incr("bin_num"), 13)
 
+    def test_list_elements(self):
+        values = [v for v in self.VALUES]
+        self.b.rpush("bin_list", *values)
+        self.assertEqual(self.b.lrange("bin_list", 0, -1), values)
+        self.b.lpush("bin_list", b"\x00head")
+        self.assertEqual(self.b.lpop("bin_list"), b"\x00head")
+        self.assertEqual(self.b.rpop("bin_list"), values[-1])
+        self.assertEqual(self.b.lpop("bin_list", 2), values[:2])
+        self.assertEqual(self.b.blpop("bin_list", timeout=1),
+                         (b"bin_list", values[2]))
+        self.assertEqual(self.b.brpop("bin_list", timeout=1),
+                         (b"bin_list", values[-2]))
+
+    def test_lrem_compares_every_byte(self):
+        self.b.rpush("bin_lrem", b"a\x00b", b"a\x00c", b"a", b"a\x00b")
+        self.assertEqual(self.b.lrem("bin_lrem", 0, b"a\x00b"), 2)
+        self.assertEqual(self.b.lrange("bin_lrem", 0, -1), [b"a\x00c", b"a"])
+        self.assertEqual(self.b.lrem("bin_lrem", 0, b"a"), 1)
+        self.assertEqual(self.b.lrange("bin_lrem", 0, -1), [b"a\x00c"])
+
     def test_survives_restart(self):
+        self.b.rpush("bin_keep_list", b"\x00", b"x\x00y")
         self.b.set("bin_keep", bytes(range(256)))
         self.b.set("bin_keep_ttl", b"\x00x\x00", ex=100)
         self.b.close()
         self.server.restart()
         self.assertEqual(self.b.get("bin_keep"), bytes(range(256)))
         self.assertEqual(self.b.get("bin_keep_ttl"), b"\x00x\x00")
+        self.assertEqual(self.b.lrange("bin_keep_list", 0, -1),
+                         [b"\x00", b"x\x00y"])
 
 
 class TestDel(MinisTestCase):

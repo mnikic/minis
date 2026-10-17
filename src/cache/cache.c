@@ -592,12 +592,13 @@ do_hgetall (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 
 // LPUSH/RPUSH key value [value ...]
 static bool
-do_push (Cache *cache, const char **cmd, size_t size, bool front,
-	 Buffer *out, uint64_t now_us)
+do_push (Cache *cache, const char **cmd, const size_t *lens, size_t size,
+	 bool front, Buffer *out, uint64_t now_us)
 {
   size_t len = 0;
   MinisError err =
-    minis_push (cache, cmd[1], cmd + 2, size - 2, front, &len, now_us);
+    minis_push (cache, cmd[1], cmd + 2, lens + 2, size - 2, front, &len,
+		now_us);
   if (err == MINIS_OK)
     return out_int (out, (int64_t) len);
   return reply_with_error (out, err);
@@ -610,12 +611,13 @@ typedef struct
 } ListReplyCtx;
 
 static bool
-cb_list_reply (const char *val, size_t idx, size_t total, void *arg)
+cb_list_reply (const char *val, size_t len, size_t idx, size_t total,
+	       void *arg)
 {
   ListReplyCtx *ctx = (ListReplyCtx *) arg;
   if (idx == 0 && ctx->array && !out_arr (ctx->out, total))
     return false;
-  return out_str (ctx->out, val);
+  return out_str_size (ctx->out, val, len);
 }
 
 // LPOP/RPOP key [count]
@@ -655,13 +657,14 @@ typedef struct
 } BPopReplyCtx;
 
 static bool
-cb_bpop_reply (const char *val, size_t idx, size_t total, void *arg)
+cb_bpop_reply (const char *val, size_t len, size_t idx, size_t total,
+	       void *arg)
 {
   (void) idx;
   (void) total;
   BPopReplyCtx *ctx = (BPopReplyCtx *) arg;
   return out_arr (ctx->out, 2) && out_str (ctx->out, ctx->key)
-    && out_str (ctx->out, val);
+    && out_str_size (ctx->out, val, len);
 }
 
 // The BLPOP timeout: seconds as a long double, like Redis
@@ -769,7 +772,8 @@ do_lrange (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 
 // LREM key count value
 static bool
-do_lrem (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_lrem (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
+	 uint64_t now_us)
 {
   int64_t count = 0;
   if (!str2int (cmd[2], &count))
@@ -780,7 +784,8 @@ do_lrem (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 		    "between -9223372036854775807 and 9223372036854775807");
 
   size_t removed = 0;
-  MinisError err = minis_lrem (cache, cmd[1], count, cmd[3], &removed,
+  MinisError err = minis_lrem (cache, cmd[1], count, cmd[3], lens[3],
+			       &removed,
 			       now_us);
   if (err == MINIS_OK || err == MINIS_ERR_NIL)
     return out_int (out, (int64_t) removed);
@@ -990,9 +995,9 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
       return do_incr (cache, cmd[1], -delta, out, now_us);
     }
   if (size >= 3 && cmd_is (cmd[0], "lpush"))
-    return do_push (cache, cmd, size, true, out, now_us);
+    return do_push (cache, cmd, lens, size, true, out, now_us);
   if (size >= 3 && cmd_is (cmd[0], "rpush"))
-    return do_push (cache, cmd, size, false, out, now_us);
+    return do_push (cache, cmd, lens, size, false, out, now_us);
   if ((size == 2 || size == 3) && cmd_is (cmd[0], "lpop"))
     return do_pop (cache, cmd, size, true, out, now_us);
   if ((size == 2 || size == 3) && cmd_is (cmd[0], "rpop"))
@@ -1002,7 +1007,7 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   if (size >= 1 && (cmd_is (cmd[0], "blpop") || cmd_is (cmd[0], "brpop")))
     return do_bpop_now (cache, cmd, size, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "lrem"))
-    return do_lrem (cache, cmd, out, now_us);
+    return do_lrem (cache, cmd, lens, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "llen"))
     return do_llen (cache, cmd[1], out, now_us);
   if (size >= 2 && cmd_is (cmd[0], "exists"))

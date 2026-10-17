@@ -1684,7 +1684,7 @@ assert_str_bytes (Buffer *buf, const char *want, size_t len)
 static void
 test_binary_strings (void)
 {
-  printf ("TEST: Binary safe string values... ");
+  printf ("TEST: Binary safe values... ");
 
   Cache *cache = cache_init ();
   Buffer buf;
@@ -1709,6 +1709,17 @@ test_binary_strings (void)
   RUN_N (cache, now, mset_lens, "mset", "bk3", "x\0y", "bk4", "\0z");
   RUN (cache, now, "get", "bk4");
   assert_str_bytes (&buf, "\0z", 2);
+
+  // List elements: pushed, popped and removed byte for byte
+  const size_t push_lens[] = { 5, 3, 3, 3, 1 };
+  RUN_N (cache, now, push_lens, "rpush", "bl", "a\0b", "a\0c", "a");
+  const size_t lrem_lens[] = { 4, 2, 1, 3 };
+  RUN_N (cache, now, lrem_lens, "lrem", "bl", "0", "a\0b");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "lpop", "bl");
+  assert_str_bytes (&buf, "a\0c", 3);
+  RUN (cache, now, "lpop", "bl");
+  assert_str_bytes (&buf, "a", 1);
 
   // INCR needs every byte to be the number
   const size_t num_lens[] = { 3, 4, 3 };

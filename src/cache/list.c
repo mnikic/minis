@@ -6,7 +6,7 @@
 #define LIST_MIN_CAP 8
 
 // Slot of element idx
-static inline char **
+static inline ListItem **
 list_slot (List *list, size_t idx)
 {
   return &list->items[(list->head + idx) & (list->cap - 1)];
@@ -34,7 +34,7 @@ list_dispose (List *list)
 static bool
 list_resize (List *list, size_t new_cap)
 {
-  char **items = malloc (new_cap * sizeof (char *));
+  ListItem **items = malloc (new_cap * sizeof (ListItem *));
   if (!items)
     return false;
   for (size_t i = 0; i < list->len; i++)
@@ -46,16 +46,25 @@ list_resize (List *list, size_t new_cap)
   return true;
 }
 
+static bool
+item_equals (const ListItem *item, const char *val, size_t len)
+{
+  return item->len == len && memcmp (item->data, val, len) == 0;
+}
+
 bool
-list_push (List *list, const char *val, bool front)
+list_push (List *list, const char *val, size_t len, bool front)
 {
   if (list->len == list->cap
       && !list_resize (list, list->cap ? list->cap * 2 : LIST_MIN_CAP))
     return false;
 
-  char *copy = strdup (val);
+  ListItem *copy = malloc (sizeof (ListItem) + len + 1);
   if (!copy)
     return false;
+  copy->len = len;
+  memcpy (copy->data, val, len);
+  copy->data[len] = '\0';
 
   if (front)
     {
@@ -102,11 +111,11 @@ list_drop (List *list, size_t count, bool front)
 }
 
 size_t
-list_remove (List *list, const char *val, int64_t count)
+list_remove (List *list, const char *val, size_t len, int64_t count)
 {
   size_t matches = 0;
   for (size_t i = 0; i < list->len; i++)
-    if (strcmp (*list_slot (list, i), val) == 0)
+    if (item_equals (*list_slot (list, i), val, len))
       matches++;
 
   // -INT64_MIN does not fit in int64_t, negate unsigned
@@ -119,8 +128,8 @@ list_remove (List *list, const char *val, int64_t count)
   size_t seen = 0;
   for (size_t i = 0; i < list->len; i++)
     {
-      char *item = *list_slot (list, i);
-      if (strcmp (item, val) == 0)
+      ListItem *item = *list_slot (list, i);
+      if (item_equals (item, val, len))
 	{
 	  size_t nth = seen++;
 	  if (nth >= keep && nth < keep + limit)
