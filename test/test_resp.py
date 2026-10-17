@@ -1690,6 +1690,74 @@ class TestDaemon(unittest.TestCase):
             finally:
                 daemon.stop()
 
+    def foreground(self):
+        """minis in the foreground, in the same directory as the daemon"""
+        proc = subprocess.Popen([MINIS_BIN, "-p", str(self.port)],
+                                cwd=self.tmp.name, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        deadline = time.time() + 5
+        while not reachable("127.0.0.1", self.port):
+            self.assertIsNone(proc.poll(), "minis exited at startup")
+            self.assertLess(time.time(), deadline)
+            time.sleep(0.05)
+        return proc
+
+    def stop_foreground(self, proc):
+        proc.terminate()
+        self.assertEqual(proc.wait(5), 0)
+
+    def test_foreground_daemon_foreground(self):
+        # 1. Normal mode: write some keys, exit (which saves)
+        proc = self.foreground()
+        r = redis.Redis(port=self.port, socket_timeout=2)
+        r.set("fdf_str", "first")
+        r.set("fdf_ttl", "expiring", ex=1000)
+        r.set("fdf_gone", "delete me")
+        r.set(b"fdf_bin\x00", b"\x00old")
+        r.rpush("fdf_list", "a", "b")
+        r.hset("fdf_hash", "f", "v1")
+        r.close()
+        self.stop_foreground(proc)
+
+        # 2. Daemon mode: it loads them, change them, exit (which saves)
+        daemon = Daemon(self.tmp.name, self.port).start()
+        try:
+            self.assertEqual(daemon.returncode, 0, daemon.output)
+            r = redis.Redis(port=self.port, socket_timeout=2)
+            self.assertEqual(r.get("fdf_str"), b"first")
+            self.assertGreater(r.ttl("fdf_ttl"), 990)
+            self.assertEqual(r.get("fdf_gone"), b"delete me")
+            self.assertEqual(r.get(b"fdf_bin\x00"), b"\x00old")
+            self.assertEqual(r.lrange("fdf_list", 0, -1), [b"a", b"b"])
+            self.assertEqual(r.hgetall("fdf_hash"), {b"f": b"v1"})
+
+            r.set("fdf_str", "second")
+            r.set("fdf_ttl", "longer", ex=2000)
+            r.delete("fdf_gone")
+            r.set(b"fdf_bin\x00", b"\x00new\x00")
+            r.rpush("fdf_list", "c")
+            r.hset("fdf_hash", "f", "v2")
+            r.set("fdf_added", "by the daemon")
+            r.close()
+        finally:
+            daemon.stop()
+
+        # 3. Normal mode again: the daemon's changes are what it loads
+        proc = self.foreground()
+        try:
+            r = redis.Redis(port=self.port, socket_timeout=2)
+            self.assertEqual(r.get("fdf_str"), b"second")
+            self.assertEqual(r.get("fdf_ttl"), b"longer")
+            self.assertGreater(r.ttl("fdf_ttl"), 1990)
+            self.assertIsNone(r.get("fdf_gone"))
+            self.assertEqual(r.get(b"fdf_bin\x00"), b"\x00new\x00")
+            self.assertEqual(r.lrange("fdf_list", 0, -1), [b"a", b"b", b"c"])
+            self.assertEqual(r.hgetall("fdf_hash"), {b"f": b"v2"})
+            self.assertEqual(r.get("fdf_added"), b"by the daemon")
+            r.close()
+        finally:
+            self.stop_foreground(proc)
+
     def test_snapshots_survive_a_daemon_restart(self):
         # The daemon changes to /, snapshots must still go to ./shards
         daemon = Daemon(self.tmp.name, self.port).start()
