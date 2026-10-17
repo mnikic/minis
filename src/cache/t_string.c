@@ -157,6 +157,10 @@ minis_mget (Minis *minis, const char **keys, size_t count,
       int shard_id = get_shard_id (keys[i]);
       Entry *val =
 	entry_lookup (minis, &minis->shards[shard_id], keys[i], now_us);
+      // Like Redis, other types read as missing. Visitors use ent->val,
+      // which for them is a pointer to the container.
+      if (val && val->type != T_STR)
+	val = NULL;
       if (!visitor (val, ctx))
 	break;
     }

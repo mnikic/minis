@@ -970,6 +970,38 @@ test_list_rem (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6k: MGET over other types
+// ============================================================================
+
+static void
+test_mget_other_types (void)
+{
+  printf ("TEST: MGET over other types... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  RUN (cache, now, "set", "mg_s", "v");
+  RUN (cache, now, "hset", "mg_h", "f", "v");
+  RUN (cache, now, "rpush", "mg_l", "a");
+  RUN (cache, now, "zadd", "mg_z", "1", "m");
+
+  // Binary: SER_ARR, count, then SER_STR "v" and four SER_NIL
+  RUN (cache, now, "mget", "mg_s", "mg_h", "mg_l", "mg_z", "mg_none");
+  const uint8_t *data = buf_data (&buf);
+  ASSERT_EQ (data[0], SER_ARR);
+  ASSERT_EQ (data[5], SER_STR);
+  ASSERT_EQ (data[10], 'v');
+  for (int i = 0; i < 4; i++)
+    ASSERT_EQ (data[11 + i], SER_NIL);
+  ASSERT_EQ (buf_len (&buf), 15);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -1568,6 +1600,7 @@ main (void)
   test_list_pop_too_big ();
   test_list_range ();
   test_list_rem ();
+  test_mget_other_types ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

@@ -1027,6 +1027,25 @@ $ {client_executable-abs_path} exists lrem
 (int) 0
 $ {client_executable-abs_path} lrem lrem 0 a
 (int) 0
+# Test: MGET reads other types as missing
+$ {client_executable-abs_path} set mg_s v
+(str) OK
+$ {client_executable-abs_path} hset mg_h f v
+(int) 1
+$ {client_executable-abs_path} rpush mg_l a
+(int) 1
+$ {client_executable-abs_path} zadd mg_z 1 m
+(int) 1
+$ {client_executable-abs_path} mget mg_s mg_h mg_l mg_z mg_none
+(arr) len=5
+(str) v
+(nil)
+(nil)
+(nil)
+(nil)
+(arr) end
+$ {client_executable-abs_path} del mg_s mg_h mg_l mg_z
+(int) 4
 '''
 
 

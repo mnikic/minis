@@ -680,6 +680,20 @@ class TestShutdown(MinisTestCase):
             self.assertEqual(self.r.llen("shutdown_list"), 100 * (i + 1))
 
 
+class TestMget(MinisTestCase):
+    def test_other_types_read_as_missing(self):
+        self.r.set("mget_s", "v")
+        self.r.hset("mget_h", "f", "v")
+        self.r.rpush("mget_l", "a")
+        self.r.zadd("mget_z", {"m": 1})
+        self.assertEqual(
+            self.r.mget("mget_s", "mget_h", "mget_l", "mget_z", "mget_none"),
+            ["v", None, None, None, None])
+        # The keys themselves are untouched
+        self.assertEqual(self.r.hgetall("mget_h"), {"f": "v"})
+        self.assertEqual(self.r.lrange("mget_l", 0, -1), ["a"])
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")
