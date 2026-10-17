@@ -10,7 +10,7 @@
 
 MinisError
 minis_zadd (Minis *minis, const char *key, double score, const char *name,
-	    int *out_added, uint64_t now_us)
+	    size_t name_len, int *out_added, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
 
@@ -33,7 +33,7 @@ minis_zadd (Minis *minis, const char *key, double score, const char *name,
       return MINIS_ERR_TYPE;
     }
 
-  int res = zset_add (ent->zset, name, strlen (name), score);
+  int res = zset_add (ent->zset, name, name_len, score);
 
   if (res >= 0)
     __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
@@ -50,7 +50,7 @@ minis_zadd (Minis *minis, const char *key, double score, const char *name,
 
 MinisError
 minis_zrem (Minis *minis, const char *key, const char *name,
-	    int *out_removed, uint64_t now_us)
+	    size_t name_len, int *out_removed, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
   Entry *ent = entry_lookup (minis, shard, key, now_us);
@@ -69,7 +69,7 @@ minis_zrem (Minis *minis, const char *key, const char *name,
       return MINIS_ERR_TYPE;
     }
 
-  ZNode *znode = zset_pop (ent->zset, name, strlen (name));
+  ZNode *znode = zset_pop (ent->zset, name, name_len);
   int res = 0;
 
   if (znode)
@@ -91,7 +91,7 @@ minis_zrem (Minis *minis, const char *key, const char *name,
 
 MinisError
 minis_zscore (Minis *minis, const char *key, const char *name,
-	      double *out_score, uint64_t now_us)
+	      size_t name_len, double *out_score, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
   Entry *ent = entry_lookup (minis, shard, key, now_us);
@@ -107,7 +107,7 @@ minis_zscore (Minis *minis, const char *key, const char *name,
       return MINIS_ERR_TYPE;
     }
 
-  ZNode *znode = zset_lookup (ent->zset, name, strlen (name));
+  ZNode *znode = zset_lookup (ent->zset, name, name_len);
 
   if (znode)
     {
@@ -121,8 +121,8 @@ minis_zscore (Minis *minis, const char *key, const char *name,
 
 MinisError
 minis_zquery (Minis *minis, const char *key, double score, const char *name,
-	      int64_t offset, int64_t limit, MinisZSetCb cb, void *ctx,
-	      uint64_t now_us)
+	      size_t name_len, int64_t offset, int64_t limit, MinisZSetCb cb,
+	      void *ctx, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key);
   Entry *ent = entry_lookup (minis, shard, key, now_us);
@@ -144,7 +144,7 @@ minis_zquery (Minis *minis, const char *key, double score, const char *name,
       return MINIS_OK;
     }
 
-  ZNode *znode = zset_query (ent->zset, score, name, strlen (name));
+  ZNode *znode = zset_query (ent->zset, score, name, name_len);
   if (znode && offset > 0)
     znode = znode_offset (znode, offset);
 

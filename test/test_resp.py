@@ -1806,7 +1806,24 @@ class TestBinarySafe(MinisTestCase):
         self.assertIsNone(self.b.hget("bin_hash", b"f\x00b"))
         self.assertEqual(self.b.hget("bin_hash", b"f"), b"")
 
+    def test_zset_members(self):
+        # Members differing only after a NUL are different members
+        self.assertEqual(self.b.zadd("bin_zset", {b"m\x00a": 1}), 1)
+        self.assertEqual(self.b.zadd("bin_zset", {b"m\x00b": 2}), 1)
+        self.assertEqual(self.b.zadd("bin_zset", {b"m": 3}), 1)
+        self.assertEqual(self.b.zscore("bin_zset", b"m\x00a"), 1)
+        self.assertEqual(self.b.zscore("bin_zset", b"m\x00b"), 2)
+        self.assertEqual(self.b.execute_command("ZQUERY", "bin_zset", 0, b"", 0, 10),
+                         [b"m\x00a", b"1", b"m\x00b", b"2", b"m", b"3"])
+        # The query starts at a member with NUL bytes too
+        self.assertEqual(self.b.execute_command("ZQUERY", "bin_zset", 2, b"m\x00b", 0, 1),
+                         [b"m\x00b", b"2"])
+        self.assertEqual(self.b.zrem("bin_zset", b"m\x00a"), 1)
+        self.assertIsNone(self.b.zscore("bin_zset", b"m\x00a"))
+        self.assertEqual(self.b.zscore("bin_zset", b"m"), 3)
+
     def test_survives_restart(self):
+        self.b.zadd("bin_keep_zset", {b"\x00z": 5})
         self.b.hset("bin_keep_hash", b"k\x00", b"\x00v")
         self.b.rpush("bin_keep_list", b"\x00", b"x\x00y")
         self.b.set("bin_keep", bytes(range(256)))
@@ -1818,6 +1835,7 @@ class TestBinarySafe(MinisTestCase):
         self.assertEqual(self.b.lrange("bin_keep_list", 0, -1),
                          [b"\x00", b"x\x00y"])
         self.assertEqual(self.b.hgetall("bin_keep_hash"), {b"k\x00": b"\x00v"})
+        self.assertEqual(self.b.zscore("bin_keep_zset", b"\x00z"), 5)
 
 
 class TestDel(MinisTestCase):

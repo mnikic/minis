@@ -1736,6 +1736,16 @@ test_binary_strings (void)
   RUN_N (cache, now, hget_lens, "hexists", "bh", "h\0b");
   ASSERT_EQ (extract_int_response (&buf), 1);
 
+  // Zset members: "m\0a" and "m\0b" are two members
+  const size_t zadd_lens[] = { 4, 2, 1, 3 };
+  RUN_N (cache, now, zadd_lens, "zadd", "bz", "1", "m\0a");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN_N (cache, now, zadd_lens, "zadd", "bz", "2", "m\0b");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  const size_t zscore_lens[] = { 6, 2, 3 };
+  RUN_N (cache, now, zscore_lens, "zscore", "bz", "m\0a");
+  ASSERT_TRUE (fabs (extract_dbl_response (&buf) - 1) < EPSILON);
+
   // INCR needs every byte to be the number
   const size_t num_lens[] = { 3, 4, 3 };
   RUN_N (cache, now, num_lens, "set", "bnum", "1\02");

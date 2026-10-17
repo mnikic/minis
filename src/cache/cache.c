@@ -806,34 +806,40 @@ do_llen (Cache *cache, const char *key, Buffer *out, uint64_t now_us)
 }
 
 static bool
-do_zadd (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_zadd (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
+	        uint64_t now_us)
 {
   double score = 0;
   if (!str2dbl (cmd[2], &score))
     return out_err (out, ERR_ARG, "expect fp number");
 
   int added = 0;
-  MinisError err = minis_zadd (cache, cmd[1], score, cmd[3], &added, now_us);
+  MinisError err = minis_zadd (cache, cmd[1], score, cmd[3], lens[3], &added,
+			       now_us);
   if (err == MINIS_OK)
     return out_int (out, added);
   return reply_with_error (out, err);
 }
 
 static bool
-do_zrem (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_zrem (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
+	        uint64_t now_us)
 {
   int removed = 0;
-  MinisError err = minis_zrem (cache, cmd[1], cmd[2], &removed, now_us);
+  MinisError err = minis_zrem (cache, cmd[1], cmd[2], lens[2], &removed,
+			       now_us);
   if (err == MINIS_OK)
     return out_int (out, removed);
   return reply_with_error (out, err);
 }
 
 static bool
-do_zscore (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_zscore (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
+	          uint64_t now_us)
 {
   double score = 0;
-  MinisError err = minis_zscore (cache, cmd[1], cmd[2], &score, now_us);
+  MinisError err = minis_zscore (cache, cmd[1], cmd[2], lens[2], &score,
+				 now_us);
   if (err == MINIS_OK)
     return out_dbl (out, score);
   return reply_with_error (out, err);
@@ -860,7 +866,8 @@ cb_zquery (const char *name, size_t len, double score, void *arg)
 }
 
 static bool
-do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
+do_zquery (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
+	          uint64_t now_us)
 {
   double score = 0;
   if (!str2dbl (cmd[2], &score))
@@ -884,7 +891,7 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 
       // Single call to core logic
       MinisError err =
-	minis_zquery (cache, cmd[1], score, cmd[3], offset, limit,
+	minis_zquery (cache, cmd[1], score, cmd[3], lens[3], offset, limit,
 		      cb_zquery, &ctx, now_us);
 
       if (err != MINIS_OK && err != MINIS_ERR_NIL)
@@ -899,7 +906,7 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
 
   // Pass 1: Count Only
   ctx.count_only = true;
-  MinisError err = minis_zquery (cache, cmd[1], score, cmd[3], offset, limit,
+  MinisError err = minis_zquery (cache, cmd[1], score, cmd[3], lens[3], offset, limit,
 				 cb_zquery, &ctx, now_us);
 
   if (err == MINIS_ERR_NIL)
@@ -916,7 +923,7 @@ do_zquery (Cache *cache, const char **cmd, Buffer *out, uint64_t now_us)
   // Write Data
   ctx.count_only = false;
   // Reset count if you want, though irrelevant for writing
-  minis_zquery (cache, cmd[1], score, cmd[3], offset, limit,
+  minis_zquery (cache, cmd[1], score, cmd[3], lens[3], offset, limit,
 		cb_zquery, &ctx, now_us);
 
   return true;
@@ -969,13 +976,13 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   if (size == 2 && cmd_is (cmd[0], "ttl"))
     return do_ttl (cache, cmd, 1000, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "zadd"))
-    return do_zadd (cache, cmd, out, now_us);
+    return do_zadd (cache, cmd, lens, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "zrem"))
-    return do_zrem (cache, cmd, out, now_us);
+    return do_zrem (cache, cmd, lens, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "zscore"))
-    return do_zscore (cache, cmd, out, now_us);
+    return do_zscore (cache, cmd, lens, out, now_us);
   if (size == 6 && cmd_is (cmd[0], "zquery"))
-    return do_zquery (cache, cmd, out, now_us);
+    return do_zquery (cache, cmd, lens, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "incr"))
     return do_incr (cache, cmd[1], 1, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "decr"))
