@@ -1495,6 +1495,50 @@ class TestProtocolErrors(MinisTestCase):
         self.assertEqual(self.r.delete(*keys), 511)
 
 
+class TestTtlPersistence(MinisTestCase):
+    """Snapshots keep each key's time left. (A reboot, which restarts the
+    monotonic clock, is covered by persistence_test.c.)"""
+
+    def test_ttl_survives_restart(self):
+        self.r.set("tp_str", "v", ex=100)
+        self.r.rpush("tp_list", "a")
+        self.r.expire("tp_list", 200)
+        self.r.hset("tp_hash", "f", "v")
+        self.r.pexpire("tp_hash", 300_000)
+        self.r.set("tp_forever", "v")
+        self.r.close()
+
+        self.server.restart()
+
+        self.assertIn(self.r.ttl("tp_str"), (99, 100))
+        self.assertIn(self.r.ttl("tp_list"), (199, 200))
+        self.assertTrue(299_000 < self.r.pttl("tp_hash") <= 300_000)
+        self.assertEqual(self.r.ttl("tp_forever"), -1)
+        self.assertEqual(self.r.get("tp_str"), "v")
+
+    def test_key_expiring_while_down_is_gone(self):
+        self.r.set("tp_short", "v", px=500)
+        self.r.set("tp_long", "v", ex=100)
+        self.r.close()
+
+        self.server.shutdown()
+        time.sleep(0.8)
+        self.server.start()
+
+        self.assertIsNone(self.r.get("tp_short"))
+        self.assertEqual(self.r.get("tp_long"), "v")
+
+    def test_restored_ttl_still_expires(self):
+        self.r.set("tp_soon", "v", px=1500)
+        self.r.close()
+
+        self.server.restart()
+
+        self.assertEqual(self.r.get("tp_soon"), "v")
+        time.sleep(1.7)
+        self.assertIsNone(self.r.get("tp_soon"))
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

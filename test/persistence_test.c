@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <arpa/inet.h>
 
 #include "cache/cache.h"
 #include "cache/entry.h"
@@ -55,13 +56,28 @@ find_entry (Cache *cache, const char *key)
   return NULL;
 }
 
+// Wall clock the snapshot code sees, so the test can stage a reboot
+static uint64_t g_fake_wall_us;
+
+static uint64_t
+fake_wall_clock (void)
+{
+  return g_fake_wall_us;
+}
+
 int
 main (void)
 {
   const char *FILENAME = "test_dump.rdb";
+  // Saved at 123.45s of uptime, loaded right after a reboot (5s of
+  // uptime) when 5ms of wall time passed. Expiries are monotonic in
+  // memory, so they only survive this if the file holds wall time.
   uint64_t now_us = 123450000;
   uint64_t in_between_us = 123452500;
-  uint64_t new_now_us = 123455000;
+  uint64_t new_now_us = 5000000;
+  uint64_t save_wall_us = 1700000000000000ULL;
+  uint64_t load_wall_us = save_wall_us + 5000;
+  persistence_set_wall_clock (fake_wall_clock);
   msgf ("=== 1. Initialization ===");
   // Ensure clean state
   remove (FILENAME);
@@ -135,6 +151,7 @@ main (void)
   ent5->expire_at_us = in_between_us;
 
   msgf ("=== 3. Saving to Disk ===");
+  g_fake_wall_us = save_wall_us;
   if (!cache_save_to_file (cache1, FILENAME, now_us))
     {
       msgf ("Save failed!");
@@ -144,7 +161,8 @@ main (void)
 
   cache_free (cache1);
 
-  msgf ("=== 4. Loading from Disk (New Cache) ===");
+  msgf ("=== 4. Loading from Disk (New Cache, after a reboot) ===");
+  g_fake_wall_us = load_wall_us;
   Cache *cache2 = cache_init ();
   if (!cache_load_from_file (cache2, FILENAME, -1, new_now_us))
     {
@@ -244,7 +262,8 @@ main (void)
   assert (strcmp (list_at (res_big->list, BIG_QUEUE_LEN / 2), "item-1") == 0);
   assert (strcmp (list_at (res_big->list, BIG_QUEUE_LEN - 1), "item-999") ==
 	  0);
-  assert (res_big->expire_at_us == 123456789);
+  // 6789us were left at the save, 5000 of them passed
+  assert (res_big->expire_at_us == new_now_us + 1789);
   assert (res_big->heap_idx != (size_t) -1);
   msgf ("   [PASS] Lists match.");
 
@@ -270,9 +289,9 @@ main (void)
   Entry *res3 = find_entry (cache2, TEMP_KEY);
   (void) res3;
   assert (res3 != NULL);
-  assert (res3->expire_at_us == 123456789);
+  assert (res3->expire_at_us == new_now_us + 1789);
   assert (res3->heap_idx != (size_t) -1);
-  msgf ("   [PASS] Expiration timestamp matches.");
+  msgf ("   [PASS] Expiration keeps its time left across a reboot.");
 
   Entry *res4 = find_entry (cache2, LONG_EXPIRED_KEY);
   (void) res4;
@@ -281,6 +300,28 @@ main (void)
   Entry *res5 = find_entry (cache2, RECENTLY_EXPIRED_KEY);
   (void) res5;
   assert (res5 == NULL);
+
+  // Version 1 files, with monotonic expiries, still load as they did
+  msgf ("=== Version 1 Test ===");
+  {
+    FILE *v1 = fopen (FILENAME, "r+b");
+    assert (v1);
+    uint32_t ver_net = htonl (1);
+    fseek (v1, 8, SEEK_SET);	// Magic 4 + CRC 4
+    size_t wrote = fwrite (&ver_net, 4, 1, v1);
+    (void) wrote;
+    fclose (v1);
+
+    Cache *cache_v1 = cache_init ();
+    assert (cache_load_from_file (cache_v1, FILENAME, -1, new_now_us));
+    Entry *v1_temp = find_entry (cache_v1, TEMP_KEY);
+    (void) v1_temp;
+    assert (v1_temp != NULL);
+    // Taken as monotonic as it stands
+    assert (v1_temp->expire_at_us == save_wall_us + 6789);
+    cache_free (cache_v1);
+    msgf ("   [PASS] Version 1 snapshot loads.");
+  }
 
   // TAMPERING TEST
   msgf ("=== Tampering Test ===");

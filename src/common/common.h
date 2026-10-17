@@ -34,7 +34,9 @@
 
 #define MINIS_DB_DIR "shards"
 #define MINIS_DB_MAGIC     "M1NI"
-#define MINIS_DB_VERSION   1
+// 2: expiries are wall clock (Unix) microseconds. 1 had the monotonic
+// clock, which restarts at boot.
+#define MINIS_DB_VERSION   2
 
 // Defaults & Limits
 #ifdef MINIS_ANDROID

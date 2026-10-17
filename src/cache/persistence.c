@@ -4,6 +4,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -172,10 +173,71 @@ serialize_list (Buffer *buf, const List *list)
   return true;
 }
 
-static bool
-serialize_entry (Buffer *buf, Entry *entry)
+// The two clocks at one moment: entries expire on the monotonic one,
+// files hold the wall clock
+typedef struct
 {
-  if (!buf_append_i64 (buf, (int64_t) entry->expire_at_us))
+  uint64_t mono_us;
+  uint64_t wall_us;
+} SnapClock;
+
+static uint64_t
+real_wall_clock_us (void)
+{
+  struct timespec tvs = { 0, 0 };
+  clock_gettime (CLOCK_REALTIME, &tvs);
+  return (uint64_t) tvs.tv_sec * 1000000 + (uint64_t) tvs.tv_nsec / 1000;
+}
+
+static uint64_t (*g_wall_clock_us) (void) = real_wall_clock_us;
+
+void
+persistence_set_wall_clock (uint64_t (*wall_clock_us) (void))
+{
+  g_wall_clock_us = wall_clock_us ? wall_clock_us : real_wall_clock_us;
+}
+
+static SnapClock
+snap_clock_now (uint64_t now_us)
+{
+  SnapClock clock = {.mono_us = now_us,.wall_us = g_wall_clock_us () };
+  return clock;
+}
+
+// Monotonic expiry to wall clock, 0 stays "no expiry". Saved entries
+// have not expired, so the time left is not negative.
+static uint64_t
+expiry_to_wall (uint64_t expire_at_us, const SnapClock *clock)
+{
+  if (expire_at_us == 0)
+    return 0;
+  uint64_t left = expire_at_us > clock->mono_us
+    ? expire_at_us - clock->mono_us : 0;
+  return clock->wall_us + left;
+}
+
+// Wall clock expiry back to monotonic. Sets *expired if it already
+// passed, which is also how a key that expired while minis was down
+// shows.
+static uint64_t
+expiry_from_wall (uint64_t wall_us, const SnapClock *clock, bool *expired)
+{
+  *expired = false;
+  if (wall_us == 0)
+    return 0;
+  if (wall_us <= clock->wall_us)
+    {
+      *expired = true;
+      return 0;
+    }
+  return clock->mono_us + (wall_us - clock->wall_us);
+}
+
+static bool
+serialize_entry (Buffer *buf, Entry *entry, const SnapClock *clock)
+{
+  uint64_t expire = expiry_to_wall (entry->expire_at_us, clock);
+  if (!buf_append_i64 (buf, (int64_t) expire))
     return false;
 
   uint32_t klen = (uint32_t) strlen (entry->key);
@@ -229,7 +291,7 @@ patch_crc (FILE *file_ptr, long crc_offset, uint32_t crc)
 
 static bool
 read_and_verify_header (FILE *file_ptr, uint32_t *expected_crc,
-			uint32_t *out_item_count)
+			uint32_t *out_item_count, uint32_t *out_version)
 {
   char magic[4];
   if (fread (magic, 1, 4, file_ptr) != 4
@@ -252,11 +314,13 @@ read_and_verify_header (FILE *file_ptr, uint32_t *expected_crc,
       return false;
     }
 
-  if (ver != MINIS_DB_VERSION)
+  // Version 1 differs only in its monotonic expiries
+  if (ver != MINIS_DB_VERSION && ver != 1)
     {
       msgf ("Snapshot: unsupported version %u", ver);
       return false;
     }
+  *out_version = ver;
 
   if (!read_u32_plain (file_ptr, out_item_count))
     {
@@ -499,8 +563,8 @@ load_zset_entry (FILE *file_ptr, Minis *minis, const char *key,
 }
 
 static bool
-load_one_entry (FILE *file_ptr, uint64_t now_us, Minis *minis, uint32_t *crc,
-		bool *is_eof)
+load_one_entry (FILE *file_ptr, const SnapClock *clock, uint32_t version,
+		Minis *minis, uint32_t *crc, bool *is_eof)
 {
   uint64_t expire_net;
   size_t read_count = fread (&expire_net, 1, 8, file_ptr);
@@ -525,10 +589,11 @@ load_one_entry (FILE *file_ptr, uint64_t now_us, Minis *minis, uint32_t *crc,
   *crc = crc32_update (*crc, (uint8_t *) & expire_net, 8);
   uint64_t expire_at = ntoh_u64 (expire_net);
   bool skip = false;
-  if (expire_at > 0 && expire_at < now_us)
-    {
-      skip = true;
-    }
+  if (version == 1)
+    // Monotonic: right only if the machine did not reboot since
+    skip = expire_at > 0 && expire_at < clock->mono_us;
+  else
+    expire_at = expiry_from_wall (expire_at, clock, &skip);
   uint32_t klen;
   if (!read_u32_crc (file_ptr, &klen, crc))
     return false;
@@ -578,7 +643,7 @@ cleanup_failed_save (FILE *file_ptr, const char *tmp_filename)
 // fits. Snapshots run in the child or at shutdown, not on the request
 // path, so this allocation is fine.
 static bool
-serialize_entry_growing (Buffer *buf, Entry *entry)
+serialize_entry_growing (Buffer *buf, Entry *entry, const SnapClock *clock)
 {
   // Only running out of space is worth retrying
   if (entry->type != T_STR && entry->type != T_ZSET
@@ -588,7 +653,7 @@ serialize_entry_growing (Buffer *buf, Entry *entry)
   while (true)
     {
       buf_clear (buf);
-      if (serialize_entry (buf, entry))
+      if (serialize_entry (buf, entry, clock))
 	return true;
 
       size_t new_cap = buf->capacity * 2;
@@ -613,7 +678,7 @@ serialize_entry_growing (Buffer *buf, Entry *entry)
 static bool
 save_shard_entries_to_stream (Buffer *buf, const Shard *shard,
 			      uint32_t *running_crc, FILE *file_ptr,
-			      uint64_t now_us)
+			      const SnapClock *clock)
 {
   HMIter iter;
   hm_iter_init (&shard->db, &iter);
@@ -628,12 +693,12 @@ save_shard_entries_to_stream (Buffer *buf, const Shard *shard,
 
       // Skip expired or invalid entries
       if (!entry
-	  || (entry->expire_at_us != 0 && entry->expire_at_us < now_us))
+	  || (entry->expire_at_us != 0 && entry->expire_at_us < clock->mono_us))
 	continue;
 
       // Fail the save rather than skip the entry: the new file replaces
       // the old one, which may hold the entry.
-      if (!serialize_entry_growing (buf, entry))
+      if (!serialize_entry_growing (buf, entry, clock))
 	{
 	  msgf ("Snapshot: cannot serialize %s (%zu bytes tried)",
 		entry->key, buf->capacity);
@@ -681,8 +746,9 @@ minis_save_shard_file (const Shard *shard, const char *filename,
   Buffer buf = buf_init (raw_mem, buf_cap);
 
   uint32_t running_crc = 0;
+  SnapClock clock = snap_clock_now (now_us);
   if (!save_shard_entries_to_stream
-      (&buf, shard, &running_crc, file_ptr, now_us))
+      (&buf, shard, &running_crc, file_ptr, &clock))
     {
       free (buf.data);
       cleanup_failed_save (file_ptr, tmp_filename);
@@ -750,10 +816,11 @@ cache_save_to_file (const Minis *minis, const char *filename, uint64_t now_us)
 
   // 3. Loop ALL shards and dump to same stream
   uint32_t running_crc = 0;
+  SnapClock clock = snap_clock_now (now_us);
   for (int i = 0; i < NUM_SHARDS; ++i)
     {
       if (!save_shard_entries_to_stream
-	  (&buf, &minis->shards[i], &running_crc, file_ptr, now_us))
+	  (&buf, &minis->shards[i], &running_crc, file_ptr, &clock))
 	{
 	  free (buf.data);
 	  cleanup_failed_save (file_ptr, tmp_filename);
@@ -797,7 +864,9 @@ cache_load_from_file (Minis *minis, const char *filename, int shard_id_hint,
 
   uint32_t expected_crc;
   uint32_t item_count = 0;
-  if (!read_and_verify_header (file_ptr, &expected_crc, &item_count))
+  uint32_t version;
+  if (!read_and_verify_header (file_ptr, &expected_crc, &item_count,
+			       &version))
     {
       fclose (file_ptr);
       return false;
@@ -843,12 +912,14 @@ cache_load_from_file (Minis *minis, const char *filename, int shard_id_hint,
   // --------------------------------------------------
 
   uint32_t running_crc = 0;
+  SnapClock clock = snap_clock_now (now_us);
   while (true)
     {
       bool is_eof = false;
       // load_one_entry internally hashes the key. 
       // If shard_id_hint is correct, the key will naturally fall into that shard.
-      if (!load_one_entry (file_ptr, now_us, minis, &running_crc, &is_eof))
+      if (!load_one_entry (file_ptr, &clock, version, minis, &running_crc,
+			   &is_eof))
 	{
 	  fclose (file_ptr);
 	  return false;
