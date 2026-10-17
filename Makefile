@@ -204,10 +204,16 @@ $(TARGET_TEST_PERSIST): $(TEST_PERSIST_OBJS)
 	@$(CC) $(TEST_PERSIST_OBJS) -o $@ $(LDFLAGS) -lm
 
 # --- Compilation Rule ---
+# -MMD writes a .d file of the headers each object includes, so changing
+# a header rebuilds its users. -MP keeps a deleted header from breaking
+# the build.
 $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	@$(CC) $(CFLAGS) $(INCLUDE_DIRS) -c $< -o $@
+	@$(CC) $(CFLAGS) $(INCLUDE_DIRS) -MMD -MP -c $< -o $@
+
+-include $(sort $(MINIS_OBJS:.o=.d) $(CLI_OBJS:.o=.d) $(BENCH_OBJS:.o=.d) \
+	$(TEST_HEAP_OBJS:.o=.d) $(TEST_CACHE_OBJS:.o=.d) $(TEST_PERSIST_OBJS:.o=.d))
 
 # ============================================================================
 #  TESTING UTILITIES
