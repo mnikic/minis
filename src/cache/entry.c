@@ -193,6 +193,7 @@ entry_new (Minis *minis, const char *key, EntryType type)
   ent->expire_at_us = 0;
 
   ent->val = NULL;
+  ent->val_len = 0;
   hm_insert (&minis->shards[get_shard_id (key)].db, &ent->node, key,
 	     &entry_eq_str);
 
@@ -215,21 +216,33 @@ entry_new_zset (Minis *minis, const char *key)
   return ent;
 }
 
+bool
+entry_set_str (Entry *ent, const char *val, size_t val_len)
+{
+  char *copy = malloc (val_len + 1);
+  if (!copy)
+    return false;
+  memcpy (copy, val, val_len);
+  copy[val_len] = '\0';
+  free (ent->val);
+  ent->val = copy;
+  ent->val_len = val_len;
+  return true;
+}
+
 Entry *
-entry_new_str (Minis *minis, const char *key, const char *val)
+entry_new_str (Minis *minis, const char *key, const char *val,
+	       size_t val_len)
 {
   Entry *ent = entry_new (minis, key, T_STR);
   if (!ent)
     return NULL;
 
-  size_t vlen = strlen (val);
-  ent->val = malloc (vlen + 1);
-  if (!ent->val)
+  if (!entry_set_str (ent, val, val_len))
     {
       entry_dispose_atomic (minis, ent);
       return NULL;
     }
-  memcpy (ent->val, val, vlen + 1);
   return ent;
 }
 

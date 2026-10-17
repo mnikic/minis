@@ -1654,6 +1654,72 @@ test_empty_strings (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6r: Binary safe values
+// ============================================================================
+
+// Runs one command whose arguments have the given lengths
+#define RUN_N(cache, now, lens, ...)                                           \
+	do {                                                                       \
+		const char *run_cmd_[] = { __VA_ARGS__ };                              \
+		buf = init_test_buffer (PROTO_BIN);                                    \
+		ASSERT_TRUE (cache_execute_n ((cache), run_cmd_, (lens),               \
+					      sizeof (run_cmd_) / sizeof (run_cmd_[0]),    \
+					      &buf, (now)));                               \
+	} while (0)
+
+// Checks a binary protocol string reply byte for byte
+static void
+assert_str_bytes (Buffer *buf, const char *want, size_t len)
+{
+  const uint8_t *data = buf_data (buf);
+  ASSERT_EQ (data[0], SER_STR);
+  uint32_t got_len;
+  memcpy (&got_len, &data[1], 4);
+  ASSERT_EQ (ntoh_u32 (got_len), len);
+  ASSERT_TRUE (memcmp (&data[5], want, len) == 0);
+  ASSERT_EQ (buf_len (buf), 5 + len);
+}
+
+static void
+test_binary_strings (void)
+{
+  printf ("TEST: Binary safe string values... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+
+  const size_t set_lens[] = { 3, 2, 4 };
+  RUN_N (cache, now, set_lens, "set", "bk", "a\0b\0");
+  RUN (cache, now, "get", "bk");
+  assert_str_bytes (&buf, "a\0b\0", 4);
+
+  // Differs only after the NUL: must replace
+  RUN_N (cache, now, set_lens, "set", "bk", "a\0c\0");
+  RUN (cache, now, "get", "bk");
+  assert_str_bytes (&buf, "a\0c\0", 4);
+
+  const size_t setex_lens[] = { 5, 3, 3, 1 };
+  RUN_N (cache, now, setex_lens, "setex", "bk2", "100", "\0");
+  RUN (cache, now, "get", "bk2");
+  assert_str_bytes (&buf, "\0", 1);
+
+  const size_t mset_lens[] = { 4, 3, 3, 3, 2 };
+  RUN_N (cache, now, mset_lens, "mset", "bk3", "x\0y", "bk4", "\0z");
+  RUN (cache, now, "get", "bk4");
+  assert_str_bytes (&buf, "\0z", 2);
+
+  // INCR needs every byte to be the number
+  const size_t num_lens[] = { 3, 4, 3 };
+  RUN_N (cache, now, num_lens, "set", "bnum", "1\02");
+  RUN (cache, now, "incr", "bnum");
+  assert_err_msg (&buf, "value is not an integer");
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -2259,6 +2325,7 @@ main (void)
   test_bpop ();
   test_resp_framing ();
   test_empty_strings ();
+  test_binary_strings ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

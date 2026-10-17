@@ -1724,6 +1724,60 @@ class TestEmptyStrings(MinisTestCase):
                          ["", "1"])
 
 
+class TestBinarySafe(MinisTestCase):
+    """Values may hold any bytes, NUL included"""
+
+    def setUp(self):
+        super().setUp()
+        self.b = redis.Redis(port=self.server.port, socket_timeout=2)
+
+    def tearDown(self):
+        self.b.close()
+        super().tearDown()
+
+    VALUES = [b"a\x00b", b"\x00", b"\x00\x00\x00", b"tail\x00",
+              bytes(range(256)), b"\xff\xfe\x00\x01", b""]
+
+    def test_string_values(self):
+        for i, value in enumerate(self.VALUES):
+            with self.subTest(value=value):
+                self.assertTrue(self.b.set(f"bin_str{i}", value))
+                self.assertEqual(self.b.get(f"bin_str{i}"), value)
+                self.b.setex(f"bin_setex{i}", 100, value)
+                self.assertEqual(self.b.get(f"bin_setex{i}"), value)
+                self.b.set(f"bin_ex{i}", value, ex=100)
+                self.assertEqual(self.b.get(f"bin_ex{i}"), value)
+
+    def test_mset_mget(self):
+        pairs = {f"bin_m{i}": v for i, v in enumerate(self.VALUES)}
+        self.assertTrue(self.b.mset(pairs))
+        self.assertEqual(self.b.mget(list(pairs)), list(pairs.values()))
+
+    def test_differs_only_after_nul(self):
+        # A C string compare took these for equal and kept the old value
+        self.b.set("bin_same", b"a\x00b")
+        self.b.set("bin_same", b"a\x00c")
+        self.assertEqual(self.b.get("bin_same"), b"a\x00c")
+        self.b.set("bin_same", b"a")
+        self.assertEqual(self.b.get("bin_same"), b"a")
+
+    def test_incr_needs_the_whole_value(self):
+        self.b.set("bin_num", b"1\x002")
+        with self.assertRaisesRegex(redis.ResponseError, "not an integer"):
+            self.b.incr("bin_num")
+        self.assertEqual(self.b.get("bin_num"), b"1\x002")
+        self.b.set("bin_num", b"12")
+        self.assertEqual(self.b.incr("bin_num"), 13)
+
+    def test_survives_restart(self):
+        self.b.set("bin_keep", bytes(range(256)))
+        self.b.set("bin_keep_ttl", b"\x00x\x00", ex=100)
+        self.b.close()
+        self.server.restart()
+        self.assertEqual(self.b.get("bin_keep"), bytes(range(256)))
+        self.assertEqual(self.b.get("bin_keep_ttl"), b"\x00x\x00")
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")

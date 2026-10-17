@@ -28,10 +28,11 @@ typedef struct entry
   EntryType type;		// T_STR, T_ZSET, T_HASH or T_LIST
   uint64_t expire_at_us;	// Expiration time
   size_t heap_idx;		// Heap index for TTL
+  size_t val_len;		// T_STR: val's length, it may hold NUL bytes
 
   union
   {
-    char *val;			// Used if type == T_STR
+    char *val;			// Used if type == T_STR, also NUL terminated
     ZSet *zset;			// Used if type == T_ZSET
     HMap *hash;			// Used if type == T_HASH
     List *list;			// Used if type == T_LIST
@@ -43,7 +44,10 @@ typedef struct entry
 
 
 Entry *entry_new_zset (Minis * minis, const char *key);
-Entry *entry_new_str (Minis * minis, const char *key, const char *val);
+Entry *entry_new_str (Minis * minis, const char *key, const char *val,
+		      size_t val_len);
+// Replaces a T_STR entry's value. False on OOM, leaving the old one.
+bool entry_set_str (Entry * ent, const char *val, size_t val_len);
 Entry *entry_new_hash (Minis * minis, const char *key);
 Entry *entry_new_list (Minis * minis, const char *key);
 

@@ -29,6 +29,7 @@
 #define HUGE_COUNT 200
 #define HUGE_VALUE_LEN 10000
 #define TEMP_KEY "temp"
+#define BINARY_KEY "binary"
 #define LONG_EXPIRED_KEY "long expired"
 #define RECENTLY_EXPIRED_KEY "recently expired"
 
@@ -88,7 +89,7 @@ main (void)
 
   // A. Add a String
   msgf ("   -> Adding String 'greeting' = 'Hello Persistence'");
-  Entry *ent1 = entry_new_str (cache1, GREETING_KEY, "Hello Persistence");
+  Entry *ent1 = entry_new_str (cache1, GREETING_KEY, "Hello Persistence", 17);
   (void) ent1;
 
   // B. Add a ZSet
@@ -121,6 +122,9 @@ main (void)
     }
   entry_set_expiration (cache1, ent_big, 123456789);
 
+  // A string holding NUL bytes
+  entry_new_str (cache1, BINARY_KEY, "a\0b\0", 4);
+
   // E. Add a hash and a list of ~2MB each
   msgf ("   -> Adding ~2MB Hash 'huge hash' and List 'huge list'");
   static char huge_value[HUGE_VALUE_LEN + 1];
@@ -137,17 +141,17 @@ main (void)
 
   // F. Add Expiration
   msgf ("   -> Adding Expiring Key 'temp' (TTL 5000ms)");
-  Entry *ent3 = entry_new_str (cache1, TEMP_KEY, "I will survive");
+  Entry *ent3 = entry_new_str (cache1, TEMP_KEY, "I will survive", 14);
   ent3->expire_at_us = 123456789;	// Arbitrary future timestamp
 
   msg ("   -> Adding Long Expired Key 'long expired'");
   Entry *ent4 =
-    entry_new_str (cache1, LONG_EXPIRED_KEY, "I won't get resurected.");
+    entry_new_str (cache1, LONG_EXPIRED_KEY, "I won't get resurected.", 23);
   ent4->expire_at_us = 1000;
 
   msg ("   -> Adding Recently Expired Key 'recently expired'");
   Entry *ent5 = entry_new_str (cache1, RECENTLY_EXPIRED_KEY,
-			       "I won't get resurected either.");
+			       "I won't get resurected either.", 30);
   ent5->expire_at_us = in_between_us;
 
   msgf ("=== 3. Saving to Disk ===");
@@ -180,6 +184,12 @@ main (void)
   assert (res1->type == T_STR);
   assert (strcmp (res1->val, "Hello Persistence") == 0);
   msgf ("   [PASS] String content matches.");
+
+  Entry *res_bin = find_entry (cache2, BINARY_KEY);
+  assert (res_bin != NULL);
+  assert (res_bin->val_len == 4);
+  assert (memcmp (res_bin->val, "a\0b\0", 4) == 0);
+  msgf ("   [PASS] String with NUL bytes matches.");
 
   // Verify ZSet
   Entry *res2 = find_entry (cache2, LEADERBOARD_KEY);

@@ -349,7 +349,7 @@ single_get_visitor (const Entry *ent, void *ctx)
   GetVstCtx *vctx = (GetVstCtx *) ctx;
   if (ent)
     {
-      if (!out_str (vctx->out, ent->val))
+      if (!out_str_size (vctx->out, ent->val, ent->val_len))
 	{
 	  vctx->result = false;
 	}
@@ -385,12 +385,12 @@ parse_set_ttl (const char *arg, int64_t unit_ms, const char *invalid_msg,
 }
 
 static bool
-set_with_ttl (Cache *cache, const char *key, const char *val, int64_t ttl_ms,
-	      Buffer *out, uint64_t now_us)
+set_with_ttl (Cache *cache, const char *key, const char *val, size_t val_len,
+	      int64_t ttl_ms, Buffer *out, uint64_t now_us)
 {
   MinisError err = ttl_ms > 0
-    ? minis_set_ex (cache, key, val, ttl_ms, now_us)
-    : minis_set (cache, key, val, now_us);
+    ? minis_set_ex (cache, key, val, val_len, ttl_ms, now_us)
+    : minis_set (cache, key, val, val_len, now_us);
   if (err == MINIS_OK)
     return out_ok (out);
   return reply_with_error (out, err);
@@ -398,8 +398,8 @@ set_with_ttl (Cache *cache, const char *key, const char *val, int64_t ttl_ms,
 
 // SET key value [EX seconds | PX milliseconds]
 static bool
-do_set (Cache *cache, const char **cmd, size_t size, Buffer *out,
-	uint64_t now_us)
+do_set (Cache *cache, const char **cmd, const size_t *lens, size_t size,
+	Buffer *out, uint64_t now_us)
 {
   int64_t ttl_ms = -1;
   for (size_t i = 3; i < size; i++)
@@ -421,13 +421,13 @@ do_set (Cache *cache, const char **cmd, size_t size, Buffer *out,
       if (err)
 	return out_err (out, ERR_ARG, err);
     }
-  return set_with_ttl (cache, cmd[1], cmd[2], ttl_ms, out, now_us);
+  return set_with_ttl (cache, cmd[1], cmd[2], lens[2], ttl_ms, out, now_us);
 }
 
 // SETEX/PSETEX key ttl value
 static bool
-do_setex (Cache *cache, const char **cmd, int64_t unit_ms, Buffer *out,
-	  uint64_t now_us)
+do_setex (Cache *cache, const char **cmd, const size_t *lens, int64_t unit_ms,
+	  Buffer *out, uint64_t now_us)
 {
   int64_t ttl_ms = 0;
   const char *err = parse_set_ttl (cmd[2], unit_ms, unit_ms == 1
@@ -436,14 +436,14 @@ do_setex (Cache *cache, const char **cmd, int64_t unit_ms, Buffer *out,
 				   &ttl_ms);
   if (err)
     return out_err (out, ERR_ARG, err);
-  return set_with_ttl (cache, cmd[1], cmd[3], ttl_ms, out, now_us);
+  return set_with_ttl (cache, cmd[1], cmd[3], lens[3], ttl_ms, out, now_us);
 }
 
 static bool
-do_mset (Cache *cache, const char **cmd, size_t nkeys, Buffer *out,
-	 uint64_t now_us)
+do_mset (Cache *cache, const char **cmd, const size_t *lens, size_t nkeys,
+	 Buffer *out, uint64_t now_us)
 {
-  MinisError err = minis_mset (cache, cmd, nkeys, now_us);
+  MinisError err = minis_mset (cache, cmd, lens, nkeys, now_us);
   if (err == MINIS_OK)
     return out_ok (out);
   return reply_with_error (out, err);
@@ -463,7 +463,7 @@ mget_visitor (const Entry *ent, void *ctx)
     return false;
   if (ent)
     {
-      if (!out_str (mvc->out, ent->val))
+      if (!out_str_size (mvc->out, ent->val, ent->val_len))
 	mvc->result = false;
     }
   else if (!out_nil (mvc->out))
@@ -930,7 +930,6 @@ bool
 cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
 		 size_t size, Buffer *out, uint64_t now_us)
 {
-  (void) lens;
   if (size > 0 && cmd_is (cmd[0], "ping"))
     return do_ping (cache, cmd, size, out);
   if (size > 0 && cmd_is (cmd[0], "config"))
@@ -940,17 +939,17 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   if (size == 2 && cmd_is (cmd[0], "keys"))
     return do_keys (cache, cmd, out, now_us);
   if (size > 2 && size % 2 == 1 && cmd_is (cmd[0], "mset"))
-    return do_mset (cache, &cmd[1], size - 1, out, now_us);
+    return do_mset (cache, &cmd[1], &lens[1], size - 1, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "get"))
     return do_get (cache, cmd[1], out, now_us);
   if (size > 1 && cmd_is (cmd[0], "mget"))
     return do_mget (cache, cmd + 1, size - 1, out, now_us);
   if (size >= 3 && cmd_is (cmd[0], "set"))
-    return do_set (cache, cmd, size, out, now_us);
+    return do_set (cache, cmd, lens, size, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "setex"))
-    return do_setex (cache, cmd, 1000, out, now_us);
+    return do_setex (cache, cmd, lens, 1000, out, now_us);
   if (size == 4 && cmd_is (cmd[0], "psetex"))
-    return do_setex (cache, cmd, 1, out, now_us);
+    return do_setex (cache, cmd, lens, 1, out, now_us);
   if (size > 1 && (cmd_is (cmd[0], "del") || cmd_is (cmd[0], "mdel")))
     return do_mdel (cache, &cmd[1], size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "pexpire"))

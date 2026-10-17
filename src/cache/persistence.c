@@ -88,9 +88,9 @@ out_raw_str (Buffer *buf, const char *str, size_t len)
 }
 
 static bool
-out_typed_str (Buffer *buf, const char *str)
+out_typed_str (Buffer *buf, const char *str, size_t len)
 {
-  return buf_append_byte (buf, T_STR) && out_raw_str (buf, str, strlen (str));
+  return buf_append_byte (buf, T_STR) && out_raw_str (buf, str, len);
 }
 
 // ============================================================================
@@ -247,7 +247,7 @@ serialize_entry (Buffer *buf, Entry *entry, const SnapClock *clock)
     return false;
 
   if (entry->type == T_STR)
-    return out_typed_str (buf, entry->val);
+    return out_typed_str (buf, entry->val, entry->val_len);
   if (entry->type == T_ZSET)
     return serialize_zset (buf, entry->zset);
   if (entry->type == T_HASH)
@@ -499,7 +499,7 @@ load_string_entry (FILE *file_ptr, Minis *minis, const char *key,
     }
   val[vlen] = '\0';
 
-  Entry *ent = entry_new_str (minis, key, val);
+  Entry *ent = entry_new_str (minis, key, val, vlen);
   if (!ent)
     return false;
   if (expire_at > 0)

@@ -140,7 +140,8 @@ Java_com_minis_Minis_nativeSet(JNIEnv *env, jobject thiz, jlong ptr, jstring jKe
     const char *key = (*env)->GetStringUTFChars(env, jKey, 0);
     const char *val = (*env)->GetStringUTFChars(env, jVal, 0);
 
-    minis_set(minis, key, val, get_us());
+    // Java strings reach us as modified UTF-8, which has no NUL bytes
+    minis_set(minis, key, val, strlen(val), get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     (*env)->ReleaseStringUTFChars(env, jVal, val);
@@ -398,7 +399,7 @@ Java_com_minis_Minis_nativeMSet(JNIEnv *env, jobject thiz, jlong ptr, jobjectArr
     }
 
     if (!failed) {
-        minis_mset(minis, cKeyVals, (size_t)count, get_us());
+        minis_mset(minis, cKeyVals, NULL, (size_t)count, get_us());
     }
 
     for (int i = 0; i < successCount; i++) {
