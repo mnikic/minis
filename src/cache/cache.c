@@ -918,6 +918,19 @@ bool
 cache_execute (Cache *cache, const char **cmd, size_t size, Buffer *out,
 	       uint64_t now_us)
 {
+  size_t lens[K_MAX_ARGS];
+  if (size > K_MAX_ARGS)
+    return out_err (out, ERR_ARG, "Too many arguments");
+  for (size_t i = 0; i < size; i++)
+    lens[i] = strlen (cmd[i]);
+  return cache_execute_n (cache, cmd, lens, size, out, now_us);
+}
+
+bool
+cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
+		 size_t size, Buffer *out, uint64_t now_us)
+{
+  (void) lens;
   if (size > 0 && cmd_is (cmd[0], "ping"))
     return do_ping (cache, cmd, size, out);
   if (size > 0 && cmd_is (cmd[0], "config"))

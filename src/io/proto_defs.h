@@ -47,6 +47,7 @@ typedef struct
   uint32_t arg_count;
 
   const char **cmd;		// Array of pointers to fill
+  size_t *lens;			// Their lengths: arguments may hold NUL bytes
   size_t cmd_size;
 
   // State Tracking

@@ -35,12 +35,14 @@ LLVMFuzzerTestOneInput (const uint8_t *data, size_t size)
 
       // Prepare Arguments
       char *cmd[K_MAX_ARGS];
+      size_t lens[K_MAX_ARGS];
       RestoreState restore;
       ProtoRequest args = {
 	.req = work_buf,
 	.reqlen = (uint32_t) size,
 	.arg_count = arg_count,
 	.cmd = cmd,
+	.lens = lens,
 	.restore = &restore
       };
 

@@ -15,6 +15,7 @@
 
 // We are sync and single threaded, one cmd scratch will do!
 static const char *global_cmd_scratch[K_MAX_ARGS];
+static size_t global_len_scratch[K_MAX_ARGS];
 
 // Send error and close
 COLD static void
@@ -153,6 +154,7 @@ execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
     .req = req,
     .reqlen = reqlen,
     .cmd = global_cmd_scratch,
+    .lens = global_len_scratch,
     .restore = &restore
   };
 
@@ -204,9 +206,9 @@ execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
     result = execute_blocking_pop (ctx, proto_req.cmd_size, out_buf);
   else
     result = TIME_EXPR ("cache_execute",
-			cache_execute (ctx->cache, global_cmd_scratch,
-				       proto_req.cmd_size,
-				       out_buf, ctx->now_us)) ? EXEC_OK :
+			cache_execute_n (ctx->cache, global_cmd_scratch,
+					 global_len_scratch, proto_req.cmd_size,
+					 out_buf, ctx->now_us)) ? EXEC_OK :
       EXEC_FAIL;
   restore_all_bytes (&restore);
 

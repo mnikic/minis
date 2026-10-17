@@ -21,7 +21,12 @@ void cache_free (Cache * cache);
 void cache_evict (Cache * cache, uint64_t now_us);
 uint64_t cache_next_expiry (Cache * cache);
 
-// The Main Entry Point for the Server
+// The Main Entry Point for the Server. Arguments are NUL terminated, and
+// lens gives their real lengths, as they may hold NUL bytes too.
+bool cache_execute_n (Cache * cache, const char **cmd, const size_t *lens,
+		      size_t size, Buffer * out, uint64_t now_us);
+
+// cache_execute_n for arguments that are C strings
 bool cache_execute (Cache * cache, const char **cmd, size_t size,
 		    Buffer * out, uint64_t now_us);
 uint64_t cache_dirty_count (Cache * cache);

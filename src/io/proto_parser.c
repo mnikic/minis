@@ -291,6 +291,7 @@ proto_parse_arguments (ProtoRequest *proto_request)
       save_and_nullterm (proto_request->restore, null_term_loc,
 			 original_char);
 
+      proto_request->lens[cmd_size] = arg_len;
       proto_request->cmd[cmd_size++] = (char *) &req[pos + 4];
       pos += 4 + arg_len;
     }
@@ -337,6 +338,7 @@ parse_resp_arguments (ProtoRequest *req)
       // Zero-Copy Trick: Overwrite the \r with \0
       save_and_nullterm (req->restore, data_end, *data_end);
 
+      req->lens[req->cmd_size] = (size_t) len;
       req->cmd[req->cmd_size++] = (char *) data_start;
 
       pos += (size_t) len + 2;
