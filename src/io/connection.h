@@ -53,6 +53,7 @@ typedef enum
   STATE_ACTIVE = 0,
   STATE_FLUSH_CLOSE = 2,
   STATE_CLOSE = 3,
+  STATE_DRAIN = 4,		// Error sent: drop input until the client closes
 } ConnectionState;
 
 typedef struct __attribute__((aligned (64))) Conn
@@ -92,6 +93,10 @@ typedef struct __attribute__((aligned (64))) Conn
   bool yield;			// Pushed with clients waiting: stop, let them go first
   uint64_t block_deadline_us;	// 0 is forever
   DList block_node;
+
+  // STATE_DRAIN, see connection_handler.c
+  uint64_t drain_deadline_us;
+  DList drain_node;
 
 } Conn;
 

@@ -81,13 +81,10 @@ response_queue_process_buffered_data (Cache *cache, Conn *conn,
 	      return QUEUE_STALLED;
 	    }
 
-	  // Check for "Soft Close" completion
+	  // Error flushed, handle_connection_io takes it from here
 	  if (unlikely
 	      (conn->state == STATE_FLUSH_CLOSE && conn->pipeline_depth == 0))
-	    {
-	      conn->state = STATE_CLOSE;
-	      return QUEUE_DONE;
-	    }
+	    return QUEUE_DONE;
 	}
 
       if (conn->yield)

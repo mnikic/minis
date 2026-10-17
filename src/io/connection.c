@@ -246,6 +246,9 @@ conn_reset (Conn *conn, int file_desc)
   conn->yield = false;
   conn->block_deadline_us = 0;
   dlist_init (&conn->block_node);
+
+  conn->drain_deadline_us = 0;
+  dlist_init (&conn->drain_node);
 }
 
 bool

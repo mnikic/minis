@@ -4,7 +4,10 @@
  * Description      : Core networking state machine (Circular Buffer Edition)
  *============================================================================
  */
+#include <errno.h>
 #include <stdint.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "io/connection_handler.h"
 #include "io/connection.h"
@@ -119,6 +122,83 @@ handle_err_event (Cache *cache, Conn *conn, uint64_t now_us)
     }
 }
 
+/*
+ * After an error reply the connection closes, but closing a socket with
+ * unread input makes the kernel send a reset, and a client still writing
+ * its request then gets ECONNRESET instead of reading the error. So once
+ * the error is flushed, shut down our side and drop what the client
+ * sends until it closes, for at most K_DRAIN_TIMEOUT_US.
+ */
+#define K_DRAIN_TIMEOUT_US 1000000ULL
+
+// Draining connections. The timeout is fixed, so this is in deadline order.
+static DList g_draining = {.prev = &g_draining,.next = &g_draining };
+
+static ALWAYS_INLINE Conn *
+conn_of_drain_node (DList *node)
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  return container_of (node, Conn, drain_node);
+#pragma GCC diagnostic pop
+}
+
+static void
+drain_input (Conn *conn)
+{
+  while (true)
+    {
+      ssize_t num = read (conn->fd, conn->rbuf, K_RBUF_SIZE);
+      if (num > 0 || (num < 0 && errno == EINTR))
+	continue;
+      if (num < 0 && errno == EAGAIN)
+	return;
+      // The client closed, or the socket failed
+      conn->state = STATE_CLOSE;
+      return;
+    }
+}
+
+static void
+start_drain (Conn *conn, uint64_t now_us)
+{
+  shutdown (conn->fd, SHUT_WR);
+  conn->state = STATE_DRAIN;
+  conn_reset_rbuff (conn);
+  conn->drain_deadline_us = now_us + K_DRAIN_TIMEOUT_US;
+  dlist_insert_before (&g_draining, &conn->drain_node);
+  conn_set_events (conn, IO_EVENT_READ | IO_EVENT_ERR);
+  // Edge triggered: input already waiting raises no new event
+  drain_input (conn);
+}
+
+uint64_t
+conn_drain_next_deadline (void)
+{
+  if (dlist_empty (&g_draining))
+    return (uint64_t) - 1;
+  return conn_of_drain_node (g_draining.next)->drain_deadline_us;
+}
+
+Conn *
+conn_drain_pop_expired (uint64_t now_us)
+{
+  if (dlist_empty (&g_draining))
+    return NULL;
+  Conn *conn = conn_of_drain_node (g_draining.next);
+  if (conn->drain_deadline_us > now_us)
+    return NULL;
+  dlist_detach (&conn->drain_node);
+  return conn;
+}
+
+void
+conn_drain_forget (Conn *conn)
+{
+  if (dlist_is_linked (&conn->drain_node))
+    dlist_detach (&conn->drain_node);
+}
+
 HOT void
 handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
 		      IOEvent events)
@@ -126,6 +206,12 @@ handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
   if (unlikely (events & (IO_EVENT_HUP | IO_EVENT_RDHUP)))
     {
       conn->state = STATE_CLOSE;
+      return;
+    }
+
+  if (unlikely (conn->state == STATE_DRAIN))
+    {
+      drain_input (conn);
       return;
     }
 
@@ -137,4 +223,8 @@ handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
 
   if (conn->state != STATE_CLOSE && (events & IO_EVENT_WRITE))
     handle_out_event (cache, conn, now_us);
+
+  // An error reply is out, by now or after waiting for EPOLLOUT
+  if (conn->state == STATE_FLUSH_CLOSE && conn->pipeline_depth == 0)
+    start_drain (conn, now_us);
 }

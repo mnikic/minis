@@ -12,6 +12,7 @@ import collections
 import os
 import random
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -1350,6 +1351,63 @@ class TestBlockingShutdown(MinisTestCase):
 
         self.server.start()
         self.assertEqual(self.r.lrange("bps_kept", 0, -1), ["a"])
+
+
+def binary_command(*args):
+    """A request in minis's binary protocol"""
+    args = [a.encode() if isinstance(a, str) else a for a in args]
+    body = struct.pack(">I", len(args))
+    body += b"".join(struct.pack(">I", len(a)) + a for a in args)
+    return struct.pack(">I", len(body)) + body
+
+
+class TestErrorClose(MinisTestCase):
+    """After an error reply the server closes, but first lets the client
+    read the error even if it is still sending"""
+
+    def test_error_survives_unread_input(self):
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(5)
+            # An error, then more input than the server reads before it
+            # handles the error, sent from a thread as it can block
+            data = binary_command("del", *["k"] * 1025) + b"x" * 2_000_000
+            sender = threading.Thread(
+                target=lambda: sock.sendall(data), daemon=True)
+            sender.start()
+            # Closing with input unread would reset the connection and
+            # throw away the error reply
+            time.sleep(0.3)
+            got = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                got += chunk
+            self.assertIn(b"Too many arguments", got)
+            sender.join(5)
+        self.assertAlive()
+
+    def test_client_that_never_closes_is_dropped(self):
+        # Draining has a time limit, so such clients do not pile up
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(3)
+            sock.sendall(binary_command("del", *["k"] * 1025))
+            got = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                got += chunk
+            self.assertIn(b"Too many arguments", got)
+            # Input is still taken and dropped for a while...
+            sock.sendall(b"y" * 1000)
+            # ...then the server closes for good
+            time.sleep(1.5)
+            with self.assertRaises(OSError):
+                for _ in range(20):
+                    sock.sendall(b"z" * 65536)
+                    time.sleep(0.05)
+        self.assertAlive()
 
 
 class TestDel(MinisTestCase):

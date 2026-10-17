@@ -291,6 +291,7 @@ conn_done (Conn *conn)
     }
 
   blocking_unpark (conn);
+  conn_drain_forget (conn);
 
   zc_drain_errors (file_desc);
   close (file_desc);
@@ -328,6 +329,11 @@ process_timers (Cache *cache, uint64_t now_us)
       msgf ("Removing idle connection: %d", next->fd);
       conn_done (next);
     }
+
+  // Clients that never closed after an error
+  Conn *drained;
+  while ((drained = conn_drain_pop_expired (now_us)) != NULL)
+    conn_done (drained);
 
   cache_evict (cache, now_us);
 }
@@ -640,6 +646,10 @@ next_timer_ms (Cache *cache, uint64_t now_us)
   uint64_t block_deadline = blocking_next_deadline ();
   if (block_deadline < next_us)
     next_us = block_deadline;
+
+  uint64_t drain_deadline = conn_drain_next_deadline ();
+  if (drain_deadline < next_us)
+    next_us = drain_deadline;
   // Only schedule if interval is set and no child is currently running
   if (SNAPSHOT_INTERVAL_US > 0 && g_data.snapshot_child_pid == 0)
     {
