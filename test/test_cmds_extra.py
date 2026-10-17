@@ -1046,6 +1046,25 @@ $ {client_executable-abs_path} mget mg_s mg_h mg_l mg_z mg_none
 (arr) end
 $ {client_executable-abs_path} del mg_s mg_h mg_l mg_z
 (int) 4
+# Test: KEYS glob character sets and escapes
+$ {client_executable-abs_path} mset glob:hello v glob:hallo v glob:hxllo v glob:a*c v
+(str) OK
+$ {client_executable-abs_path} keys glob:h[ae]llo
+(arr) len=2
+(str) glob:hello
+(str) glob:hallo
+(arr) end
+$ {client_executable-abs_path} keys glob:h[^e]llo
+(arr) len=2
+(str) glob:hxllo
+(str) glob:hallo
+(arr) end
+$ {client_executable-abs_path} keys 'glob:a\*c'
+(arr) len=1
+(str) glob:a*c
+(arr) end
+$ {client_executable-abs_path} del glob:hello glob:hallo glob:hxllo glob:a*c
+(int) 4
 '''
 
 

@@ -9,6 +9,7 @@
 
 #include "cache/cache.h"
 #include "common/common.h"
+#include "common/glob.h"
 #include "io/buffer.h"
 #include "io/proto_defs.h"
 
@@ -1002,6 +1003,136 @@ test_mget_other_types (void)
   printf ("PASSED\n");
 }
 
+// ============================================================================
+// Test 6l: Glob patterns
+// ============================================================================
+
+// Expected results come from valkey's KEYS. The first 60 are cases the
+// old matcher, which knew only * and ?, got wrong.
+static void
+test_glob (void)
+{
+  printf ("TEST: Glob patterns... ");
+
+  static const struct
+  {
+    const char *pattern;
+    const char *string;
+    bool match;
+  } cases[] = {
+    { "*", "*a", true },
+    { "a*", "a*c", true },
+    { "h[ae]llo", "hello", true },
+    { "h[ae]llo", "hallo", true },
+    { "h[^e]llo", "hallo", true },
+    { "h[^e]llo", "hxllo", true },
+    { "h[a-b]llo", "hallo", true },
+    { "h[b-a]llo", "hallo", true },
+    { "[a-c]", "a", true },
+    { "[a-c]", "b", true },
+    { "[a-c]", "c", true },
+    { "[^a-c]", "?", true },
+    { "[^a-c]", "[", true },
+    { "[^a-c]", "]", true },
+    { "[^a-c]", "-", true },
+    { "[^a-c]", "z", true },
+    { "[^a-c]", "Z", true },
+    { "[abc]*", "a", true },
+    { "[abc]*", "b", true },
+    { "[abc]*", "c", true },
+    { "[abc]*", "ab", true },
+    { "[abc]*", "abc", true },
+    { "[abc]*", "abd", true },
+    { "[abc]*", "aXc", true },
+    { "[abc]*", "a]c", true },
+    { "[abc]*", "a-c", true },
+    { "[abc]*", "a^c", true },
+    { "[abc]*", "a\\c", true },
+    { "[abc]*", "a*c", true },
+    { "[abc]*", "a?c", true },
+    { "[abc]*", "aa", true },
+    { "[abc]*", "aaa", true },
+    { "[abc]*", "aaab", true },
+    { "[abc]*", "baaa", true },
+    { "a[-]c", "a-c", true },
+    { "a[\\]]c", "a]c", true },
+    { "a\\*c", "a\\c", false },
+    { "a\\*c", "a*c", true },
+    { "a\\?c", "a?c", true },
+    { "a\\\\c", "a\\c", true },
+    { "a[\\-]c", "a-c", true },
+    { "[", "[", false },
+    { "[a", "a", true },
+    { "seen:1[0-2]", "seen:10", true },
+    { "*a*", "a*c", true },
+    { "[*]a", "*a", true },
+    { "[?]", "?", true },
+    { "[a-]", "a", true },
+    { "[a-]", "]", true },
+    { "[!a]", "a", true },
+    { "[z-z]", "z", true },
+    { "[Z]", "Z", true },
+    { "[^Z]", "a", true },
+    { "[^Z]", "b", true },
+    { "[^Z]", "c", true },
+    { "[^Z]", "?", true },
+    { "[^Z]", "[", true },
+    { "[^Z]", "]", true },
+    { "[^Z]", "-", true },
+    { "[^Z]", "z", true },
+    { "h?llo", "hxllo", true },
+    { "?", "-", true },
+    { "**", "aXc", true },
+    { "*?", "heeeello", true },
+    { "*", "a?c", true },
+    { "*", "hallo", true },
+    { "*a*", "a?c", true },
+    { "*", "seen:123", true },
+    { "*seen*", "seen:123", true },
+    { "*?", "abc", true },
+    { "*", "[", true },
+    { "*a*", "ab", true },
+    { "a*", "aaab", true },
+    { "*", "a^c", true },
+    { "*", "seen:10", true },
+    { "**", "]", true },
+    { "**", "a?c", true },
+    { "*", "hello", true },
+    { "*c", "a\\c", true },
+    { "*", "seen:1", true },
+    { "*a*", "aaa", true },
+    { "**", "*a", true },
+    { "*", "]", true },
+    { "a*a*b", "aaab", true },
+    { "*", "baaa", true },
+    { "a[-]c", "hallo", false },
+    { "[Z]", "c", false },
+    { "a*c", "c", false },
+    { "[z-z]", "hllo", false },
+    { "[Z]", "a-c", false },
+    { "seen:1[0-2]", "hallo", false },
+    { "a?c", "c", false },
+    { "a[-]c", "?", false },
+    { "*c", "aa", false },
+    { "a**c", "?", false },
+    { "h[a-b]llo", "ab", false },
+    { "a\\\\c", "Z", false },
+    { "*seen*", "ab", false },
+    { "h[a-b]llo", "z", false },
+    { "[!a]", "aXc", false },
+  };
+
+  for (size_t i = 0; i < sizeof (cases) / sizeof (cases[0]); i++)
+    if (glob_match (cases[i].pattern, cases[i].string) != cases[i].match)
+      {
+	msgf ("ASSERTION FAILED: glob '%s' on '%s' should be %d",
+	      cases[i].pattern, cases[i].string, cases[i].match);
+	exit (1);
+      }
+
+  printf ("PASSED\n");
+}
+
 // A pop whose reply does not fit must leave the list alone
 static void
 test_list_pop_too_big (void)
@@ -1601,6 +1732,7 @@ main (void)
   test_list_range ();
   test_list_rem ();
   test_mget_other_types ();
+  test_glob ();
   test_keys ();
   test_zset_basic ();
   test_zquery ();

@@ -728,6 +728,70 @@ class TestLargeEntryPersistence(MinisTestCase):
         self.assertEqual(self.r.get("small"), "v")
 
 
+GLOB_KEYS = ['*a', '-', '?', 'Z', '[', ']', 'a', 'a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'aa', 'aaa', 'aaab', 'ab', 'abc', 'abd', 'b', 'baaa', 'c', 'hallo', 'heeeello', 'hello', 'hllo', 'hxllo', 'seen:1', 'seen:10', 'seen:123', 'xseen:1', 'z']
+
+# Pattern -> matching GLOB_KEYS, as valkey 9.1 KEYS answers
+GLOB_MATCHES = {
+    '*': ['*a', '-', '?', 'Z', '[', ']', 'a', 'a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'aa', 'aaa', 'aaab', 'ab', 'abc', 'abd', 'b', 'baaa', 'c', 'hallo', 'heeeello', 'hello', 'hllo', 'hxllo', 'seen:1', 'seen:10', 'seen:123', 'xseen:1', 'z'],
+    '?': ['-', '?', 'Z', '[', ']', 'a', 'b', 'c', 'z'],
+    'a': ['a'],
+    'a*': ['a', 'a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'aa', 'aaa', 'aaab', 'ab', 'abc', 'abd'],
+    '*c': ['a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'abc', 'c'],
+    'a?c': ['a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'abc'],
+    'a*c': ['a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'abc'],
+    'h?llo': ['hallo', 'hello', 'hxllo'],
+    'h*llo': ['hallo', 'heeeello', 'hello', 'hllo', 'hxllo'],
+    'h[ae]llo': ['hallo', 'hello'],
+    'h[^e]llo': ['hallo', 'hxllo'],
+    'h[a-b]llo': ['hallo'],
+    'h[b-a]llo': ['hallo'],
+    '[a-c]': ['a', 'b', 'c'],
+    '[^a-c]': ['-', '?', 'Z', '[', ']', 'z'],
+    '[abc]*': ['a', 'a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'aa', 'aaa', 'aaab', 'ab', 'abc', 'abd', 'b', 'baaa', 'c'],
+    'a[]]c': [],
+    'a[-]c': ['a-c'],
+    'a[\\]]c': ['a]c'],
+    'a\\*c': ['a*c'],
+    'a\\?c': ['a?c'],
+    'a\\\\c': ['a\\c'],
+    'a[\\-]c': ['a-c'],
+    '[': [],
+    '[a': ['a'],
+    'a[': [],
+    '\\': [],
+    'a\\': [],
+    'seen:1[0-2]': ['seen:10'],
+    'seen:1*': ['seen:1', 'seen:10', 'seen:123'],
+    '*seen*': ['seen:1', 'seen:10', 'seen:123', 'xseen:1'],
+    '**': ['*a', '-', '?', 'Z', '[', ']', 'a', 'a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'aa', 'aaa', 'aaab', 'ab', 'abc', 'abd', 'b', 'baaa', 'c', 'hallo', 'heeeello', 'hello', 'hllo', 'hxllo', 'seen:1', 'seen:10', 'seen:123', 'xseen:1', 'z'],
+    '*a*': ['*a', 'a', 'a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'aa', 'aaa', 'aaab', 'ab', 'abc', 'abd', 'baaa', 'hallo'],
+    'a*a*b': ['aaab'],
+    '*?': ['*a', '-', '?', 'Z', '[', ']', 'a', 'a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'aa', 'aaa', 'aaab', 'ab', 'abc', 'abd', 'b', 'baaa', 'c', 'hallo', 'heeeello', 'hello', 'hllo', 'hxllo', 'seen:1', 'seen:10', 'seen:123', 'xseen:1', 'z'],
+    '?*?': ['*a', 'a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'aa', 'aaa', 'aaab', 'ab', 'abc', 'abd', 'baaa', 'hallo', 'heeeello', 'hello', 'hllo', 'hxllo', 'seen:1', 'seen:10', 'seen:123', 'xseen:1'],
+    '[*]a': ['*a'],
+    '[?]': ['?'],
+    'a[^]]c': [],
+    '[]]': [],
+    '[a-]': [']', 'a'],
+    '[!a]': ['a'],
+    'a**c': ['a*c', 'a-c', 'a?c', 'aXc', 'a\\c', 'a]c', 'a^c', 'abc'],
+    '[z-z]': ['z'],
+    '[Z]': ['Z'],
+    '[^Z]': ['-', '?', '[', ']', 'a', 'b', 'c', 'z'],
+}
+
+
+class TestGlob(MinisTestCase):
+    def test_keys_patterns_match_valkey(self):
+        pipe = self.r.pipeline(transaction=False)
+        for k in GLOB_KEYS:
+            pipe.set(k, "v")
+        pipe.execute()
+        for pattern, want in GLOB_MATCHES.items():
+            with self.subTest(pattern=pattern):
+                self.assertEqual(sorted(self.r.keys(pattern)), want)
+
+
 class TestDel(MinisTestCase):
     def test_single_key(self):
         self.r.set("del_one", "v")
