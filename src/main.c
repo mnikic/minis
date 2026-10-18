@@ -47,7 +47,7 @@ typedef struct
 
 static MinisConfig config;
 
-void
+static void
 print_usage (const char *prog_name)
 {
   msgf ("Usage: %s [options]\n\n", prog_name);
@@ -61,7 +61,7 @@ print_usage (const char *prog_name)
   msgf ("\n");
 }
 
-void
+static void
 parse_args (int argc, char *argv[], MinisConfig *cfg)
 {
   // Set defaults
@@ -76,7 +76,7 @@ parse_args (int argc, char *argv[], MinisConfig *cfg)
     {"daemonize", no_argument, 0, 'd'},
     {"verbose", no_argument, 0, 'v'},
     {"help", no_argument, 0, 'h'},
-    {0, 0, 0, 0}
+    {0, 0, 0, 0},
   };
 
   int opt;
@@ -121,7 +121,7 @@ parse_args (int argc, char *argv[], MinisConfig *cfg)
 // Simple Daemonizer (POSIX). Returns the write end of a pipe the daemon
 // writes a byte to once it is serving; the process the user started
 // waits for that byte, so it can say whether the daemon really started.
-int
+static int
 daemonize_process (void)
 {
   int ready[2];
@@ -196,7 +196,7 @@ daemonize_process (void)
   return ready[1];
 }
 
-void
+static void
 handle_signal (int sig)
 {
   if (sig == SIGINT || sig == SIGTERM)

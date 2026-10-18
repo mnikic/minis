@@ -21,7 +21,7 @@
 #include "io/proto_parser.h"
 
 /* * Zero-Copy Logic Constraint
- * Packed Binary, Network Byte Order (Big Endian), and the Zero-Copy Hack colliding 
+ * Packed Binary, Network Byte Order (Big Endian), and the Zero-Copy Hack colliding
  * here, after this size we start corrupting.
  */
 #define STRINGIFY_(x) #x
