@@ -224,7 +224,7 @@ def main():
     parser.add_argument('--host', default='127.0.0.1', help='Server host (default: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=1234, help='Server port (default: 1234)')
     parser.add_argument('--connections', type=int, default=100, help='Number of connections (default: 100)')
-    parser.add_argument('--idle-time', type=int, default=10, help='How long to keep idle (default: 10s)')
+    parser.add_argument('--idle-time', type=int, default=300, help='How long to keep idle (default: 300s)')
     parser.add_argument('--test-active', action='store_true', help='Test active vs idle connections')
     
     args = parser.parse_args()

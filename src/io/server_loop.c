@@ -47,7 +47,6 @@
 #include <sys/eventfd.h>
 
 #include "cache/cache.h"
-#include "cache/persistence.h"
 #include "io/connection_handler.h"
 #include "io/blocking.h"
 #include "io/conn_pool.h"
@@ -158,12 +157,9 @@ rdb_save_background (Cache *cache, uint64_t now_us)
 	    (get_monotonic_usec () - g_data.last_snapshot_time) / 1000);
       _exit (status ? 0 : 1);
     }
-  else
-    {
-      // PARENT PROCESS
-      g_data.snapshot_child_pid = child_pid;
-      msgf ("Background saving started by pid %d", child_pid);
-    }
+  // PARENT PROCESS
+  g_data.snapshot_child_pid = child_pid;
+  msgf ("Background saving started by pid %d", child_pid);
 }
 
 static void
@@ -309,16 +305,22 @@ conn_done (Conn *conn)
   // The Conn struct lives in the Slab and is recycled.
 }
 
+static Conn*
+next_idle_connection (void)
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+  Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
+#pragma GCC diagnostic pop
+  return next;
+}
+
 static void
 process_timers (Cache *cache, uint64_t now_us)
 {
   while (!dlist_empty (&g_data.idle_list))
     {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
-#pragma GCC diagnostic pop
-
+      Conn *next = next_idle_connection ();
       uint64_t next_us = next->idle_start + (K_IDLE_TIMEOUT_SEC * 1000000);
 
       if (next_us > now_us)
@@ -650,10 +652,7 @@ next_timer_ms (Cache *cache, uint64_t now_us)
 
   if (!dlist_empty (&g_data.idle_list))
     {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-align"
-      Conn *next = container_of (g_data.idle_list.next, Conn, idle_list);
-#pragma GCC diagnostic pop
+      Conn *next = next_idle_connection ();
       next_us = next->idle_start + (K_IDLE_TIMEOUT_SEC * 1000000);
     }
 
@@ -763,7 +762,7 @@ process_snapshots (Cache *cache, uint64_t now_us)
     }
 }
 
-void
+static void
 save_sync (Cache *cache)
 {
   if (g_data.snapshot_child_pid > 0)
@@ -788,7 +787,7 @@ save_sync (Cache *cache)
     }
 }
 
-void
+static void
 server_shutdown (Cache *cache, int listen_fd, int epfd)
 {
   save_sync (cache);
