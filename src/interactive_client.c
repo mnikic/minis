@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -325,7 +326,7 @@ on_response (const uint8_t *data, size_t size)
 	memcpy (&val_net, &data[1], 8);
 	int64_t val = (int64_t) ntohll (val_net);
 
-	printf ("(int) %ld\n", val);
+	printf ("(int) %" PRId64 "\n", val);
 	return 1 + 8;
       }
 

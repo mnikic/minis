@@ -23,7 +23,7 @@ next_pow2 (size_t n)
 static inline size_t
 probe_distance (uint64_t hcode, size_t pos, size_t mask)
 {
-  size_t ideal_pos = hcode & mask;
+  size_t ideal_pos = (size_t) (hcode & mask);
   if (pos >= ideal_pos)
     return pos - ideal_pos;
   return (mask + 1) - ideal_pos + pos;
@@ -77,7 +77,7 @@ hm_help_resizing (HMap *hmap)
       old_entry->hcode_cached = 0;
       hmap->ht2.size--;
 
-      size_t n_pos = node->hcode & hmap->ht1.mask;
+      size_t n_pos = (size_t) (node->hcode & hmap->ht1.mask);
       size_t n_dist = 0;
       uint64_t n_hcode = node->hcode;
 
@@ -155,7 +155,7 @@ h_lookup_entry (HTab *htab, const void *key, uint64_t hcode, h_cmp_fn cmp)
   if (!htab->tab)
     return NULL;
 
-  size_t pos = hcode & htab->mask;
+  size_t pos = (size_t) (hcode & htab->mask);
   size_t dist = 0;
 
   for (;;)
@@ -201,7 +201,7 @@ h_insert (HTab *htab, HNode *node, const void *key, h_cmp_fn cmp)
   assert (htab->tab != NULL);
   assert (node != NULL);
 
-  size_t pos = node->hcode & htab->mask;
+  size_t pos = (size_t) (node->hcode & htab->mask);
   size_t dist = 0;
   HNode *to_insert = node;
   uint64_t hcode_to_insert = node->hcode;

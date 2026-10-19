@@ -665,9 +665,9 @@ serialize_entry_growing (Buffer *buf, Entry *entry, const SnapClock *clock)
       if (serialize_entry (buf, entry, clock))
 	return true;
 
-      size_t new_cap = buf->capacity * 2;
-      if (new_cap < buf->capacity || new_cap > ((size_t) 1 << 40))
+      if (buf->capacity > SIZE_MAX / 2)
 	return false;
+      size_t new_cap = buf->capacity * 2;
       uint8_t *mem = realloc (buf->data, new_cap);
       if (!mem)
 	return false;
