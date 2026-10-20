@@ -9,6 +9,7 @@
 #include <inttypes.h>
 
 #include "cache/cache.h"
+#include "cache/minis.h"
 #include "cache/hashtable.h"
 #include "common/common.h"
 #include "common/glob.h"
@@ -2314,6 +2315,51 @@ test_resp_protocol (void)
   printf ("PASSED\n");
 }
 
+// HSET of a new value for a field is a change: the dirty count is what
+// snapshots go by, and the incremental save only writes dirty shards
+static void
+test_hset_overwrite_is_a_change (void)
+{
+  printf ("TEST: HSET overwrites count as changes... ");
+
+  Cache *cache = cache_init ();
+  uint64_t now = get_test_time_us ();
+  Buffer buf;
+
+  RUN (cache, now, "hset", "hw", "f", "v1");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  uint64_t dirty = cache_dirty_count (cache);
+  RUN (cache, now, "hset", "hw", "f", "v1");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+  ASSERT_EQ (cache_dirty_count (cache), dirty);
+  RUN (cache, now, "hset", "hw", "f", "v2");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+  ASSERT_EQ (cache_dirty_count (cache), dirty + 1);
+
+  // Saved incrementally, the new value survives a reload
+  char dir[] = "/tmp/minis-hset-XXXXXX";
+  ASSERT_TRUE (mkdtemp (dir) != NULL);
+  minis_incremental_save (cache, dir, now);
+  RUN (cache, now, "hset", "hw", "f", "v3");
+  minis_incremental_save (cache, dir, now);
+
+  Cache *loaded = cache_init ();
+  ASSERT_TRUE (cache_load (loaded, dir, now));
+  RUN (loaded, now, "hget", "hw", "f");
+  ASSERT_STR_EQ (extract_str_response (&buf), "v3");
+
+  for (int i = 0; i < 64; i++)
+    {
+      char path[64];
+      snprintf (path, sizeof (path), "%s/shard_%d.mdb", dir, i);
+      unlink (path);
+    }
+  rmdir (dir);
+  cache_free (loaded);
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // Exact RESP bytes of 'buf'
 static void
 assert_buffer_equals (Buffer *buf, const char *expected)
@@ -2659,6 +2705,7 @@ main (void)
   test_buffer_overflow ();
   test_resp_protocol ();
   test_resp3_encoding ();
+  test_hset_overwrite_is_a_change ();
   test_edge_cases ();
   test_arg_validation ();
   test_zset_updates ();

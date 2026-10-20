@@ -31,12 +31,21 @@ minis_hset (Minis *minis, const char *key, size_t key_len, const char *field,
       return MINIS_ERR_TYPE;
     }
 
-  int res = hash_set (ent->hash, field, field_len, value, value_len);
-  if (res)
+  HashSetResult res = hash_set (ent->hash, field, field_len, value, value_len);
+  if (res == HASH_OOM)
+    {
+      // A hash made for this field must not stay behind empty
+      if (hm_size (ent->hash) == 0)
+	entry_dispose_atomic (minis, ent);
+      unlock_shard (shard);
+      return MINIS_ERR_OOM;
+    }
+  // A new value is a change too, or snapshots would miss it
+  if (res != HASH_UNCHANGED)
     __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
 
   if (out_added)
-    *out_added = res;
+    *out_added = res == HASH_ADDED;
 
   unlock_shard (shard);
   return MINIS_OK;

@@ -27,9 +27,16 @@ HashEntry *hash_lookup (HMap * hmap, const char *field, size_t field_len);
 
 HashEntry *fetch_hash_entry (HNode * node);
 
-// 1 if the field is new, 0 if it was there (or on OOM)
-int hash_set (HMap * hmap, const char *field, size_t field_len,
-	      const char *value, size_t value_len);
+typedef enum
+{
+  HASH_OOM,			// Out of memory, nothing changed
+  HASH_UNCHANGED,		// The field already had this value
+  HASH_UPDATED,			// The field was there, its value changed
+  HASH_ADDED			// A new field
+} HashSetResult;
+
+HashSetResult hash_set (HMap * hmap, const char *field, size_t field_len,
+			const char *value, size_t value_len);
 
 int hash_del (HMap * hmap, const char *field, size_t field_len);
 

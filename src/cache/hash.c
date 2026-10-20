@@ -57,7 +57,7 @@ hash_lookup (HMap *hmap, const char *field, size_t field_len)
   return fetch_hash_entry (node);
 }
 
-int
+HashSetResult
 hash_set (HMap *hmap, const char *field, size_t field_len, const char *value,
 	  size_t value_len)
 {
@@ -66,20 +66,19 @@ hash_set (HMap *hmap, const char *field, size_t field_len, const char *value,
     {
       if (ent->value_len == value_len
 	  && memcmp (ent->value, value, value_len) == 0)
-	return 0;
+	return HASH_UNCHANGED;
       char *copy = copy_bytes (value, value_len);
-      if (copy)
-	{
-	  free (ent->value);
-	  ent->value = copy;
-	  ent->value_len = value_len;
-	}
-      return 0;
+      if (!copy)
+	return HASH_OOM;
+      free (ent->value);
+      ent->value = copy;
+      ent->value_len = value_len;
+      return HASH_UPDATED;
     }
 
   ent = malloc (sizeof (HashEntry));
   if (!ent)
-    return 0;
+    return HASH_OOM;
   ent->field = copy_bytes (field, field_len);
   ent->value = copy_bytes (value, value_len);
   if (!ent->field || !ent->value)
@@ -87,14 +86,14 @@ hash_set (HMap *hmap, const char *field, size_t field_len, const char *value,
       free (ent->field);
       free (ent->value);
       free (ent);
-      return 0;
+      return HASH_OOM;
     }
   ent->field_len = field_len;
   ent->value_len = value_len;
   ent->node.hcode = str_hash ((const uint8_t *) field, field_len);
   FieldKey key = {.field = field,.len = field_len };
   hm_insert (hmap, &ent->node, &key, &hash_entry_eq);
-  return 1;
+  return HASH_ADDED;
 }
 
 static void
