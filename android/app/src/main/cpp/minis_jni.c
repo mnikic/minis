@@ -446,9 +446,11 @@ Java_com_minis_Minis_nativeHSet(JNIEnv *env, jobject thiz, jlong ptr, jstring jK
     const char *field = (*env)->GetStringUTFChars(env, jField, 0);
     const char *value = (*env)->GetStringUTFChars(env, jValue, 0);
 
-    int added = 0;
-    MinisError err = minis_hset(minis, key, strlen(key), field, strlen(field), value,
-                                strlen(value), &added, get_us());
+    const char *pair[2] = { field, value };
+    size_t pair_lens[2] = { strlen(field), strlen(value) };
+    int64_t added = 0;
+    MinisError err = minis_hset(minis, key, strlen(key), pair, pair_lens, 1, &added,
+                                get_us());
 
     (*env)->ReleaseStringUTFChars(env, jKey, key);
     (*env)->ReleaseStringUTFChars(env, jField, field);

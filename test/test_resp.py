@@ -2070,6 +2070,69 @@ class TestIntegerArgs(MinisTestCase):
         self.assertAlive()
 
 
+class TestHsetMany(MinisTestCase):
+    """HSET with any number of field/value pairs, and HMSET"""
+
+    def test_mapping(self):
+        self.r.delete("hs_map")
+        self.assertEqual(self.r.hset("hs_map", mapping={"a": "1", "b": "2"}), 2)
+        self.assertEqual(self.r.hset("hs_map", "c", "3",
+                                     mapping={"a": "1", "b": "20"}), 1)
+        self.assertEqual(self.r.hgetall("hs_map"),
+                         {"a": "1", "b": "20", "c": "3"})
+        self.assertEqual(self.r.hset("hs_map", items=["d", "4", "e", "5"]), 2)
+        self.assertEqual(self.r.hget("hs_map", "e"), "5")
+
+    def test_repeated_field(self):
+        self.r.delete("hs_dup")
+        self.assertEqual(
+            self.r.execute_command("HSET", "hs_dup", "f", "1", "f", "2"), 1)
+        self.assertEqual(self.r.hgetall("hs_dup"), {"f": "2"})
+
+    def test_wrong_number_of_arguments(self):
+        self.r.delete("hs_args")
+        for args in (("hs_args", "a"), ("hs_args", "a", "1", "b"),
+                     ("hs_args",)):
+            with self.subTest(args=args):
+                with self.assertRaisesRegex(
+                        redis.ResponseError,
+                        "wrong number of arguments for 'hset' command"):
+                    self.r.execute_command("HSET", *args)
+        self.assertEqual(self.r.exists("hs_args"), 0)
+        with self.assertRaisesRegex(
+                redis.ResponseError,
+                "wrong number of arguments for 'hmset' command"):
+            self.r.execute_command("HMSET", "hs_args", "a")
+
+    def test_hmset(self):
+        self.r.delete("hs_hmset")
+        # redis-py makes HMSET's +OK a True
+        self.assertIs(
+            self.r.execute_command("HMSET", "hs_hmset", "a", "1", "b", "2"),
+            True)
+        self.assertEqual(self.r.hgetall("hs_hmset"), {"a": "1", "b": "2"})
+
+    def test_wrong_type(self):
+        self.r.set("hs_str", "v")
+        with self.assertRaisesRegex(redis.ResponseError, "WRONGTYPE"):
+            self.r.hset("hs_str", mapping={"a": "1", "b": "2"})
+        self.assertEqual(self.r.get("hs_str"), "v")
+
+    def test_most_pairs_one_request_takes(self):
+        # 2 + 2 * 511 = 1024 arguments, the most a request may have
+        self.r.delete("hs_big")
+        fields = {f"f{i}": str(i) for i in range(511)}
+        self.assertEqual(self.r.hset("hs_big", mapping=fields), 511)
+        self.assertEqual(self.r.hgetall("hs_big"), fields)
+
+    def test_survives_restart(self):
+        self.r.delete("hs_restart")
+        self.r.hset("hs_restart", mapping={"a": "1", "b": "2"})
+        self.r.hset("hs_restart", mapping={"b": "3"})
+        self.server.restart()
+        self.assertEqual(self.r.hgetall("hs_restart"), {"a": "1", "b": "3"})
+
+
 class Resp3Null:
     """RESP3's null (_), told apart from RESP2's $-1 (None)"""
 

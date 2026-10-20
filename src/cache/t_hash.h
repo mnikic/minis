@@ -6,10 +6,12 @@
 #include "cache/minis.h"
 
 
-// Fields and values may hold NUL bytes, hence their lengths
-MinisError minis_hset (Minis * minis, const char *key, size_t key_len, const char *field,
-		       size_t field_len, const char *value, size_t value_len,
-		       int *out_added, uint64_t now_us);
+// Fields and values may hold NUL bytes, hence their lengths. pairs holds
+// npairs fields, each followed by its value, set under one lock; out_added
+// is how many of the fields were new.
+MinisError minis_hset (Minis * minis, const char *key, size_t key_len,
+		       const char **pairs, const size_t *pair_lens,
+		       size_t npairs, int64_t *out_added, uint64_t now_us);
 MinisError
 minis_hget (Minis * minis, const char *key, size_t key_len, const char *field,
 	    size_t field_len, MinisHashCb func, void *ctx, uint64_t now_us);

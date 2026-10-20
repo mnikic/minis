@@ -514,16 +514,22 @@ do_incr (Cache *cache, const char *key, size_t key_len, int64_t delta,
 
 // Hash Operations
 
+// HSET key field value [field value ...], and HMSET, its older form that
+// replies OK instead of the number of new fields
 static bool
-do_hset (Cache *cache, const char **cmd, const size_t *lens, Buffer *out,
-	 uint64_t now_us)
+do_hset (Cache *cache, const char **cmd, const size_t *lens, size_t size,
+	 bool hmset, Buffer *out, uint64_t now_us)
 {
-  int added = 0;
-  MinisError err = minis_hset (cache, cmd[1], lens[1], cmd[2], lens[2], cmd[3],
-			       lens[3], &added, now_us);
-  if (err == MINIS_OK)
-    return out_int (out, added);
-  return reply_with_error (out, err);
+  if (size < 4 || size % 2 != 0)
+    return out_err (out, ERR_ARG, hmset
+		    ? "wrong number of arguments for 'hmset' command"
+		    : "wrong number of arguments for 'hset' command");
+  int64_t added = 0;
+  MinisError err = minis_hset (cache, cmd[1], lens[1], cmd + 2, lens + 2,
+			       (size - 2) / 2, &added, now_us);
+  if (err != MINIS_OK)
+    return reply_with_error (out, err);
+  return hmset ? out_ok (out) : out_int (out, added);
 }
 
 static bool
@@ -1052,8 +1058,10 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
     return do_exists (cache, cmd + 1, lens + 1, size - 1, out, now_us);
   if (size == 3 && cmd_is (cmd[0], "hget"))
     return do_hget (cache, cmd, lens, out, now_us);
-  if (size == 4 && cmd_is (cmd[0], "hset"))
-    return do_hset (cache, cmd, lens, out, now_us);
+  if (size > 0 && cmd_is (cmd[0], "hset"))
+    return do_hset (cache, cmd, lens, size, false, out, now_us);
+  if (size > 0 && cmd_is (cmd[0], "hmset"))
+    return do_hset (cache, cmd, lens, size, true, out, now_us);
   if (size > 2 && cmd_is (cmd[0], "hdel"))
     return do_hdel (cache, cmd, lens, size, out, now_us);
   if (size == 2 && cmd_is (cmd[0], "hgetall"))

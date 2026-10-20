@@ -1157,6 +1157,32 @@ $ {client_executable-abs_path} zquery zempty 0 "" 0 10
 $ {client_executable-abs_path} del zempty
 (int) 1
 
+# HSET takes several field/value pairs, HMSET is its older form
+$ {client_executable-abs_path} hset many a 1 b 2 c 3
+(int) 3
+$ {client_executable-abs_path} hset many a 1 b 20 d 4
+(int) 1
+$ {client_executable-abs_path} hget many b
+(str) 20
+$ {client_executable-abs_path} hset many f 1 f 2
+(int) 1
+$ {client_executable-abs_path} hget many f
+(str) 2
+$ {client_executable-abs_path} hset many a
+(err) 4 wrong number of arguments for 'hset' command
+$ {client_executable-abs_path} hset many a 1 b
+(err) 4 wrong number of arguments for 'hset' command
+$ {client_executable-abs_path} hset many
+(err) 4 wrong number of arguments for 'hset' command
+$ {client_executable-abs_path} hmset many e 5 g 6
+(str) OK
+$ {client_executable-abs_path} hget many g
+(str) 6
+$ {client_executable-abs_path} hmset many e
+(err) 4 wrong number of arguments for 'hmset' command
+$ {client_executable-abs_path} del many
+(int) 1
+
 # HELLO picks RESP2 or RESP3, it means nothing to the binary protocol
 $ {client_executable-abs_path} hello 3
 (err) 1 Unknown cmd

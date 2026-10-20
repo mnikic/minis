@@ -9,9 +9,9 @@
 #include "cache/hashtable.h"
 
 MinisError
-minis_hset (Minis *minis, const char *key, size_t key_len, const char *field,
-	    size_t field_len, const char *value, size_t value_len,
-	    int *out_added, uint64_t now_us)
+minis_hset (Minis *minis, const char *key, size_t key_len,
+	    const char **pairs, const size_t *pair_lens, size_t npairs,
+	    int64_t *out_added, uint64_t now_us)
 {
   Shard *shard = lock_shard_for_key (minis, key, key_len);
 
@@ -31,24 +31,32 @@ minis_hset (Minis *minis, const char *key, size_t key_len, const char *field,
       return MINIS_ERR_TYPE;
     }
 
-  HashSetResult res = hash_set (ent->hash, field, field_len, value, value_len);
-  if (res == HASH_OOM)
+  MinisError err = MINIS_OK;
+  int64_t added = 0;
+  for (size_t i = 0; i < npairs; i++)
     {
-      // A hash made for this field must not stay behind empty
-      if (hm_size (ent->hash) == 0)
-	entry_dispose_atomic (minis, ent);
-      unlock_shard (shard);
-      return MINIS_ERR_OOM;
+      HashSetResult res = hash_set (ent->hash, pairs[2 * i], pair_lens[2 * i],
+				    pairs[2 * i + 1], pair_lens[2 * i + 1]);
+      if (res == HASH_OOM)
+	{
+	  err = MINIS_ERR_OOM;
+	  break;
+	}
+      // A new value is a change too, or snapshots would miss it
+      if (res != HASH_UNCHANGED)
+	__atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
+      added += res == HASH_ADDED;
     }
-  // A new value is a change too, or snapshots would miss it
-  if (res != HASH_UNCHANGED)
-    __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
+
+  // A hash made for these fields must not stay behind empty
+  if (err != MINIS_OK && hm_size (ent->hash) == 0)
+    entry_dispose_atomic (minis, ent);
 
   if (out_added)
-    *out_added = res == HASH_ADDED;
+    *out_added = added;
 
   unlock_shard (shard);
-  return MINIS_OK;
+  return err;
 }
 
 MinisError

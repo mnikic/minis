@@ -2360,6 +2360,62 @@ test_hset_overwrite_is_a_change (void)
   printf ("PASSED\n");
 }
 
+// HSET with several pairs, and HMSET, as in Redis
+static void
+test_hset_many_pairs (void)
+{
+  printf ("TEST: HSET with several pairs... ");
+
+  Cache *cache = cache_init ();
+  uint64_t now = get_test_time_us ();
+  Buffer buf;
+
+  RUN (cache, now, "hset", "hm", "a", "1", "b", "2", "c", "3");
+  ASSERT_EQ (extract_int_response (&buf), 3);
+  // Only new fields count, the others get their new values
+  RUN (cache, now, "hset", "hm", "a", "1", "b", "20", "d", "4");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "hget", "hm", "b");
+  ASSERT_STR_EQ (extract_str_response (&buf), "20");
+  RUN (cache, now, "hget", "hm", "d");
+  ASSERT_STR_EQ (extract_str_response (&buf), "4");
+
+  // A field given twice is one new field with the last value
+  RUN (cache, now, "hset", "hdup", "f", "1", "f", "2");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "hget", "hdup", "f");
+  ASSERT_STR_EQ (extract_str_response (&buf), "2");
+
+  // A field without a value is refused, and nothing is created
+  RUN (cache, now, "hset", "hnew", "a");
+  assert_err_msg (&buf, "wrong number of arguments for 'hset' command");
+  RUN (cache, now, "hset", "hnew", "a", "1", "b");
+  assert_err_msg (&buf, "wrong number of arguments for 'hset' command");
+  RUN (cache, now, "hset", "hnew");
+  assert_err_msg (&buf, "wrong number of arguments for 'hset' command");
+  RUN (cache, now, "hset");
+  assert_err_msg (&buf, "wrong number of arguments for 'hset' command");
+  RUN (cache, now, "exists", "hnew");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  RUN (cache, now, "hmset", "hm", "x", "1", "y", "2");
+  ASSERT_STR_EQ (extract_str_response (&buf), "OK");
+  RUN (cache, now, "hget", "hm", "y");
+  ASSERT_STR_EQ (extract_str_response (&buf), "2");
+  RUN (cache, now, "hmset", "hm", "x");
+  assert_err_msg (&buf, "wrong number of arguments for 'hmset' command");
+
+  // Another type is left alone
+  RUN (cache, now, "set", "hstr", "v");
+  RUN (cache, now, "hset", "hstr", "a", "1", "b", "2");
+  assert_err_msg (&buf, "WRONGTYPE");
+  RUN (cache, now, "get", "hstr");
+  ASSERT_STR_EQ (extract_str_response (&buf), "v");
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // Exact RESP bytes of 'buf'
 static void
 assert_buffer_equals (Buffer *buf, const char *expected)
@@ -2706,6 +2762,7 @@ main (void)
   test_resp_protocol ();
   test_resp3_encoding ();
   test_hset_overwrite_is_a_change ();
+  test_hset_many_pairs ();
   test_edge_cases ();
   test_arg_validation ();
   test_zset_updates ();
