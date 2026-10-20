@@ -248,8 +248,10 @@ test: $(TARGET_BENCH) $(TARGET_TEST_HEAP) $(TARGET_TEST_CACHE)
 
 # RESP Tests (redis-py, starts its own server)
 resp-test: $(TARGET_MINIS)
-	@echo "--- Running RESP Tests ($(PROFILE)) ---"
-	@MINIS_BIN=$(TARGET_MINIS) python3 test/test_resp.py
+	@echo "--- Running RESP Tests, RESP2 ($(PROFILE)) ---"
+	@MINIS_BIN=$(TARGET_MINIS) RESP_PROTOCOL=2 python3 test/test_resp.py
+	@echo "--- Running RESP Tests, RESP3 ($(PROFILE)) ---"
+	@MINIS_BIN=$(TARGET_MINIS) RESP_PROTOCOL=3 python3 test/test_resp.py
 
 # halt_on_error makes a UBSan report kill the server and fail the run
 resp-test-asan:

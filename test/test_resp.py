@@ -3,7 +3,8 @@
 RESP tests driven by redis-py, the client leadgrep uses.
 
 Starts its own server on a free port in a temporary directory.
-MINIS_BIN selects the binary (default: build/bin/release/minis).
+MINIS_BIN selects the binary (default: build/bin/release/minis), and
+RESP_PROTOCOL the protocol redis-py speaks, 2 (default) or 3.
 
     python3 test/test_resp.py
 """
@@ -30,6 +31,25 @@ MINIS_BIN = os.path.abspath(
         "MINIS_BIN", os.path.join(SCRIPT_DIR, "..", "build/bin/release/minis")
     )
 )
+
+RESP_PROTOCOL = int(os.environ.get("RESP_PROTOCOL", "2"))
+
+
+def client(**kwargs):
+    """A redis-py client speaking RESP_PROTOCOL"""
+    r = redis.Redis(protocol=RESP_PROTOCOL, **kwargs)
+    if RESP_PROTOCOL == 3:
+        # redis-py makes a BLPOP reply a tuple in RESP2 only. The bytes
+        # are the same, TestHello checks them.
+        for pop in ("BLPOP", "BRPOP"):
+            r.set_response_callback(
+                pop, lambda reply, **options: reply and tuple(reply))
+    return r
+
+
+def score(text):
+    """A ZQUERY score: a double in RESP3, a string in RESP2"""
+    return float(text) if RESP_PROTOCOL == 3 else text
 
 
 def free_port():
@@ -97,7 +117,7 @@ class MinisTestCase(unittest.TestCase):
 
     def setUp(self):
         # A short timeout turns a hung server into a failure
-        self.r = redis.Redis(
+        self.r = client(
             port=self.server.port, decode_responses=True, socket_timeout=2
         )
 
@@ -487,7 +507,7 @@ class TestListRange(MinisTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        r = redis.Redis(port=cls.server.port, decode_responses=True)
+        r = client(port=cls.server.port, decode_responses=True)
         r.rpush("lr", *cls.VALUES)
         r.close()
 
@@ -1031,7 +1051,7 @@ class Waiter(threading.Thread):
 
     def __init__(self, port, keys, timeout=5, right=False):
         super().__init__(daemon=True)
-        self.client = redis.Redis(port=port, decode_responses=True,
+        self.client = client(port=port, decode_responses=True,
                                   socket_timeout=timeout + 5)
         self.keys, self.timeout, self.right = keys, timeout, right
         self.result, self.error, self.took = None, None, None
@@ -1282,7 +1302,7 @@ class TestBlockingPop(MinisTestCase):
         consumed, lock = [], threading.Lock()
 
         def consume():
-            c = redis.Redis(port=self.server.port, decode_responses=True,
+            c = client(port=self.server.port, decode_responses=True,
                             socket_timeout=10)
             while True:
                 got = c.blpop(["bp_q1", "bp_q2"], timeout=1)
@@ -1293,7 +1313,7 @@ class TestBlockingPop(MinisTestCase):
             c.close()
 
         def produce(chunk, key):
-            c = redis.Redis(port=self.server.port, decode_responses=True)
+            c = client(port=self.server.port, decode_responses=True)
             for i in range(0, len(chunk), 7):
                 c.rpush(key, *chunk[i:i + 7])
             c.close()
@@ -1312,7 +1332,7 @@ class TestBlockingPop(MinisTestCase):
         got = []
 
         def worker():
-            c = redis.Redis(port=self.server.port, decode_responses=True,
+            c = client(port=self.server.port, decode_responses=True,
                             socket_timeout=10)
             while len(got) < 50:
                 result = c.blpop("seo_ollama_queue", timeout=5)
@@ -1675,7 +1695,7 @@ class TestDaemon(unittest.TestCase):
         try:
             self.assertEqual(daemon.returncode, 0, daemon.output)
             self.assertIn("started in the background", daemon.output)
-            self.assertTrue(redis.Redis(port=self.port).ping())
+            self.assertTrue(client(port=self.port).ping())
         finally:
             daemon.stop()
 
@@ -1709,7 +1729,7 @@ class TestDaemon(unittest.TestCase):
     def test_foreground_daemon_foreground(self):
         # 1. Normal mode: write some keys, exit (which saves)
         proc = self.foreground()
-        r = redis.Redis(port=self.port, socket_timeout=2)
+        r = client(port=self.port, socket_timeout=2)
         r.set("fdf_str", "first")
         r.set("fdf_ttl", "expiring", ex=1000)
         r.set("fdf_gone", "delete me")
@@ -1723,7 +1743,7 @@ class TestDaemon(unittest.TestCase):
         daemon = Daemon(self.tmp.name, self.port).start()
         try:
             self.assertEqual(daemon.returncode, 0, daemon.output)
-            r = redis.Redis(port=self.port, socket_timeout=2)
+            r = client(port=self.port, socket_timeout=2)
             self.assertEqual(r.get("fdf_str"), b"first")
             self.assertGreater(r.ttl("fdf_ttl"), 990)
             self.assertEqual(r.get("fdf_gone"), b"delete me")
@@ -1745,7 +1765,7 @@ class TestDaemon(unittest.TestCase):
         # 3. Normal mode again: the daemon's changes are what it loads
         proc = self.foreground()
         try:
-            r = redis.Redis(port=self.port, socket_timeout=2)
+            r = client(port=self.port, socket_timeout=2)
             self.assertEqual(r.get("fdf_str"), b"second")
             self.assertEqual(r.get("fdf_ttl"), b"longer")
             self.assertGreater(r.ttl("fdf_ttl"), 1990)
@@ -1763,7 +1783,7 @@ class TestDaemon(unittest.TestCase):
         daemon = Daemon(self.tmp.name, self.port).start()
         try:
             self.assertEqual(daemon.returncode, 0, daemon.output)
-            r = redis.Redis(port=self.port, decode_responses=True)
+            r = client(port=self.port, decode_responses=True)
             r.set("dk", "v")
             r.set("dk_ttl", "x", ex=100)
             r.rpush("dk_list", "a", "b")
@@ -1774,7 +1794,7 @@ class TestDaemon(unittest.TestCase):
 
         daemon = Daemon(self.tmp.name, self.port).start()
         try:
-            r = redis.Redis(port=self.port, decode_responses=True)
+            r = client(port=self.port, decode_responses=True)
             self.assertEqual(r.get("dk"), "v")
             self.assertIn(r.ttl("dk_ttl"), (99, 100))
             self.assertEqual(r.lrange("dk_list", 0, -1), ["a", "b"])
@@ -1789,7 +1809,7 @@ class TestEmptyStrings(MinisTestCase):
         self.assertEqual(self.r.get("es_str"), "")
         self.r.zadd("es_zset", {"": 1})
         self.assertEqual(self.r.execute_command("ZQUERY", "es_zset", 0, "", 0, 10),
-                         ["", "1"])
+                         ["", score("1")])
 
 
 class TestBinarySafe(MinisTestCase):
@@ -1797,7 +1817,7 @@ class TestBinarySafe(MinisTestCase):
 
     def setUp(self):
         super().setUp()
-        self.b = redis.Redis(port=self.server.port, socket_timeout=2)
+        self.b = client(port=self.server.port, socket_timeout=2)
 
     def tearDown(self):
         self.b.close()
@@ -1882,10 +1902,11 @@ class TestBinarySafe(MinisTestCase):
         self.assertEqual(self.b.zscore("bin_zset", b"m\x00a"), 1)
         self.assertEqual(self.b.zscore("bin_zset", b"m\x00b"), 2)
         self.assertEqual(self.b.execute_command("ZQUERY", "bin_zset", 0, b"", 0, 10),
-                         [b"m\x00a", b"1", b"m\x00b", b"2", b"m", b"3"])
+                         [b"m\x00a", score(b"1"), b"m\x00b", score(b"2"),
+                          b"m", score(b"3")])
         # The query starts at a member with NUL bytes too
         self.assertEqual(self.b.execute_command("ZQUERY", "bin_zset", 2, b"m\x00b", 0, 1),
-                         [b"m\x00b", b"2"])
+                         [b"m\x00b", score(b"2")])
         self.assertEqual(self.b.zrem("bin_zset", b"m\x00a"), 1)
         self.assertIsNone(self.b.zscore("bin_zset", b"m\x00a"))
         self.assertEqual(self.b.zscore("bin_zset", b"m"), 3)
@@ -1941,7 +1962,7 @@ class TestBinarySafe(MinisTestCase):
         result = {}
 
         def wait():
-            c = redis.Redis(port=self.server.port, socket_timeout=10)
+            c = client(port=self.server.port, socket_timeout=10)
             result["got"] = c.blpop(b"q\x00", timeout=5)
             c.close()
 
