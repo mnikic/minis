@@ -71,4 +71,8 @@ void hm_destroy (HMap * hmap);
 // Helper to check if currently resizing
 bool hm_is_resizing (const HMap * hmap);
 
+// For tests: true if both tables are consistent, every node reachable
+// by a lookup from its home slot and the sizes right. O(n).
+bool hm_check (const HMap * hmap);
+
 #endif /* HASHTABLE_H */

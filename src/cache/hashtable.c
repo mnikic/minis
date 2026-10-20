@@ -486,6 +486,57 @@ hm_scan_step (const HMap *hmap, size_t cursor,
   return scan_next (cursor, m0);
 }
 
+// Walks from node's home slot the way h_lookup_entry does
+static bool
+h_reachable (const HTab *htab, const HTabEntry *target)
+{
+  size_t pos = (size_t) (target->hcode_cached & htab->mask);
+  for (size_t dist = 0; dist <= htab->mask; dist++)
+    {
+      const HTabEntry *entry = &htab->tab[pos];
+      if (entry == target)
+	return true;
+      if (entry->node == NULL)
+	return false;
+      if (dist > probe_distance (entry->hcode_cached, pos, htab->mask))
+	return false;
+      pos = (pos + 1) & htab->mask;
+    }
+  return false;
+}
+
+static bool
+h_check (const HTab *htab)
+{
+  if (!htab->tab)
+    return htab->size == 0;
+
+  size_t count = 0;
+  for (size_t pos = 0; pos <= htab->mask; pos++)
+    {
+      const HTabEntry *entry = &htab->tab[pos];
+      if (entry->node == NULL)
+	continue;
+      count++;
+      if (entry->hcode_cached != entry->node->hcode
+	  || !h_reachable (htab, entry))
+	return false;
+    }
+  return count == htab->size;
+}
+
+bool
+hm_check (const HMap *hmap)
+{
+  if (!h_check (&hmap->ht1) || !h_check (&hmap->ht2))
+    return false;
+  // The old table is always the smaller one, and migration stays in it
+  if (hmap->ht2.tab)
+    return hmap->ht1.tab && hmap->ht2.mask < hmap->ht1.mask
+      && hmap->resizing_pos <= hmap->ht2.mask;
+  return true;
+}
+
 size_t
 hm_size (const HMap *hmap)
 {

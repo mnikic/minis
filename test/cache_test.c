@@ -1213,6 +1213,8 @@ test_hm_lookup_mid_resize (void)
 	  replaced_mid_resize++;
 	}
       ASSERT_EQ (hm_size (&map), (size_t) id + 1);
+      if (map.ht2.tab)
+	ASSERT_TRUE (hm_check (&map));
     }
   ASSERT_TRUE (replaced_mid_resize > 0);
 
@@ -1223,6 +1225,104 @@ test_hm_lookup_mid_resize (void)
     }
 
   hm_destroy (&map);
+  printf ("PASSED\n");
+}
+
+// Random inserts, replaces, pops and lookups against a model of which
+// node each key has, checking the table invariants as it goes. Fixed
+// seeds, so a failure repeats.
+#define RANDOM_MAX_KEYS 16384
+
+static uint64_t
+xorshift64 (uint64_t *state)
+{
+  uint64_t x = *state;
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  return *state = x;
+}
+
+#define RANDOM_ASSERT(cond) do { \
+    if (!(cond)) \
+      printf ("\n  (seed %" PRIu64 ", op %zu) ", seed, op); \
+    ASSERT_TRUE (cond); \
+  } while (0)
+
+static void
+test_hm_random_ops (void)
+{
+  printf ("TEST: hm random ops against a model... ");
+
+  static ScanNode nodes_a[RANDOM_MAX_KEYS];
+  static ScanNode nodes_b[RANDOM_MAX_KEYS];
+  static ScanNode *model[RANDOM_MAX_KEYS];
+  size_t checks_mid_resize = 0;
+
+  for (uint64_t seed = 1; seed <= 12; seed++)
+    {
+      uint64_t rng = seed * 0x9E3779B97F4A7C15ULL;
+      // From 128 keys up to RANDOM_MAX_KEYS, through several resizes
+      size_t nkeys = (size_t) 64 << (seed % 8 + 1);
+      size_t nops = nkeys * 6;
+      size_t count = 0;
+      size_t op = 0;
+      HMap map;
+      ASSERT_TRUE (hm_init (&map, 8));
+      ASSERT_TRUE (nkeys <= RANDOM_MAX_KEYS);
+      memset (model, 0, sizeof (model));
+
+      for (; op < nops; op++)
+	{
+	  int id = (int) (xorshift64 (&rng) % nkeys);
+	  uint64_t hcode = str_hash ((const uint8_t *) &id, sizeof (id));
+	  uint64_t what = xorshift64 (&rng) % 100;
+
+	  if (what < 55)
+	    {
+	      // Insert, or replace with the other node of the key
+	      ScanNode *node = model[id] == &nodes_a[id]
+		? &nodes_b[id] : &nodes_a[id];
+	      node->id = id;
+	      node->node.hcode = hcode;
+	      hm_insert (&map, &node->node, &id, scan_node_eq);
+	      if (!model[id])
+		count++;
+	      model[id] = node;
+	    }
+	  else if (what < 75)
+	    {
+	      HNode *got = hm_pop (&map, &id, hcode, scan_node_eq);
+	      RANDOM_ASSERT (got == (model[id] ? &model[id]->node : NULL));
+	      if (got)
+		count--;
+	      model[id] = NULL;
+	    }
+	  else
+	    {
+	      HNode *got = hm_lookup (&map, &id, hcode, scan_node_eq);
+	      RANDOM_ASSERT (got == (model[id] ? &model[id]->node : NULL));
+	    }
+
+	  RANDOM_ASSERT (hm_size (&map) == count);
+	  if (map.ht2.tab || count < 1024 || op % 512 == 0)
+	    {
+	      checks_mid_resize += map.ht2.tab != NULL;
+	      RANDOM_ASSERT (hm_check (&map));
+	    }
+	}
+
+      for (int id = 0; id < (int) nkeys; id++)
+	{
+	  uint64_t hcode = str_hash ((const uint8_t *) &id, sizeof (id));
+	  HNode *got = hm_lookup (&map, &id, hcode, scan_node_eq);
+	  RANDOM_ASSERT (got == (model[id] ? &model[id]->node : NULL));
+	}
+      RANDOM_ASSERT (hm_check (&map));
+      hm_destroy (&map);
+    }
+  ASSERT_TRUE (checks_mid_resize > 0);
+
   printf ("PASSED\n");
 }
 
@@ -1290,6 +1390,7 @@ test_hm_scan_step (void)
       live += (size_t) scan_visits[id];
     }
   ASSERT_EQ (live, hm_size (&map));
+  ASSERT_TRUE (hm_check (&map));
 
   hm_destroy (&map);
   printf ("PASSED\n");
@@ -2432,6 +2533,7 @@ main (void)
   test_mget_other_types ();
   test_glob ();
   test_hm_lookup_mid_resize ();
+  test_hm_random_ops ();
   test_hm_scan_step ();
   test_scan_command ();
   test_bpop ();
