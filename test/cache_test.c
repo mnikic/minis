@@ -1178,6 +1178,54 @@ scan_insert (HMap *map, ScanNode *nodes, int id)
   hm_insert (map, &nodes[id].node, &id, scan_node_eq);
 }
 
+// Lookups mid resize. A migration batch can stop inside a probe run of
+// the old table; the keys left behind must still be found, or a SET of
+// one adds a second copy of the key.
+#define RESIZE_NODES 40000
+
+static void
+test_hm_lookup_mid_resize (void)
+{
+  printf ("TEST: hm lookups and replaces mid resize... ");
+
+  static ScanNode first[RESIZE_NODES];
+  static ScanNode again[RESIZE_NODES];
+  HMap map;
+  ASSERT_TRUE (hm_init (&map, 8));
+
+  size_t replaced_mid_resize = 0;
+  for (int id = 0; id < RESIZE_NODES; id++)
+    {
+      scan_insert (&map, first, id);
+      // Replace the key migration moves next: its home slot may already
+      // be empty
+      HNode *next = NULL;
+      for (size_t pos = map.resizing_pos; map.ht2.tab && !next
+	   && pos <= map.ht2.mask; pos++)
+	next = map.ht2.tab[pos].node;
+      if (next)
+	{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+	  int old = container_of (next, ScanNode, node)->id;
+#pragma GCC diagnostic pop
+	  scan_insert (&map, old % 2 ? again : first, old);
+	  replaced_mid_resize++;
+	}
+      ASSERT_EQ (hm_size (&map), (size_t) id + 1);
+    }
+  ASSERT_TRUE (replaced_mid_resize > 0);
+
+  for (int id = 0; id < RESIZE_NODES; id++)
+    {
+      uint64_t hcode = str_hash ((const uint8_t *) &id, sizeof (id));
+      ASSERT_TRUE (hm_lookup (&map, &id, hcode, scan_node_eq) != NULL);
+    }
+
+  hm_destroy (&map);
+  printf ("PASSED\n");
+}
+
 // The SCAN guarantee at the table level: nodes there for the whole scan
 // are visited, while the map grows through many resizes (some steps
 // landing mid resize) and other nodes are deleted, shifting entries back
@@ -2383,6 +2431,7 @@ main (void)
   test_list_rem ();
   test_mget_other_types ();
   test_glob ();
+  test_hm_lookup_mid_resize ();
   test_hm_scan_step ();
   test_scan_command ();
   test_bpop ();

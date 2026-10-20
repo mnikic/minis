@@ -49,6 +49,8 @@ hm_init (HMap *hmap, size_t initial_cap)
   return h_init (&hmap->ht1, cap);
 }
 
+static HNode *h_delete (HTab * htab, HTabEntry * slot);
+
 static void
 hm_help_resizing (HMap *hmap)
 {
@@ -73,9 +75,10 @@ hm_help_resizing (HMap *hmap)
 	  continue;
 	}
 
-      old_entry->node = NULL;
-      old_entry->hcode_cached = 0;
-      hmap->ht2.size--;
+      // Shift the rest of the run back, as for any delete. A hole left
+      // in the run would hide the keys behind it from lookups, until
+      // they are moved too.
+      h_delete (&hmap->ht2, old_entry);
 
       size_t n_pos = (size_t) (node->hcode & hmap->ht1.mask);
       size_t n_dist = 0;
