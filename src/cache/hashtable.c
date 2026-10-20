@@ -49,7 +49,47 @@ hm_init (HMap *hmap, size_t initial_cap)
   return h_init (&hmap->ht1, cap);
 }
 
-static HNode *h_delete (HTab * htab, HTabEntry * slot);
+// Helper to remove a specific slot (used by overwrite/move)
+static HNode *
+h_delete (HTab *htab, HTabEntry *slot)
+{
+  assert (slot && slot->node);
+
+  HNode *removed_node = slot->node;
+  htab->size--;
+
+  size_t pos = (size_t) (slot - htab->tab);
+
+  for (;;)
+    {
+      size_t next_pos = (pos + 1) & htab->mask;
+      HTabEntry *next_entry = &htab->tab[next_pos];
+      HNode *next_node = next_entry->node;
+
+      if (next_node == NULL)
+	{
+	  slot->node = NULL;
+	  slot->hcode_cached = 0;
+	  break;
+	}
+
+      size_t dist =
+	probe_distance (next_entry->hcode_cached, next_pos, htab->mask);
+
+      if (dist == 0)
+	{
+	  slot->node = NULL;
+	  slot->hcode_cached = 0;
+	  break;
+	}
+
+      *slot = *next_entry;
+      pos = next_pos;
+      slot = next_entry;
+    }
+
+  return removed_node;
+}
 
 static void
 hm_help_resizing (HMap *hmap)
@@ -248,48 +288,6 @@ h_insert (HTab *htab, HNode *node, const void *key, h_cmp_fn cmp)
       pos = (pos + 1) & htab->mask;
       dist++;
     }
-}
-
-// Helper to remove a specific slot (used by overwrite/move)
-static HNode *
-h_delete (HTab *htab, HTabEntry *slot)
-{
-  assert (slot && slot->node);
-
-  HNode *removed_node = slot->node;
-  htab->size--;
-
-  size_t pos = (size_t) (slot - htab->tab);
-
-  for (;;)
-    {
-      size_t next_pos = (pos + 1) & htab->mask;
-      HTabEntry *next_entry = &htab->tab[next_pos];
-      HNode *next_node = next_entry->node;
-
-      if (next_node == NULL)
-	{
-	  slot->node = NULL;
-	  slot->hcode_cached = 0;
-	  break;
-	}
-
-      size_t dist =
-	probe_distance (next_entry->hcode_cached, next_pos, htab->mask);
-
-      if (dist == 0)
-	{
-	  slot->node = NULL;
-	  slot->hcode_cached = 0;
-	  break;
-	}
-
-      *slot = *next_entry;
-      pos = next_pos;
-      slot = next_entry;
-    }
-
-  return removed_node;
 }
 
 void
