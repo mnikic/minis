@@ -19,9 +19,11 @@ typedef struct
   size_t capacity;		// total available bytes
   size_t length;		// current usage (where the next write starts)
   ProtoType proto;
+  bool resp3;			// PROTO_RESP only: RESP3 replies (nil, double, map)
 } Buffer;
 
 void buf_set_proto (Buffer * buf, ProtoType proto);
+void buf_set_resp3 (Buffer * buf, bool resp3);
 
 bool buf_append_int_as_string (Buffer * buf, int64_t value);
 

@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -11,6 +12,7 @@
 // RESP CONSTANTS
 #define RESP_OK     "+OK\r\n"
 #define RESP_NIL    "$-1\r\n"
+#define RESP3_NULL  "_\r\n"
 #define RESP_CRLF   "\r\n"
 
 // ============================================================================
@@ -42,7 +44,7 @@ out_nil (Buffer *out)
 {
   if (out->proto == PROTO_RESP)
     {
-      return buf_append_cstr (out, RESP_NIL);
+      return buf_append_cstr (out, out->resp3 ? RESP3_NULL : RESP_NIL);
     }
 
   if (unlikely (!buf_has_space (out, 1)))
@@ -56,7 +58,7 @@ bool
 out_nil_arr (Buffer *out)
 {
   if (out->proto == PROTO_RESP)
-    return buf_append_cstr (out, "*-1\r\n");
+    return buf_append_cstr (out, out->resp3 ? RESP3_NULL : "*-1\r\n");
   return out_nil (out);
 }
 
@@ -199,9 +201,15 @@ out_dbl (Buffer *out, double val)
   if (out->proto == PROTO_RESP)
     {
       char buf[64];
-      // %.17g preserves double precision
+      // %.17g preserves double precision. RESP3 has a double type, and
+      // spells NaN without a sign.
+      if (out->resp3 && isnan (val))
+	return buf_append_cstr (out, ",nan\r\n");
       snprintf (buf, sizeof (buf), "%.17g", val);
-      return out_str (out, buf);
+      if (!out->resp3)
+	return out_str (out, buf);
+      return buf_append_byte (out, ',') && buf_append_cstr (out, buf)
+	&& buf_append_cstr (out, RESP_CRLF);
     }
 
   if (unlikely (!buf_has_space (out, 1 + sizeof (double))))
@@ -235,6 +243,21 @@ out_arr (Buffer *out, size_t num)
   buf_append_byte (out, SER_ARR);
   buf_append_u32 (out, (uint32_t) num);
   return true;
+}
+
+HOT bool
+out_map (Buffer *out, size_t num)
+{
+  if (out->proto == PROTO_RESP && out->resp3)
+    {
+      // Format: %<count>\r\n, then key and value of each pair
+      if (unlikely (!buf_append_byte (out, '%')))
+	return false;
+      if (unlikely (!buf_append_int_as_string (out, (int64_t) num)))
+	return false;
+      return buf_append_cstr (out, RESP_CRLF);
+    }
+  return out_arr (out, num * 2);
 }
 
 /**

@@ -13,6 +13,7 @@
 #include "common/common.h"
 #include "common/glob.h"
 #include "io/buffer.h"
+#include "io/out.h"
 #include "io/proto_defs.h"
 #include "io/proto_parser.h"
 
@@ -2313,6 +2314,108 @@ test_resp_protocol (void)
   printf ("PASSED\n");
 }
 
+// Exact RESP bytes of 'buf'
+static void
+assert_buffer_equals (Buffer *buf, const char *expected)
+{
+  size_t len = buf_len (buf);
+  if (len != strlen (expected) || memcmp (buf->data, expected, len) != 0)
+    {
+      buf->data[len < TEST_BUFFER_SIZE ? len : TEST_BUFFER_SIZE - 1] = '\0';
+      msgf ("ASSERTION FAILED: buffer '%s' is not '%s'", (char *) buf->data,
+	    expected);
+      exit (1);
+    }
+}
+
+// Runs one command in RESP2 and in RESP3 and checks both replies
+static void
+assert_resp2_resp3 (Cache *cache, uint64_t now, const char **cmd,
+		    size_t size, const char *resp2, const char *resp3)
+{
+  Buffer buf = init_test_buffer (PROTO_RESP);
+  ASSERT_TRUE (cache_execute (cache, cmd, size, &buf, now));
+  assert_buffer_equals (&buf, resp2);
+
+  buf = init_test_buffer (PROTO_RESP);
+  buf_set_resp3 (&buf, true);
+  ASSERT_TRUE (cache_execute (cache, cmd, size, &buf, now));
+  assert_buffer_equals (&buf, resp3);
+}
+
+#define RESP2_RESP3(cache, now, resp2, resp3, ...)                             \
+	do {                                                                       \
+		const char *r23_cmd_[] = { __VA_ARGS__ };                              \
+		assert_resp2_resp3 ((cache), (now), r23_cmd_,                          \
+				    sizeof (r23_cmd_) / sizeof (r23_cmd_[0]),              \
+				    (resp2), (resp3));                                     \
+	} while (0)
+
+// RESP3 only changes nulls and doubles here, the rest is as in RESP2
+static void
+test_resp3_encoding (void)
+{
+  printf ("TEST: RESP3 encoding... ");
+
+  Cache *cache = cache_init ();
+  uint64_t now = get_test_time_us ();
+  Buffer buf;
+
+  // Each check runs its command twice, so the writes come first
+  RUN (cache, now, "zadd", "r3z", "1.5", "a");
+  RUN (cache, now, "zadd", "r3z", "-inf", "b");
+  RESP2_RESP3 (cache, now, "+OK\r\n", "+OK\r\n", "set", "r3", "v");
+  RESP2_RESP3 (cache, now, "$1\r\nv\r\n", "$1\r\nv\r\n", "get", "r3");
+  RESP2_RESP3 (cache, now, ":1\r\n", ":1\r\n", "exists", "r3");
+  RESP2_RESP3 (cache, now, "+PONG\r\n", "+PONG\r\n", "ping");
+
+  // Nulls: one value and a whole array
+  RESP2_RESP3 (cache, now, "$-1\r\n", "_\r\n", "get", "r3_missing");
+  RESP2_RESP3 (cache, now, "*-1\r\n", "_\r\n", "lpop", "r3_missing", "2");
+  RESP2_RESP3 (cache, now, "*2\r\n$1\r\nv\r\n$-1\r\n", "*2\r\n$1\r\nv\r\n_\r\n",
+	       "mget", "r3", "r3_missing");
+
+  // Doubles
+  RESP2_RESP3 (cache, now, "$3\r\n1.5\r\n", ",1.5\r\n", "zscore", "r3z", "a");
+  RESP2_RESP3 (cache, now, "$4\r\n-inf\r\n", ",-inf\r\n", "zscore", "r3z", "b");
+  RESP2_RESP3 (cache, now, "$-1\r\n", "_\r\n", "zscore", "r3z", "missing");
+
+  // Errors are the same
+  buf = init_test_buffer (PROTO_RESP);
+  buf_set_resp3 (&buf, true);
+  const char *unknown[] = { "nosuchcmd" };
+  ASSERT_TRUE (cache_execute (cache, unknown, 1, &buf, now));
+  assert_buffer_equals (&buf, "-ERR Unknown cmd\r\n");
+
+  // A map: %n in RESP3, a flat array of keys and values otherwise
+  buf = init_test_buffer (PROTO_RESP);
+  ASSERT_TRUE (out_map (&buf, 2));
+  assert_buffer_equals (&buf, "*4\r\n");
+  buf = init_test_buffer (PROTO_RESP);
+  buf_set_resp3 (&buf, true);
+  ASSERT_TRUE (out_map (&buf, 2));
+  assert_buffer_equals (&buf, "%2\r\n");
+  buf = init_test_buffer (PROTO_BIN);
+  buf_set_resp3 (&buf, true);	// Means nothing to the binary protocol
+  ASSERT_TRUE (out_map (&buf, 2));
+  ASSERT_EQ (buf_len (&buf), 5);
+  ASSERT_EQ (buf_data (&buf)[0], SER_ARR);
+  ASSERT_EQ (buf_data (&buf)[4], 4);
+
+  // NaN has no sign in RESP3
+  buf = init_test_buffer (PROTO_RESP);
+  buf_set_resp3 (&buf, true);
+  ASSERT_TRUE (out_dbl (&buf, -NAN));
+  assert_buffer_equals (&buf, ",nan\r\n");
+  buf = init_test_buffer (PROTO_RESP);
+  buf_set_resp3 (&buf, true);
+  ASSERT_TRUE (out_dbl (&buf, 0.25));
+  assert_buffer_equals (&buf, ",0.25\r\n");
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // ============================================================================
 // Test 15: Edge Cases (Empty keys, Long keys)
 // ============================================================================
@@ -2548,6 +2651,7 @@ main (void)
   test_many_keys ();
   test_buffer_overflow ();
   test_resp_protocol ();
+  test_resp3_encoding ();
   test_edge_cases ();
   test_arg_validation ();
   test_zset_updates ();

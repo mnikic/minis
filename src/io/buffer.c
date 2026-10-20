@@ -17,6 +17,12 @@ buf_set_proto (Buffer *buf, ProtoType proto)
   buf->proto = proto;
 }
 
+void
+buf_set_resp3 (Buffer *buf, bool resp3)
+{
+  buf->resp3 = resp3;
+}
+
 /**
  * @brief Checks if the buffer has sufficient space for additional bytes.
  * Marked inline so the compiler merges it into the append functions.
@@ -93,6 +99,7 @@ buf_init (uint8_t *external, size_t capacity)
   buf.data = external;
   buf.capacity = capacity;
   buf.length = 0;
+  buf.resp3 = false;
   return buf;
 }
 

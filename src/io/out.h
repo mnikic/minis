@@ -23,6 +23,8 @@ HOT bool out_int (Buffer * out, int64_t val);
 HOT bool out_dbl (Buffer * out, double val);
 COLD bool out_err (Buffer * out, int32_t code, const char *msg);
 HOT bool out_arr (Buffer * out, size_t num);
+// num key/value pairs follow: a map in RESP3, else an array of 2 * num
+HOT bool out_map (Buffer * out, size_t num);
 
 // For building arrays dynamically
 HOT size_t out_arr_begin (Buffer * out);
