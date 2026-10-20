@@ -27,7 +27,6 @@
 
 #include "io/server_loop.h"
 
-#define MINIS_VERSION "0.1.0"
 #define DEFAULT_PORT 1234
 #define MINIS_BANNER \
     "  __  __ _       _\n" \

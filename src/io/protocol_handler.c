@@ -1,3 +1,6 @@
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <stdint.h>
@@ -144,6 +147,63 @@ execute_blocking_pop (RequestContext *ctx, size_t size, Buffer *out_buf)
   return res == BPOP_DONE ? EXEC_OK : EXEC_FAIL;
 }
 
+// HELLO [protover [AUTH username password] [SETNAME clientname]]
+// Switches the connection to RESP2 or RESP3, then answers with server
+// info in the new protocol. There are no users, so AUTH is accepted like
+// a Redis default user without a password; client names are not kept.
+COLD static ExecResult
+execute_hello (Conn *conn, size_t size, Buffer *out)
+{
+  const char **args = global_cmd_scratch;
+  bool resp3 = conn->resp3;
+  size_t i = 1;
+
+  if (size > 1)
+    {
+      char *end = NULL;
+      errno = 0;
+      long long version = strtoll (args[1], &end, 10);
+      if (global_len_scratch[1] == 0 || *end != '\0' || errno != 0)
+	return out_err (out, ERR_ARG,
+			"Protocol version is not an integer or out of range")
+	  ? EXEC_OK : EXEC_FAIL;
+      if (version != 2 && version != 3)
+	return buf_append_cstr (out, "-NOPROTO unsupported protocol version\r\n")
+	  ? EXEC_OK : EXEC_FAIL;
+      resp3 = version == 3;
+      i = 2;
+    }
+
+  // Every option is checked before anything changes
+  for (; i < size; i++)
+    {
+      size_t more = size - i - 1;
+      if (strcasecmp (args[i], "auth") == 0 && more >= 2)
+	i += 2;
+      else if (strcasecmp (args[i], "setname") == 0 && more >= 1)
+	i += 1;
+      else
+	{
+	  char msg[128];
+	  snprintf (msg, sizeof (msg), "Syntax error in HELLO option '%.64s'",
+		    args[i]);
+	  return out_err (out, ERR_ARG, msg) ? EXEC_OK : EXEC_FAIL;
+	}
+    }
+
+  conn->resp3 = resp3;
+  buf_set_resp3 (out, resp3);
+  bool ok = out_map (out, 7)
+    && out_str (out, "server") && out_str (out, "minis")
+    && out_str (out, "version") && out_str (out, MINIS_VERSION)
+    && out_str (out, "proto") && out_int (out, resp3 ? 3 : 2)
+    && out_str (out, "id") && out_int (out, conn->fd)
+    && out_str (out, "mode") && out_str (out, "standalone")
+    && out_str (out, "role") && out_str (out, "master")
+    && out_str (out, "modules") && out_arr (out, 0);
+  return ok ? EXEC_OK : EXEC_FAIL;
+}
+
 // Execute a parsed request
 HOT static ExecResult
 execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
@@ -204,6 +264,9 @@ execute_request (RequestContext *ctx, uint8_t *req, uint32_t reqlen,
   ExecResult result;
   if (proto_req.cmd_size > 0 && is_blocking_pop (global_cmd_scratch[0]))
     result = execute_blocking_pop (ctx, proto_req.cmd_size, out_buf);
+  else if (ctx->conn->proto == PROTO_RESP
+	   && strcasecmp (global_cmd_scratch[0], "hello") == 0)
+    result = execute_hello (ctx->conn, proto_req.cmd_size, out_buf);
   else
     result = TIME_EXPR ("cache_execute",
 			cache_execute_n (ctx->cache, global_cmd_scratch,
@@ -273,6 +336,7 @@ protocol_try_one_request (RequestContext *ctx)
   uint32_t offset = (conn->proto == PROTO_BIN) ? 4 : 0;
   Buffer out_buf = buf_init (write_ptr + offset, K_MAX_MSG - offset);
   buf_set_proto (&out_buf, conn->proto);
+  buf_set_resp3 (&out_buf, conn->resp3);
 
   uint64_t pushes_before = cache_list_pushes (ctx->cache);
   ExecResult result = execute_request (ctx,

@@ -2049,5 +2049,216 @@ class TestIntegerArgs(MinisTestCase):
         self.assertAlive()
 
 
+class Resp3Null:
+    """RESP3's null (_), told apart from RESP2's $-1 (None)"""
+
+    def __repr__(self):
+        return "Resp3Null"
+
+
+RESP3_NULL = Resp3Null()
+
+
+class RespMap(dict):
+    """A RESP3 map, so that a flat RESP2 array cannot pass for one"""
+
+
+def read_reply(f):
+    """Reads one RESP2 or RESP3 reply from a socket file"""
+    line = f.readline()
+    if not line.endswith(b"\r\n"):
+        raise EOFError(f"short reply {line!r}")
+    kind, rest = line[:1], line[1:-2]
+    if kind == b"+":
+        return rest.decode()
+    if kind == b"-":
+        return redis.ResponseError(rest.decode())
+    if kind == b":":
+        return int(rest)
+    if kind == b",":
+        return float(rest)
+    if kind == b"_":
+        return RESP3_NULL
+    if kind == b"$":
+        if rest == b"-1":
+            return None
+        data = f.read(int(rest) + 2)
+        return data[:-2].decode()
+    if kind == b"*":
+        if rest == b"-1":
+            return None
+        return [read_reply(f) for _ in range(int(rest))]
+    if kind == b"%":
+        pairs = [(read_reply(f), read_reply(f)) for _ in range(int(rest))]
+        return RespMap(pairs)
+    raise ValueError(f"unknown reply {line!r}")
+
+
+class TestHello(MinisTestCase):
+    """HELLO switches one connection between RESP2 and RESP3"""
+
+    def connect(self):
+        sock = socket.create_connection(("127.0.0.1", self.server.port))
+        sock.settimeout(3)
+        self.addCleanup(sock.close)
+        f = sock.makefile("rb")
+        self.addCleanup(f.close)
+        return sock, f
+
+    def call(self, conn, *args):
+        sock, f = conn
+        sock.sendall(raw_command(*args))
+        return read_reply(f)
+
+    def raw_call(self, conn, *args, want):
+        """The exact bytes of one reply of known length"""
+        sock, f = conn
+        sock.sendall(raw_command(*args))
+        return f.read(len(want))
+
+    def assertHelloInfo(self, info, proto):
+        self.assertEqual(info["proto"], proto)
+        self.assertIsInstance(info["server"], str)
+        self.assertIsInstance(info["version"], str)
+        self.assertIsInstance(info["id"], int)
+        self.assertEqual(info["mode"], "standalone")
+        self.assertEqual(info["role"], "master")
+        self.assertIsInstance(info["modules"], list)
+
+    def test_hello_3_switches_to_resp3(self):
+        conn = self.connect()
+        info = self.call(conn, "HELLO", "3")
+        self.assertIsInstance(info, RespMap)
+        self.assertHelloInfo(info, 3)
+
+        self.call(conn, "DEL", "h3_hash", "h3_zset")
+        self.assertEqual(self.call(conn, "SET", "h3_str", "v"), "OK")
+        self.assertEqual(self.raw_call(conn, "GET", "h3_missing", want=b"_\r\n"),
+                         b"_\r\n")
+        self.assertEqual(self.raw_call(conn, "LPOP", "h3_missing", "2",
+                                       want=b"_\r\n"), b"_\r\n")
+        self.call(conn, "HSET", "h3_hash", "f", "v")
+        self.assertEqual(self.call(conn, "HGETALL", "h3_hash"),
+                         RespMap(f="v"))
+        self.assertIsInstance(self.call(conn, "HGETALL", "h3_hash"), RespMap)
+        self.assertEqual(self.call(conn, "HGETALL", "h3_missing"), RespMap())
+        self.call(conn, "ZADD", "h3_zset", "1.5", "m")
+        self.assertEqual(self.raw_call(conn, "ZSCORE", "h3_zset", "m",
+                                       want=b",1.5\r\n"), b",1.5\r\n")
+        self.assertEqual(self.call(conn, "MGET", "h3_str", "h3_missing"),
+                         ["v", RESP3_NULL])
+        # Strings, integers, arrays and errors are as in RESP2
+        self.assertEqual(self.call(conn, "GET", "h3_str"), "v")
+        self.assertEqual(self.call(conn, "EXISTS", "h3_str"), 1)
+        self.assertEqual(self.call(conn, "LRANGE", "h3_missing", "0", "-1"), [])
+        self.assertIsInstance(self.call(conn, "NOSUCHCMD"), redis.ResponseError)
+
+    def test_hello_2_and_back(self):
+        conn = self.connect()
+        self.assertHelloInfo(self.call(conn, "HELLO", "3"), 3)
+        info = self.call(conn, "HELLO", "2")
+        # A RESP2 map is a flat array of keys and values
+        self.assertIsInstance(info, list)
+        self.assertEqual(len(info), 14)
+        self.assertHelloInfo(dict(zip(info[::2], info[1::2])), 2)
+        self.assertEqual(self.raw_call(conn, "GET", "h2_missing",
+                                       want=b"$-1\r\n"), b"$-1\r\n")
+
+    def test_hello_without_version_keeps_the_protocol(self):
+        conn = self.connect()
+        info = self.call(conn, "HELLO")
+        self.assertIsInstance(info, list)
+        self.assertEqual(dict(zip(info[::2], info[1::2]))["proto"], 2)
+        self.call(conn, "HELLO", "3")
+        info = self.call(conn, "HELLO")
+        self.assertIsInstance(info, RespMap)
+        self.assertEqual(info["proto"], 3)
+
+    def test_unsupported_versions(self):
+        conn = self.connect()
+        for version in ("1", "4", "0", "-3"):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    self.raw_call(conn, "HELLO", version,
+                                  want=b"-NOPROTO unsupported protocol version\r\n"),
+                    b"-NOPROTO unsupported protocol version\r\n")
+        for version in ("abc", "3x", "", "99999999999999999999"):
+            with self.subTest(version=version):
+                reply = self.call(conn, "HELLO", version)
+                self.assertIsInstance(reply, redis.ResponseError)
+                self.assertIn("Protocol version is not an integer", str(reply))
+        # Still open and still RESP2
+        self.assertEqual(self.call(conn, "PING"), "PONG")
+        self.assertEqual(self.raw_call(conn, "GET", "hv_missing",
+                                       want=b"$-1\r\n"), b"$-1\r\n")
+
+    def test_options(self):
+        conn = self.connect()
+        info = self.call(conn, "HELLO", "3", "SETNAME", "me",
+                         "AUTH", "default", "anything")
+        self.assertHelloInfo(info, 3)
+
+        conn = self.connect()
+        for args in (("BOGUS",), ("AUTH", "onlyuser"), ("SETNAME",),
+                     ("SETNAME", "a", "b")):
+            with self.subTest(args=args):
+                reply = self.call(conn, "HELLO", "3", *args)
+                self.assertIsInstance(reply, redis.ResponseError)
+                self.assertIn("Syntax error in HELLO option", str(reply))
+        # A rejected HELLO changes nothing
+        self.assertEqual(self.raw_call(conn, "GET", "ho_missing",
+                                       want=b"$-1\r\n"), b"$-1\r\n")
+
+    def test_pipelined_hello(self):
+        sock, f = self.connect()
+        sock.sendall(raw_command("HELLO", "3") + raw_command("GET", "hp_missing")
+                     + raw_command("HELLO", "2") + raw_command("GET", "hp_missing"))
+        self.assertIsInstance(read_reply(f), RespMap)
+        self.assertEqual(f.read(3), b"_\r\n")
+        self.assertIsInstance(read_reply(f), list)
+        self.assertEqual(f.read(5), b"$-1\r\n")
+
+    def test_protocol_is_per_connection(self):
+        first, second = self.connect(), self.connect()
+        self.call(first, "HELLO", "3")
+        self.assertEqual(self.raw_call(second, "GET", "hc_missing",
+                                       want=b"$-1\r\n"), b"$-1\r\n")
+        self.assertEqual(self.raw_call(first, "GET", "hc_missing",
+                                       want=b"_\r\n"), b"_\r\n")
+
+    def test_blocking_pop_in_resp3(self):
+        conn = self.connect()
+        self.call(conn, "HELLO", "3")
+        self.call(conn, "DEL", "hb_queue")
+        # A timeout is a null
+        self.assertEqual(self.raw_call(conn, "BLPOP", "hb_queue", "0.1",
+                                       want=b"_\r\n"), b"_\r\n")
+        # A client served while blocked answers in its own protocol
+        sock, f = conn
+        sock.sendall(raw_command("BLPOP", "hb_queue", "5"))
+        time.sleep(0.1)
+        self.r.rpush("hb_queue", "x")
+        self.assertEqual(read_reply(f), ["hb_queue", "x"])
+        sock.sendall(raw_command("GET", "hb_missing"))
+        self.assertEqual(f.read(3), b"_\r\n")
+
+    def test_redis_py_resp3_client(self):
+        r3 = redis.Redis(port=self.server.port, decode_responses=True,
+                         socket_timeout=2, protocol=3)
+        self.addCleanup(r3.close)
+        r3.delete("hr_hash", "hr_zset", "hr_q")
+        self.assertTrue(r3.set("hr_str", "v"))
+        self.assertEqual(r3.get("hr_str"), "v")
+        self.assertIsNone(r3.get("hr_missing"))
+        r3.hset("hr_hash", "a", "1")
+        r3.hset("hr_hash", "b", "2")
+        self.assertEqual(r3.hgetall("hr_hash"), {"a": "1", "b": "2"})
+        self.assertEqual(r3.hgetall("hr_missing"), {})
+        r3.zadd("hr_zset", {"m": 2.5})
+        self.assertEqual(r3.zscore("hr_zset", "m"), 2.5)
+        self.assertIsNone(r3.blpop("hr_q", timeout=0.1))
+        self.assertIsInstance(r3.config_get("save"), dict)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

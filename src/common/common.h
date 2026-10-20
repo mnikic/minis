@@ -32,6 +32,7 @@
 
 #define DEFAULT_PORT 1234
 
+#define MINIS_VERSION "0.1.0"
 #define MINIS_DB_DIR "shards"
 #define MINIS_DB_MAGIC     "M1NI"
 // 2: expiries are wall clock (Unix) microseconds. 1 had the monotonic

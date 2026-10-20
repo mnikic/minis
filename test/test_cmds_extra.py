@@ -1156,6 +1156,12 @@ $ {client_executable-abs_path} zquery zempty 0 "" 0 10
 (arr) end
 $ {client_executable-abs_path} del zempty
 (int) 1
+
+# HELLO picks RESP2 or RESP3, it means nothing to the binary protocol
+$ {client_executable-abs_path} hello 3
+(err) 1 Unknown cmd
+$ {client_executable-abs_path} hello
+(err) 1 Unknown cmd
 '''
 
 

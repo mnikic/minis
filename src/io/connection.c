@@ -237,6 +237,7 @@ conn_reset (Conn *conn, int file_desc)
   conn->wbuf_head = 0;
   conn->wbuf_tail = 0;
   conn->proto = PROTO_BIN;
+  conn->resp3 = false;
   memset (conn->res_slots, 0, sizeof (conn->res_slots));
 
   conn->idle_start = 0;		// Will be set externally
