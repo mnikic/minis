@@ -2351,7 +2351,7 @@ assert_resp2_resp3 (Cache *cache, uint64_t now, const char **cmd,
 				    (resp2), (resp3));                                     \
 	} while (0)
 
-// RESP3 only changes nulls and doubles here, the rest is as in RESP2
+// RESP3 only changes nulls, doubles and maps, the rest is as in RESP2
 static void
 test_resp3_encoding (void)
 {
@@ -2379,6 +2379,13 @@ test_resp3_encoding (void)
   RESP2_RESP3 (cache, now, "$3\r\n1.5\r\n", ",1.5\r\n", "zscore", "r3z", "a");
   RESP2_RESP3 (cache, now, "$4\r\n-inf\r\n", ",-inf\r\n", "zscore", "r3z", "b");
   RESP2_RESP3 (cache, now, "$-1\r\n", "_\r\n", "zscore", "r3z", "missing");
+
+  // Maps
+  RUN (cache, now, "hset", "r3h", "f", "v");
+  RESP2_RESP3 (cache, now, "*2\r\n$1\r\nf\r\n$1\r\nv\r\n",
+	       "%1\r\n$1\r\nf\r\n$1\r\nv\r\n", "hgetall", "r3h");
+  RESP2_RESP3 (cache, now, "*0\r\n", "%0\r\n", "hgetall", "r3h_missing");
+  RESP2_RESP3 (cache, now, "*0\r\n", "%0\r\n", "config", "get", "save");
 
   // Errors are the same
   buf = init_test_buffer (PROTO_RESP);

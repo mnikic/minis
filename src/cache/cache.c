@@ -129,7 +129,8 @@ do_config (Cache *cache, const char **args, size_t arg_count, Buffer *out)
   (void) cache;
   (void) args;
   (void) arg_count;
-  return out_arr (out, 0);
+  // No settings to report, as an empty map of names to values
+  return out_map (out, 0);
 }
 
 // Key Operations
@@ -598,11 +599,11 @@ do_hgetall (Cache *cache, const char *key, size_t key_len, Buffer *out,
   MinisError err = minis_hlen (cache, key, key_len, &count, now_us);
 
   if (err == MINIS_ERR_NIL)
-    return out_arr (out, 0);
+    return out_map (out, 0);
   if (err != MINIS_OK)
     return reply_with_error (out, err);
 
-  if (!out_arr (out, count * 2))
+  if (!out_map (out, count))
     return false;
   HashVisitorCtx ctx = {.out = out,.result = true };
   minis_hgetall (cache, key, key_len, cb_hash_visitor, &ctx, now_us);
