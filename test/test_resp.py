@@ -1384,6 +1384,228 @@ def binary_command(*args):
     return struct.pack(">I", len(body)) + body
 
 
+class BinaryClient:
+    """A client for minis's binary protocol, which reads whole replies"""
+
+    def __init__(self, port):
+        self.sock = socket.create_connection(("127.0.0.1", port))
+        self.sock.settimeout(10)
+
+    def close(self):
+        self.sock.close()
+
+    def send(self, *commands):
+        """Sends the commands in one write"""
+        self.sock.sendall(b"".join(binary_command(*c) for c in commands))
+
+    def recv_exact(self, size, chunk=1 << 20):
+        data = bytearray()
+        while len(data) < size:
+            got = self.sock.recv(min(chunk, size - len(data)))
+            if not got:
+                raise EOFError(f"closed after {len(data)} of {size} bytes")
+            data += got
+        return bytes(data)
+
+    def read_reply(self, chunk=1 << 20):
+        (size,) = struct.unpack(">I", self.recv_exact(4, chunk))
+        body = self.recv_exact(size, chunk)
+        value, used = parse_binary(body, 0)
+        if used != size:
+            raise ValueError(f"reply of {size} bytes, {used} parsed")
+        return value
+
+    def call(self, *args):
+        self.send(args)
+        return self.read_reply()
+
+
+class BinaryError(Exception):
+    pass
+
+
+def parse_binary(body, pos):
+    """One value of a binary reply at pos: (value, next pos)"""
+    tag = body[pos]
+    pos += 1
+    if tag == 0:  # SER_NIL
+        return None, pos
+    if tag == 1:  # SER_ERR: code, length, message
+        code, size = struct.unpack_from(">II", body, pos)
+        pos += 8
+        return BinaryError(code, body[pos:pos + size].decode()), pos + size
+    if tag == 2:  # SER_STR
+        (size,) = struct.unpack_from(">I", body, pos)
+        pos += 4
+        return body[pos:pos + size], pos + size
+    if tag == 3:  # SER_INT
+        return struct.unpack_from(">q", body, pos)[0], pos + 8
+    if tag == 5:  # SER_ARR
+        (count,) = struct.unpack_from(">I", body, pos)
+        pos += 4
+        items = []
+        for _ in range(count):
+            item, pos = parse_binary(body, pos)
+            items.append(item)
+        return items, pos
+    raise ValueError(f"unknown tag {tag} at {pos - 1}")
+
+
+def blob(size, seed):
+    """size bytes that differ per seed and position, so that a reply with
+    bytes moved, lost or from another reply does not compare equal"""
+    pattern = bytes((seed * 31 + i * 7) % 251 for i in range(251))
+    return (pattern * (size // 251 + 1))[:size]
+
+
+class TestLargeBinaryReplies(MinisTestCase):
+    """Binary protocol replies over K_ZEROCPY_THRESHOLD (100KB), which are
+    flagged for MSG_ZEROCOPY, up to the 200KB reply limit (K_MAX_MSG)"""
+
+    THRESHOLD = 100 * 1024
+    MAX_REPLY = 200 * 1024 - 4  # A reply's content, without the length
+    # A GET reply is a 4 byte length, SER_STR and a 4 byte string length
+    GET_OVERHEAD = 4 + 1 + 4
+
+    def client(self):
+        c = BinaryClient(self.server.port)
+        self.addCleanup(c.close)
+        return c
+
+    def put(self, key, value):
+        c = self.client()
+        self.assertEqual(c.call("SET", key, value), b"OK")
+        c.close()
+
+    def test_sizes_around_the_threshold(self):
+        c = self.client()
+        first_flagged = self.THRESHOLD - self.GET_OVERHEAD + 1
+        for size in (first_flagged - 2, first_flagged - 1, first_flagged,
+                     first_flagged + 1, 150_000, 200_000):
+            with self.subTest(size=size):
+                value = blob(size, size)
+                self.assertEqual(c.call("SET", f"lb_{size}", value), b"OK")
+                self.assertEqual(c.call("GET", f"lb_{size}"), value)
+
+    def test_biggest_reply_that_fits(self):
+        c = self.client()
+        # MGET of two strings: SER_ARR, count, then SER_STR and length each
+        room = self.MAX_REPLY - (1 + 4) - 2 * (1 + 4)
+        a, b = blob(room // 2, 1), blob(room - room // 2, 2)
+        c.call("SET", "lb_fit_a", a)
+        c.call("SET", "lb_fit_b", b)
+        self.assertEqual(c.call("MGET", "lb_fit_a", "lb_fit_b"), [a, b])
+
+        # One byte more does not fit: an error, then the server closes
+        c.call("SET", "lb_fit_b", b + b"x")
+        reply = c.call("MGET", "lb_fit_a", "lb_fit_b")
+        self.assertIsInstance(reply, BinaryError)
+        self.assertIn("response too large", str(reply))
+        self.assertEqual(self.client().call("GET", "lb_fit_a"), a)
+        self.assertAlive()
+
+    def test_pipelined_past_the_write_buffer(self):
+        # 20 x 150KB = 3MB of replies, more than a connection's 2MB buffer
+        values = [blob(150_000, i) for i in range(20)]
+        for i, value in enumerate(values):
+            self.put(f"lb_pipe_{i}", value)
+        c = self.client()
+        c.send(*[("GET", f"lb_pipe_{i}") for i in range(20)])
+        for i, value in enumerate(values):
+            with self.subTest(reply=i):
+                self.assertEqual(c.read_reply(), value)
+
+    def test_big_and_small_replies_mixed(self):
+        big = [blob(120_000 + i * 1000, i) for i in range(10)]
+        for i, value in enumerate(big):
+            self.put(f"lb_mix_{i}", value)
+        self.put("lb_mix_small", b"small")
+        commands, want = [], []
+        for i, value in enumerate(big):
+            commands += [("GET", f"lb_mix_{i}"), ("GET", "lb_mix_small"),
+                         ("EXISTS", f"lb_mix_{i}"), ("GET", "lb_mix_missing")]
+            want += [value, b"small", 1, None]
+        c = self.client()
+        c.send(*commands)
+        self.assertEqual([c.read_reply() for _ in want], want)
+
+    def test_slow_reader(self):
+        values = [blob(180_000, i) for i in range(15)]
+        for i, value in enumerate(values):
+            self.put(f"lb_slow_{i}", value)
+        c = self.client()
+        c.send(*[("GET", f"lb_slow_{i}") for i in range(15)])
+        # The socket fills up and the server has to wait for room
+        time.sleep(0.5)
+        for i, value in enumerate(values):
+            self.assertEqual(c.read_reply(chunk=4096), value)
+            if i % 4 == 0:
+                time.sleep(0.05)
+        self.assertAlive()
+
+    def test_client_leaves_mid_transfer(self):
+        value = blob(190_000, 7)
+        self.put("lb_leave", value)
+        for round in range(20):
+            c = BinaryClient(self.server.port)
+            c.send(*[("GET", "lb_leave")] * 30)
+            if round % 2:
+                c.recv_exact(100_000)  # Part of the first reply
+            c.close()
+        self.assertEqual(self.client().call("GET", "lb_leave"), value)
+        self.assertAlive()
+
+    def test_concurrent_clients(self):
+        values = [blob(110_000 + i * 7000, i) for i in range(8)]
+        for i, value in enumerate(values):
+            self.put(f"lb_conc_{i}", value)
+        errors = []
+
+        def run(i):
+            try:
+                c = BinaryClient(self.server.port)
+                for _ in range(5):
+                    c.send(*[("GET", f"lb_conc_{i}")] * 4)
+                    for _ in range(4):
+                        if c.read_reply() != values[i]:
+                            errors.append(f"client {i}: wrong reply")
+                c.close()
+            except Exception as error:
+                errors.append(f"client {i}: {error!r}")
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(errors, [])
+
+    def test_big_arrays(self):
+        c = self.client()
+        c.call("DEL", "lb_hash", "lb_list")
+        fields = {f"f{i}".encode(): blob(40_000, i) for i in range(4)}
+        for field, value in fields.items():
+            self.assertEqual(c.call("HSET", "lb_hash", field, value), 1)
+        reply = c.call("HGETALL", "lb_hash")
+        self.assertEqual(dict(zip(reply[::2], reply[1::2])), fields)
+        items = [blob(30_000, i) for i in range(5)]
+        for item in items:
+            c.call("RPUSH", "lb_list", item)
+        self.assertEqual(c.call("LRANGE", "lb_list", "0", "-1"), items)
+
+    def test_resp_replies_of_the_same_sizes(self):
+        # RESP replies are never flagged, they must agree all the same
+        values = [blob(150_000, i) for i in range(20)]
+        for i, value in enumerate(values):
+            self.put(f"lb_resp_{i}", value)
+        r = client(port=self.server.port, socket_timeout=10)
+        self.addCleanup(r.close)
+        pipe = r.pipeline(transaction=False)
+        for i in range(20):
+            pipe.get(f"lb_resp_{i}")
+        self.assertEqual(pipe.execute(), values)
+
+
 class TestErrorClose(MinisTestCase):
     """After an error reply the server closes, but first lets the client
     read the error even if it is still sending"""
