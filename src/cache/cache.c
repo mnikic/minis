@@ -1072,6 +1072,18 @@ cache_execute_n (Cache *cache, const char **cmd, const size_t *lens,
   return out_err (out, ERR_UNKNOWN, "Unknown cmd");
 }
 
+void
+cache_prefetch_slot (Cache *cache, uint64_t hcode)
+{
+  minis_prefetch_slot (cache, hcode);
+}
+
+void
+cache_prefetch_entry (Cache *cache, uint64_t hcode)
+{
+  minis_prefetch_entry (cache, hcode);
+}
+
 uint64_t
 cache_dirty_count (Cache *cache)
 {

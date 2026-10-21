@@ -39,6 +39,12 @@ restore_all_bytes (const RestoreState *state)
 // The protoc sniffing function
 HOT ProtoMessageInfo proto_identify_message (const uint8_t * buf, size_t len);
 
+// Argument 1 of a request proto_identify_message framed (req and len are
+// its payload), which is the key of most commands. The buffer is only
+// read. False if there is no argument 1.
+bool proto_request_key (const uint8_t * req, size_t len, ProtoType type,
+			const uint8_t ** key, size_t *key_len);
+
 // Validate the basic request structure (BINARY)
 ValidationResult
 validate_request_header (const uint8_t * req, uint32_t reqlen,

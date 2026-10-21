@@ -92,6 +92,11 @@ void minis_incremental_save (Minis * minis, const char *base_dir,
 			     uint64_t now_us);
 
 uint64_t minis_dirty_count (Minis * minis);
+// Hints that a key with this hash is about to be looked up: the first
+// starts loading its hash slot, the second, called once that slot is in
+// cache, the entry the slot points to
+void minis_prefetch_slot (Minis * minis, uint64_t hcode);
+void minis_prefetch_entry (Minis * minis, uint64_t hcode);
 
 // How many LPUSH/RPUSH calls have added elements so far. Blocked BLPOP
 // clients only need another look when this moves.

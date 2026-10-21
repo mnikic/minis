@@ -4,10 +4,67 @@
 #include "io/protocol_handler.h"
 #include "io/connection.h"
 #include "io/transport.h"
+#include "io/proto_parser.h"
 #include "common/macros.h"
+#include "common/common.h"
 #include "cache/cache.h"
 
 #define K_MAX_REQ_PER_TICK 1024
+
+// With pipelined requests in the buffer, the keys of the ones ahead are
+// prefetched while the current one runs: the hash slot of the request
+// K_PREFETCH_SLOT ahead, then, once that slot is in cache, the entry of
+// the request K_PREFETCH_ENTRY ahead. Their cache misses overlap instead
+// of each request waiting for its own.
+#define K_PREFETCH_SLOT 8
+#define K_PREFETCH_ENTRY 4
+
+typedef struct
+{
+  size_t offset;		// Where the next request to look at starts
+  uint64_t next;		// Its number; requests are numbered as run
+  uint64_t hcodes[K_PREFETCH_SLOT];	// Key hashes of those looked at
+  bool keyed[K_PREFETCH_SLOT];
+} Lookahead;
+
+// Looks ahead up to K_PREFETCH_SLOT requests past 'running', the number
+// of the request about to run
+static void
+lookahead (Cache *cache, Conn *conn, Lookahead *la, uint64_t running)
+{
+  if (la->offset < conn->read_offset)
+    {
+      la->offset = conn->read_offset;
+      la->next = running;
+    }
+  while (la->next < running + K_PREFETCH_SLOT)
+    {
+      ProtoMessageInfo m = proto_identify_message (&conn->rbuf[la->offset],
+						   conn->rbuf_size -
+						   la->offset);
+      if (m.status != PROTO_DECISION_OK)
+	return;
+      size_t i = la->next % K_PREFETCH_SLOT;
+      const uint8_t *key;
+      size_t key_len;
+      // The one about to run gains nothing, it only gets framed
+      la->keyed[i] = la->next != running
+	&& proto_request_key (&conn->rbuf[la->offset + m.header_len],
+			      m.payload_len, m.type, &key, &key_len);
+      if (la->keyed[i])
+	{
+	  la->hcodes[i] = str_hash (key, key_len);
+	  cache_prefetch_slot (cache, la->hcodes[i]);
+	}
+      // The request whose slot was prefetched a while ago
+      uint64_t earlier = la->next - (K_PREFETCH_SLOT - K_PREFETCH_ENTRY);
+      if (la->next >= K_PREFETCH_SLOT - K_PREFETCH_ENTRY && earlier > running
+	  && la->keyed[earlier % K_PREFETCH_SLOT])
+	cache_prefetch_entry (cache, la->hcodes[earlier % K_PREFETCH_SLOT]);
+      la->offset += m.total_len;
+      la->next++;
+    }
+}
 
 // Process incoming data and generate responses
 HOT static bool
@@ -20,14 +77,18 @@ response_queue_process_input (Cache *cache, Conn *conn, uint64_t now_us)
   };
 
   uint_fast16_t budget = K_MAX_REQ_PER_TICK;
+  Lookahead la = {.offset = conn->read_offset };
+  uint64_t running = 0;
 
   while (budget > 0)
     {
       if (unlikely (conn_is_res_queue_full (conn)))
 	break;
 
+      lookahead (cache, conn, &la, running);
       if (!protocol_try_one_request (&ctx))
 	break;
+      running++;
 
       if (unlikely (conn->state == STATE_CLOSE))
 	break;

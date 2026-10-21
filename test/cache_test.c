@@ -2548,6 +2548,95 @@ test_inline_values (void)
   printf ("PASSED\n");
 }
 
+static void
+assert_request_key (const char *req, size_t len, ProtoType type,
+		    const char *want, size_t want_len)
+{
+  const uint8_t *key = NULL;
+  size_t key_len = 0;
+  bool found = proto_request_key ((const uint8_t *) req, len, type, &key,
+				  &key_len);
+  if (!want)
+    {
+      ASSERT_FALSE (found);
+      return;
+    }
+  ASSERT_TRUE (found);
+  ASSERT_EQ (key_len, want_len);
+  ASSERT_TRUE (key >= (const uint8_t *) req
+	       && key + key_len <= (const uint8_t *) req + len);
+  ASSERT_TRUE (memcmp (key, want, want_len) == 0);
+}
+
+// A binary request body: argument count, then length and bytes of each
+static size_t
+bin_request (char *out, const char **args, const size_t *lens, size_t argc)
+{
+  uint32_t net = hton_u32 ((uint32_t) argc);
+  memcpy (out, &net, 4);
+  size_t pos = 4;
+  for (size_t i = 0; i < argc; i++)
+    {
+      net = hton_u32 ((uint32_t) lens[i]);
+      memcpy (out + pos, &net, 4);
+      memcpy (out + pos + 4, args[i], lens[i]);
+      pos += 4 + lens[i];
+    }
+  return pos;
+}
+
+// proto_request_key finds argument 1 of a framed request, which the
+// server prefetches ahead, and never reads past the request
+static void
+test_request_key (void)
+{
+  printf ("TEST: Request key lookahead... ");
+
+#define RESP(lit) lit, sizeof (lit) - 1, PROTO_RESP
+  assert_request_key (RESP ("*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n"), "key", 3);
+  assert_request_key (RESP ("*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n"),
+		      "k", 1);
+  assert_request_key (RESP ("*2\r\n$10\r\n0123456789\r\n$2\r\nab\r\n"),
+		      "ab", 2);
+  assert_request_key (RESP ("*2\r\n$3\r\nGET\r\n$3\r\na\0b\r\n"), "a\0b", 3);
+  assert_request_key (RESP ("*2\r\n$3\r\nGET\r\n$0\r\n\r\n"), "", 0);
+  assert_request_key (RESP ("*1\r\n$4\r\nPING\r\n"), NULL, 0);
+  assert_request_key (RESP ("*0\r\n"), NULL, 0);
+  // Cut short, or lengths past the end
+  assert_request_key (RESP ("*2\r\n$3\r\nGET\r\n$5\r\nke"), NULL, 0);
+  assert_request_key (RESP ("*2\r\n$100\r\nGET\r\n$3\r\nkey\r\n"), NULL, 0);
+  assert_request_key (RESP ("*2\r\n$3\r\nGET"), NULL, 0);
+  assert_request_key (RESP ("*2\r\n$3\r\nGET\r\nx3\r\nkey\r\n"), NULL, 0);
+#undef RESP
+
+  char req[256];
+  const char *get[] = { "GET", "key" };
+  size_t get_lens[] = { 3, 3 };
+  size_t len = bin_request (req, get, get_lens, 2);
+  assert_request_key (req, len, PROTO_BIN, "key", 3);
+  const char *nul[] = { "SET", "k\0y", "v" };
+  size_t nul_lens[] = { 3, 3, 1 };
+  len = bin_request (req, nul, nul_lens, 3);
+  assert_request_key (req, len, PROTO_BIN, "k\0y", 3);
+  const char *ping[] = { "PING" };
+  size_t ping_lens[] = { 4 };
+  len = bin_request (req, ping, ping_lens, 1);
+  assert_request_key (req, len, PROTO_BIN, NULL, 0);
+  // Cut short anywhere: the count, the command, the key's length or bytes
+  len = bin_request (req, get, get_lens, 2);
+  for (size_t cut = 0; cut < len; cut++)
+    assert_request_key (req, cut, PROTO_BIN, NULL, 0);
+  // A length that would wrap the offset
+  uint32_t huge = 0xffffffffu;
+  memcpy (req + 4, &huge, 4);
+  assert_request_key (req, len, PROTO_BIN, NULL, 0);
+  len = bin_request (req, get, get_lens, 2);
+  memcpy (req + 4 + 4 + 3, &huge, 4);
+  assert_request_key (req, len, PROTO_BIN, NULL, 0);
+
+  printf ("PASSED\n");
+}
+
 // Exact RESP bytes of 'buf'
 static void
 assert_buffer_equals (Buffer *buf, const char *expected)
@@ -2896,6 +2985,7 @@ main (void)
   test_hset_overwrite_is_a_change ();
   test_hset_many_pairs ();
   test_inline_values ();
+  test_request_key ();
   test_edge_cases ();
   test_arg_validation ();
   test_zset_updates ();

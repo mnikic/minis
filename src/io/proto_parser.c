@@ -232,6 +232,68 @@ proto_identify_message (const uint8_t *buf, size_t len)
   return info;
 }
 
+// A decimal number at req[*pos], up to the first non digit
+static size_t
+read_decimal (const uint8_t *req, size_t len, size_t *pos)
+{
+  size_t n = 0;
+  while (*pos < len && req[*pos] >= '0' && req[*pos] <= '9')
+    n = n * 10 + (size_t) (req[(*pos)++] - '0');
+  return n;
+}
+
+bool
+proto_request_key (const uint8_t *req, size_t len, ProtoType type,
+		   const uint8_t **key, size_t *key_len)
+{
+  size_t pos;
+  if (type == PROTO_BIN)
+    {
+      // Argument count, then each argument as length and bytes
+      uint32_t net;
+      if (len < 8)
+	return false;
+      memcpy (&net, req, 4);
+      if (ntohl (net) < 2)
+	return false;
+      memcpy (&net, req + 4, 4);
+      pos = 8 + (size_t) ntohl (net);
+      if (pos > len || len - pos < 4)
+	return false;
+      memcpy (&net, req + pos, 4);
+      pos += 4;
+      *key_len = ntohl (net);
+    }
+  else
+    {
+      // *<count>\r\n$<len>\r\n<command>\r\n$<len>\r\n<key>\r\n
+      pos = 1;
+      if (read_decimal (req, len, &pos) < 2)
+	return false;
+      for (int arg = 0;; arg++)
+	{
+	  pos += 2;
+	  if (pos >= len || req[pos] != '$')
+	    return false;
+	  pos++;
+	  size_t arg_len = read_decimal (req, len, &pos);
+	  pos += 2;
+	  if (arg == 1)
+	    {
+	      *key_len = arg_len;
+	      break;
+	    }
+	  if (pos > len || len - pos < arg_len)
+	    return false;
+	  pos += arg_len;
+	}
+    }
+  if (pos > len || len - pos < *key_len)
+    return false;
+  *key = req + pos;
+  return true;
+}
+
 ValidationResult
 validate_request_header (const uint8_t *req, uint32_t reqlen,
 			 uint32_t *out_arg_count)

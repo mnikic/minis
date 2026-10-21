@@ -464,6 +464,40 @@ minis_list_pushes (Minis *minis)
   return __atomic_load_n (&minis->list_pushes, __ATOMIC_RELAXED);
 }
 
+// No locks: the server's main thread is the only one changing the tables,
+// and prefetching a stale address costs a wasted load, nothing more
+void
+minis_prefetch_slot (Minis *minis, uint64_t hcode)
+{
+  const HTab *htab = &minis->shards[hcode & SHARD_MASK].db.ht1;
+  if (htab->tab)
+    __builtin_prefetch (&htab->tab[hcode & htab->mask]);
+}
+
+void
+minis_prefetch_entry (Minis *minis, uint64_t hcode)
+{
+  const HTab *htab = &minis->shards[hcode & SHARD_MASK].db.ht1;
+  if (!htab->tab)
+    return;
+  // The start of the key's probe run, on the line prefetched before
+  size_t pos = (size_t) (hcode & htab->mask);
+  for (size_t i = 0; i < 4; i++)
+    {
+      const HTabEntry *slot = &htab->tab[(pos + i) & htab->mask];
+      if (!slot->node)
+	return;
+      if (slot->hcode_cached == hcode)
+	{
+	  // The entry, and the line after it where a long key or a small
+	  // value continues
+	  __builtin_prefetch (slot->node);
+	  __builtin_prefetch ((const char *) slot->node + 64);
+	  return;
+	}
+    }
+}
+
 uint64_t
 minis_dirty_count (Minis *minis)
 {

@@ -30,6 +30,9 @@ bool cache_execute_n (Cache * cache, const char **cmd, const size_t *lens,
 bool cache_execute (Cache * cache, const char **cmd, size_t size,
 		    Buffer * out, uint64_t now_us);
 uint64_t cache_dirty_count (Cache * cache);
+// See minis_prefetch_slot and minis_prefetch_entry
+void cache_prefetch_slot (Cache * cache, uint64_t hcode);
+void cache_prefetch_entry (Cache * cache, uint64_t hcode);
 
 typedef enum
 {
