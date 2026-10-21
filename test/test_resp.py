@@ -1459,13 +1459,10 @@ def blob(size, seed):
 
 
 class TestLargeBinaryReplies(MinisTestCase):
-    """Binary protocol replies over K_ZEROCPY_THRESHOLD (100KB), which are
-    flagged for MSG_ZEROCOPY, up to the 200KB reply limit (K_MAX_MSG)"""
+    """Big binary protocol replies, from 100KB up to the 200KB reply limit
+    (K_MAX_MSG), which also fill the write buffer and the socket"""
 
-    THRESHOLD = 100 * 1024
     MAX_REPLY = 200 * 1024 - 4  # A reply's content, without the length
-    # A GET reply is a 4 byte length, SER_STR and a 4 byte string length
-    GET_OVERHEAD = 4 + 1 + 4
 
     def client(self):
         c = BinaryClient(self.server.port)
@@ -1477,11 +1474,9 @@ class TestLargeBinaryReplies(MinisTestCase):
         self.assertEqual(c.call("SET", key, value), b"OK")
         c.close()
 
-    def test_sizes_around_the_threshold(self):
+    def test_sizes(self):
         c = self.client()
-        first_flagged = self.THRESHOLD - self.GET_OVERHEAD + 1
-        for size in (first_flagged - 2, first_flagged - 1, first_flagged,
-                     first_flagged + 1, 150_000, 200_000):
+        for size in (100_000, 102_400, 150_000, 200_000):
             with self.subTest(size=size):
                 value = blob(size, size)
                 self.assertEqual(c.call("SET", f"lb_{size}", value), b"OK")
@@ -1594,7 +1589,7 @@ class TestLargeBinaryReplies(MinisTestCase):
         self.assertEqual(c.call("LRANGE", "lb_list", "0", "-1"), items)
 
     def test_resp_replies_of_the_same_sizes(self):
-        # RESP replies are never flagged, they must agree all the same
+        # The same sizes in RESP
         values = [blob(150_000, i) for i in range(20)]
         for i, value in enumerate(values):
             self.put(f"lb_resp_{i}", value)

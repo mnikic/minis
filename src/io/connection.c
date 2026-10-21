@@ -37,7 +37,7 @@ conn_compact_rbuf (Conn *conn)
  */
 void
 conn_commit_write (Conn *conn, uint8_t *write_ptr, size_t content_len,
-		   uint32_t gap, bool allow_zerocopy)
+		   uint32_t gap)
 {
   // Calculate total frame size (Content + Header)
   uint32_t header_size = (conn->proto == PROTO_BIN) ? BIN_HEADER_SIZE : 0;
@@ -60,19 +60,7 @@ conn_commit_write (Conn *conn, uint8_t *write_ptr, size_t content_len,
   slot->iov_cnt = 1;
 
   slot->sent = 0;
-  slot->pending_ops = 0;
   slot->total_len = total_len;
-
-  // Zero Copy Logic: Only if allowed AND threshold met
-  if (allow_zerocopy && conn->proto == PROTO_BIN
-      && total_len > K_ZEROCPY_THRESHOLD)
-    {
-      slot->is_zero_copy = true;
-    }
-  else
-    {
-      slot->is_zero_copy = false;
-    }
 
   conn->wbuf_head += total_len;
   conn_alloc_slot (conn);
@@ -142,34 +130,6 @@ conn_prepare_write_slot (Conn *conn, uint32_t needed_size, uint32_t *out_gap)
   return conn->wbuf;
 }
 
-// Check if there is actual DATA that needs to be written to the socket.
-// (Ignores slots that are fully sent but just waiting for ZC ACKs)
-bool
-conn_has_unsent_data (const Conn *conn)
-{
-  uint32_t idx = conn->read_idx;
-  uint32_t count = conn->pipeline_depth;
-
-  while (count > 0)
-    {
-      const ResponseSlot *slot = &conn->res_slots[idx];
-
-      // We only care if we haven't pushed all bytes to the kernel yet.
-      if (slot->total_len > 0 && slot->sent < slot->total_len)
-	{
-	  return true;
-	}
-
-      // Note: We deliberately SKIP the ZC pending_ops check here.
-      // If we are waiting for ACKs, we don't need EPOLLOUT.
-
-      idx = (idx + 1) % K_SLOT_COUNT;
-      count--;
-    }
-
-  return false;
-}
-
 // Release completed slots from the ring buffer
 // Returns: number of slots released
 uint32_t
@@ -198,7 +158,6 @@ conn_release_comp_slots (Conn *conn)
       slot->total_len = 0;
       slot->sent = 0;
       slot->iov_cnt = 0;
-      slot->pending_ops = 0;
 
       conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
       released_count++;

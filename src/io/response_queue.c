@@ -2,7 +2,6 @@
 
 #include "io/response_queue.h"
 #include "io/protocol_handler.h"
-#include "io/zero_copy.h"
 #include "io/connection.h"
 #include "io/transport.h"
 #include "common/macros.h"
@@ -114,20 +113,12 @@ response_queue_process_buffered_data (Cache *cache, Conn *conn,
 HOT IOStatus
 response_queue_flush (Conn *conn)
 {
-  // Process ZC completions...
-  while (zc_process_completions (conn))
-    {
-    }
-
   // BATCHED SENDING LOOP
   while (conn->pipeline_depth > 0)
     {
-      // Check head slot for ZC block
       ResponseSlot *head = conn_get_head_slot (conn);
       if (conn_is_slot_fully_sent (head))
 	{
-	  if (head->is_zero_copy && head->pending_ops > 0)
-	    return IO_OK;
 	  conn_release_comp_slots (conn);
 	  continue;
 	}

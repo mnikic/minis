@@ -11,7 +11,6 @@ Minis has moved far beyond the tutorial structure with the following critical ch
 | **I/O Foundation** | Swapped from poll() to the more efficient Linux-specific **epoll** in **Edge-Triggered (EPOLLET) mode**. | Superior scalability and performance by minimizing system calls and ensuring full buffer draining. |
 | **Protocol** | Implemented **manual network byte order handling** (hton\_u32, hton\_u64). | Ensures correct protocol serialization across different machine architectures. |
 | **Response Pipelining** | I/O is managed using a dedicated, lockless **Ring Buffer** for responses. | Enables full command pipelining. The server can process new commands while simultaneously flushing prior responses, maximizing throughput. |
-| **Zero-Copy Writes** | **Hybrid Zero-Copy (ZC)** using `MSG_ZEROCOPY` for large responses (currently > 200KB). | Eliminates memory copies between user space, kernel space, and the NIC, drastically reducing CPU overhead for high-bandwidth transfers. |
 | **Data Structures** | Building custom, advanced data structures (e.g., **AVL Tree** for sorted sets). | Full control over performance characteristics and memory layout. |
 | **Development** | Custom testing and build systems with full **ASan/TSan/UBSan** support. | Guarantees code correctness, memory safety, and thread synchronization. |
 

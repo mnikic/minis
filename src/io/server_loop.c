@@ -8,37 +8,14 @@
  */
 #include <sys/wait.h>
 #include <arpa/inet.h>
-#include <error.h>
 #include <errno.h>
-#include <limits.h>
-#include <linux/errqueue.h>
-#include <linux/if_packet.h>
-#include <linux/ipv6.h>
-#include <linux/socket.h>
-#include <linux/sockios.h>
-#include <net/ethernet.h>
-#include <net/if.h>
-#include <netinet/ip.h>
-#include <netinet/ip6.h>
-#include <netinet/tcp.h>
-#include <netinet/udp.h>
-#include <poll.h>
-#include <sched.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/types.h>
 #include <unistd.h>
-#include <linux/rds.h>
-
-#include <assert.h>
 #include <stddef.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -47,13 +24,13 @@
 #include <signal.h>
 #include <sys/eventfd.h>
 
+
 #include "cache/cache.h"
 #include "io/connection_handler.h"
 #include "io/blocking.h"
 #include "io/conn_pool.h"
 #include "io/server_loop.h"
 #include "io/list.h"
-#include "io/zero_copy.h"
 #include "common/common.h"
 #include "common/macros.h"
 
@@ -243,13 +220,6 @@ handle_listener_event (int listen_fd, uint64_t now_us)
       int sndbuf = 2 * 1024 * 1024;
       setsockopt (connfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof (sndbuf));
 
-      int val = 1;
-      if (unlikely
-	  (setsockopt (connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof (val))))
-	{
-	  msgf ("SO_ZEROCOPY not set. error: %s", strerror (errno));
-	}
-
       Conn *conn = connpool_get (g_data.fd2conn, connfd);
 
       if (unlikely (!conn))
@@ -264,7 +234,7 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 
       struct epoll_event event;
       event.data.fd = conn->fd;
-      event.events = EPOLLIN | EPOLLET | EPOLLERR;
+      event.events = EPOLLIN | EPOLLET;
       conn->last_events = event.events;
       if (unlikely
 	  (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1))
@@ -300,7 +270,6 @@ conn_done (Conn *conn)
   blocking_unpark (conn);
   conn_drain_forget (conn);
 
-  zc_drain_errors (file_desc);
   close (file_desc);
   connpool_release (g_data.fd2conn, conn);
   // The Conn struct lives in the Slab and is recycled.

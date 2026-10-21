@@ -55,23 +55,11 @@
 #define K_WBUF_SIZE (2048UL * 1024UL)
 #define K_SLOT_COUNT 2048UL
 #endif
-#define K_ZEROCPY_THRESHOLD (100 * 1024)	// when to use MSG_ZEROCOPY
 
 #define K_RBUF_SIZE (4UL + K_MAX_MSG + 1UL)
 
 #define MAX_CONNECTIONS 20000
 #define SNAPSHOT_INTERVAL_US (10 * 1000000ULL)
-
-// Android/Bionic often misses these flags despite Kernel support (4.14+).
-// We manually define them to the stable Linux ABI values.
-
-#ifndef MSG_ZEROCOPY
-#define MSG_ZEROCOPY    0x4000000
-#endif
-
-#ifndef SO_ZEROCOPY
-#define SO_ZEROCOPY     60
-#endif
 
 // Defined in common.c
 extern bool g_verbose_mode;
@@ -91,10 +79,6 @@ static const SaveParam save_params[] = {
   {300, 100},
   {60, 10000}
 };
-
-#ifndef SO_EE_ORIGIN_ZEROCOPY
-#define SO_EE_ORIGIN_ZEROCOPY  5
-#endif
 
 #define DBG_LOGF(...) do { \
     if (unlikely(g_verbose_mode)) { \

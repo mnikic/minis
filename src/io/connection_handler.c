@@ -13,7 +13,6 @@
 #include "io/connection.h"
 #include "io/response_queue.h"
 #include "io/transport.h"
-#include "io/zero_copy.h"
 #include "common/macros.h"
 #include "common/common.h"
 #include "cache/cache.h"
@@ -42,7 +41,7 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
       // The server loop serves the waiting clients and calls us again
       if (q_status == QUEUE_YIELD)
 	{
-	  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
+	  uint32_t events = IO_EVENT_READ;
 	  if (conn_has_pending_write (conn))
 	    events |= IO_EVENT_WRITE;
 	  conn_set_events (conn, events);
@@ -63,13 +62,13 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
       if (q_status == QUEUE_STALLED)
 	{
 	  conn_set_events (conn,
-			   IO_EVENT_READ | IO_EVENT_WRITE | IO_EVENT_ERR);
+			   IO_EVENT_READ | IO_EVENT_WRITE);
 	  break;
 	}
 
       if (q_status == QUEUE_DONE)
 	{
-	  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
+	  uint32_t events = IO_EVENT_READ;
 	  if (read_status == IO_OK || conn_has_pending_write (conn))
 	    events |= IO_EVENT_WRITE;
 	  conn_set_events (conn, events);
@@ -95,7 +94,7 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
       return;			// handle_in_event set the events. We are done.
     }
 
-  uint32_t events = IO_EVENT_READ | IO_EVENT_ERR;
+  uint32_t events = IO_EVENT_READ;
 
   if (conn_has_pending_write (conn))
     {
@@ -103,23 +102,6 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
     }
 
   conn_set_events (conn, events);
-}
-
-static void
-handle_err_event (Cache *cache, Conn *conn, uint64_t now_us)
-{
-  DBG_LOGF ("FD %d: Handling IO_EVENT_ERR event", conn->fd);
-
-  bool progress = false;
-  while (zc_process_completions (conn))
-    {
-      progress = true;
-    }
-
-  if (progress && conn_has_unprocessed_data (conn))
-    {
-      handle_in_event (cache, conn, now_us);
-    }
 }
 
 /*
@@ -167,7 +149,7 @@ start_drain (Conn *conn, uint64_t now_us)
   conn_reset_rbuff (conn);
   conn->drain_deadline_us = now_us + K_DRAIN_TIMEOUT_US;
   dlist_insert_before (&g_draining, &conn->drain_node);
-  conn_set_events (conn, IO_EVENT_READ | IO_EVENT_ERR);
+  conn_set_events (conn, IO_EVENT_READ);
   // Edge triggered: input already waiting raises no new event
   drain_input (conn);
 }
@@ -203,7 +185,8 @@ HOT void
 handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
 		      IOEvent events)
 {
-  if (unlikely (events & (IO_EVENT_HUP | IO_EVENT_RDHUP)))
+  // EPOLLERR, which epoll always reports, is a failed socket
+  if (unlikely (events & (EPOLLERR | IO_EVENT_HUP | IO_EVENT_RDHUP)))
     {
       conn->state = STATE_CLOSE;
       return;
@@ -214,9 +197,6 @@ handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
       drain_input (conn);
       return;
     }
-
-  if (conn->state != STATE_CLOSE && (events & IO_EVENT_ERR))
-    handle_err_event (cache, conn, now_us);
 
   if (likely (conn->state == STATE_ACTIVE && (events & IO_EVENT_READ)))
     handle_in_event (cache, conn, now_us);

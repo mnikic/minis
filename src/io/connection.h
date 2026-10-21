@@ -26,7 +26,6 @@ typedef enum
 {
   IO_EVENT_READ = EPOLLIN,
   IO_EVENT_WRITE = EPOLLOUT,
-  IO_EVENT_ERR = EPOLLERR,
   IO_EVENT_HUP = EPOLLHUP,
   IO_EVENT_RDHUP = EPOLLRDHUP
 } IOEvent;
@@ -44,8 +43,6 @@ typedef struct
   // LOGICAL METADATA
   uint32_t total_len;		// Logical size (Header + Body + Footer)
   uint32_t sent;		// Bytes pushed to kernel so far
-  uint32_t pending_ops;		// Zero-Copy pending ACKs
-  bool is_zero_copy;
 } ResponseSlot;
 
 typedef enum
@@ -104,13 +101,11 @@ typedef struct __attribute__((aligned (64))) Conn
 _Static_assert (sizeof (Conn) % 64 == 0,
 		"Conn struct must be cache-line aligned");
 
-// Check if a slot is completely done (sent AND acked for zero_copy)
+// A slot whose reply is all sent
 static ALWAYS_INLINE bool
 conn_is_slot_complete (ResponseSlot *slot)
 {
-  // Changed actual_length -> total_len
-  return slot->pending_ops == 0 &&
-    slot->sent == slot->total_len && slot->total_len > 0;
+  return slot->sent == slot->total_len && slot->total_len > 0;
 }
 
 static ALWAYS_INLINE void
@@ -182,39 +177,6 @@ conn_alloc_slot (Conn *conn)
   return slot;
 }
 
-// Releases the head slot and Frees physical memory in the Ring Buffer.
-// connection.h (Update inline function)
-static ALWAYS_INLINE void
-conn_release_head_slot (Conn *conn)
-{
-  ResponseSlot *slot = &conn->res_slots[conn->read_idx];
-
-  // Handle the Gap (if we wrapped early)
-  if (slot->wbuf_gap > 0)
-    {
-      // The tail MUST be at (Size - Gap). Move it to 0.
-      conn->wbuf_tail = 0;
-    }
-
-  // Free the physical bytes
-  if (slot->wbuf_bytes_used > 0)
-    {
-      conn->wbuf_tail =
-	(conn->wbuf_tail + slot->wbuf_bytes_used) % conn->wbuf_size;
-    }
-
-  // Clear Metadata
-  slot->wbuf_bytes_used = 0;
-  slot->wbuf_gap = 0;
-  slot->iov_cnt = 0;
-  slot->sent = 0;
-  slot->total_len = 0;
-  slot->pending_ops = 0;
-
-  conn->read_idx = (conn->read_idx + 1) % K_SLOT_COUNT;
-  conn->pipeline_depth--;
-}
-
 // Circular Buffer: Calculate available bytes
 static ALWAYS_INLINE uint32_t
 conn_wbuf_free_space (const Conn *conn)
@@ -231,7 +193,6 @@ bool conn_has_pending_write (const Conn * conn);
 uint32_t conn_release_comp_slots (Conn * conn);
 bool conn_is_idle (Conn * conn);
 void conn_reset (Conn * conn, int file_desc);
-bool conn_has_unsent_data (const Conn * conn);
 
 /**
  * Prepares the ring buffer for a write of 'needed_size'.
@@ -259,7 +220,7 @@ uint8_t *conn_prepare_write_slot (Conn * conn, uint32_t needed_size,
  */
 void
 conn_commit_write (Conn * conn, uint8_t * write_ptr, size_t content_len,
-		   uint32_t gap, bool allow_zerocopy);
+		   uint32_t gap);
 
 void conn_compact_rbuf (Conn * conn);
 

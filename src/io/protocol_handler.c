@@ -52,7 +52,7 @@ protocol_send_error (Conn *conn, int code, const char *msg)
       return;
     }
 
-  conn_commit_write (conn, write_ptr, buf_len (&err_buf), gap, false);
+  conn_commit_write (conn, write_ptr, buf_len (&err_buf), gap);
   conn->state = STATE_FLUSH_CLOSE;
   conn_set_events (conn, IO_EVENT_READ | IO_EVENT_WRITE);
 }
@@ -364,7 +364,7 @@ protocol_try_one_request (RequestContext *ctx)
     }
 
   // Commit response
-  conn_commit_write (conn, write_ptr, buf_len (&out_buf), gap, true);
+  conn_commit_write (conn, write_ptr, buf_len (&out_buf), gap);
   conn->read_offset += msg.total_len;
   blocking_unpark (conn);
 
