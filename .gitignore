@@ -64,3 +64,5 @@ compile_commands.json
 
 # db dump(s)
 *.mdb
+shards/
+test/fuzz/parser_fuzzer
