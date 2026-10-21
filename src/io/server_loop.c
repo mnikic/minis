@@ -232,10 +232,11 @@ handle_listener_event (int listen_fd, uint64_t now_us)
       conn->idle_start = now_us;
       dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
+      // Both directions, once: with edge triggering EPOLLOUT only comes
+      // back after a write filled the socket, so it never has to change
       struct epoll_event event;
       event.data.fd = conn->fd;
-      event.events = EPOLLIN | EPOLLET;
-      conn->last_events = event.events;
+      event.events = EPOLLIN | EPOLLOUT | EPOLLET;
       if (unlikely
 	  (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1))
 	{
@@ -320,28 +321,6 @@ process_timers (Cache *cache, uint64_t now_us)
   cache_evict (cache, now_us);
 }
 
-static size_t sys_calls = 0;
-
-// Helper: Commit state changes to Kernel (Batch MOD)
-static NOINLINE void
-flush_dirty_conns (int epfd, Conn **conns, int count)
-{
-  for (int i = 0; i < count; i++)
-    {
-      Conn *conn = conns[i];
-      struct epoll_event event;
-
-      event.data.fd = conn->fd;
-      event.events = conn->pending_events;
-      sys_calls++;
-      (void) sys_calls;
-      DBG_LOGF ("Calling CTL_MOD on fd: %i for event: %u, call number: %zu",
-		conn->fd, conn->pending_events, sys_calls);
-      epoll_ctl (epfd, EPOLL_CTL_MOD, conn->fd, &event);
-      conn->last_events = conn->pending_events;
-    }
-}
-
 // Helper: Cleanup dead connections (Batch DELETE)
 static NOINLINE void
 flush_dead_conns (Conn **conns, int count)
@@ -407,8 +386,6 @@ serve_one (Cache *cache, Conn *conn, uint64_t now_us)
     }
 
   update_idle_state (conn, now_us);
-  if (conn->pending_events != conn->last_events)
-    flush_dirty_conns (g_data.epfd, &conn, 1);
 }
 
 // Serves waiting clients oldest first: all of them after a push, or with
@@ -443,9 +420,6 @@ static HOT ALWAYS_INLINE void
 process_active_events (Cache *cache, struct epoll_event *events, int count,
 		       int listen_fd, uint64_t now_us)
 {
-  Conn *dirty_conns[MAX_EVENTS];
-  int dirty_count = 0;
-
   Conn *dead_conns[MAX_EVENTS];
   int dead_count = 0;
 
@@ -491,15 +465,8 @@ process_active_events (Cache *cache, struct epoll_event *events, int count,
       else
 	{
 	  update_idle_state (conn, now_us);
-	  if (conn->pending_events != conn->last_events)
-	    {
-	      dirty_conns[dirty_count++] = conn;
-	    }
 	}
     }
-
-  if (dirty_count > 0)
-    flush_dirty_conns (g_data.epfd, dirty_conns, dirty_count);
 
   if (unlikely (dead_count > 0))
     flush_dead_conns (dead_conns, dead_count);
@@ -532,7 +499,7 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
       close (g_data.wake_fd);
       g_data.wake_fd = -1;
     }
-  msgf ("Cleanup complete. %zu calls to epoll_ctl", sys_calls);
+  msg ("Cleanup complete.");
 }
 
 static bool COLD

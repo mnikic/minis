@@ -58,8 +58,6 @@ typedef struct __attribute__((aligned (64))) Conn
   int fd;
   ConnectionState state;
   ProtoType proto;
-  uint32_t last_events;
-  uint32_t pending_events;
 
   // Circular Write Buffer
   uint8_t *wbuf;		// The shared chunk
@@ -139,15 +137,6 @@ conn_is_slot_fully_sent (ResponseSlot *slot)
 {
   // Changed actual_length -> total_len
   return slot->sent >= slot->total_len;
-}
-
-static ALWAYS_INLINE void
-conn_set_events (Conn *conn, uint32_t events)
-{
-  DBG_LOGF ("About to set events %u on the %i, old events are %u", events,
-	    conn->fd, conn->last_events);
-  conn->pending_events = events | EPOLLET;
-  DBG_LOGF ("Set events %u on the %i", conn->pending_events, conn->fd);
 }
 
 static ALWAYS_INLINE ResponseSlot *

@@ -40,17 +40,9 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
 
       // The server loop serves the waiting clients and calls us again
       if (q_status == QUEUE_YIELD)
-	{
-	  uint32_t events = IO_EVENT_READ;
-	  if (conn_has_pending_write (conn))
-	    events |= IO_EVENT_WRITE;
-	  conn_set_events (conn, events);
-	  break;
-	}
+	break;
 
-      if (unlikely
-	  ((q_status != QUEUE_PROGRESSED && q_status != QUEUE_DONE)
-	   && read_status == IO_BUF_FULL))
+      if (unlikely (q_status == QUEUE_STALLED && read_status == IO_BUF_FULL))
 	{
 	  msgf
 	    ("Client %d sent request larger than buffer size even after compacting.",
@@ -59,21 +51,9 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
 	  return;
 	}
 
-      if (q_status == QUEUE_STALLED)
-	{
-	  conn_set_events (conn,
-			   IO_EVENT_READ | IO_EVENT_WRITE);
-	  break;
-	}
-
-      if (q_status == QUEUE_DONE)
-	{
-	  uint32_t events = IO_EVENT_READ;
-	  if (read_status == IO_OK || conn_has_pending_write (conn))
-	    events |= IO_EVENT_WRITE;
-	  conn_set_events (conn, events);
-	  break;
-	}
+      // Stalled: the socket is full, its next EPOLLOUT resumes us. Done:
+      // what is left is part of a request, the rest comes with EPOLLIN.
+      break;
     }
 }
 
@@ -88,20 +68,10 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
       return;
     }
 
-  if (conn_has_unprocessed_data (conn))
-    {
-      handle_in_event (cache, conn, now_us);
-      return;			// handle_in_event set the events. We are done.
-    }
-
-  uint32_t events = IO_EVENT_READ;
-
-  if (conn_has_pending_write (conn))
-    {
-      events |= IO_EVENT_WRITE;
-    }
-
-  conn_set_events (conn, events);
+  // A client that pushed to waiting clients is resumed by the server
+  // loop once they are served, not here
+  if (conn_has_unprocessed_data (conn) && !conn->yield)
+    handle_in_event (cache, conn, now_us);
 }
 
 /*
@@ -149,7 +119,6 @@ start_drain (Conn *conn, uint64_t now_us)
   conn_reset_rbuff (conn);
   conn->drain_deadline_us = now_us + K_DRAIN_TIMEOUT_US;
   dlist_insert_before (&g_draining, &conn->drain_node);
-  conn_set_events (conn, IO_EVENT_READ);
   // Edge triggered: input already waiting raises no new event
   drain_input (conn);
 }
