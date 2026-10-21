@@ -51,6 +51,12 @@ transport_read_buffer (Conn *conn)
 
       conn->rbuf_size += (uint32_t) num;
       total_read += (size_t) num;
+
+      // Less than asked for: the socket is empty, and with edge triggered
+      // epoll whatever comes later raises a new event (epoll(7)). Saves a
+      // read that would only fail with EAGAIN.
+      if ((size_t) num < cap)
+	return IO_OK;
     }
 }
 

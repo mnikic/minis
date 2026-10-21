@@ -16,8 +16,8 @@ typedef enum
 } IOStatus;
 
 /*
- * Reads from the socket into the connection's Ring Buffer.
- * Handles EINTR and loop-until-EAGAIN logic.
+ * Reads from the socket into the connection's Ring Buffer, until a read
+ * returns less than asked for or fails with EAGAIN. Handles EINTR.
  * * Returns: IO_OK (got data), IO_WAIT (no data yet), IO_EOF, or IO_ERROR.
  * Output: updates conn->rbuf_size directly.
  */

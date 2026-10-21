@@ -1601,6 +1601,29 @@ class TestLargeBinaryReplies(MinisTestCase):
         self.assertEqual(pipe.execute(), values)
 
 
+class TestHalfClose(MinisTestCase):
+    """A client may send its requests and shut down its side at once: the
+    end of input comes with the data, and the replies are still due"""
+
+    def test_requests_then_shutdown(self):
+        for round in range(20):
+            with socket.create_connection(("127.0.0.1",
+                                           self.server.port)) as sock:
+                sock.settimeout(3)
+                sock.sendall(raw_command("PING") + raw_command("ECHO", "x")
+                             + raw_command("GET", "hc_missing"))
+                sock.shutdown(socket.SHUT_WR)
+                got = b""
+                want = b"+PONG\r\n"
+                while len(got) < len(want):
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    got += chunk
+                self.assertEqual(got[:len(want)], want, f"round {round}")
+        self.assertAlive()
+
+
 class TestErrorClose(MinisTestCase):
     """After an error reply the server closes, but first lets the client
     read the error even if it is still sending"""
