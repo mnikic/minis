@@ -143,6 +143,9 @@ minis_mset (Minis *minis, const char **key_vals, const size_t *lens,
   return err;
 }
 
+// MGET keys looked up together, see minis_mget
+#define K_MGET_GROUP 16
+
 MinisError
 minis_mget (Minis *minis, const char **keys, const size_t *key_lens,
 	    size_t count, MinisOneEntryVisitor visitor, void *ctx,
@@ -152,17 +155,43 @@ minis_mget (Minis *minis, const char **keys, const size_t *key_lens,
   size_t n_locked =
     lock_shards_batch (minis, keys, key_lens, count, 1, shards);
 
-  for (size_t i = 0; i < count; ++i)
+  // The keys go in groups, and a group in stages: all their hash slots
+  // are prefetched, then all their entries, then all are looked up and
+  // their values prefetched, and only then visited. So the cache misses
+  // of a group's keys overlap instead of each key waiting for its own.
+  // More than 16 keys at once fill the cache before they are used.
+  bool more = true;
+  for (size_t start = 0; more && start < count; start += K_MGET_GROUP)
     {
-      int shard_id = get_shard_id (keys[i], key_lens[i]);
-      Entry *val = entry_lookup (minis, &minis->shards[shard_id], keys[i],
-				 key_lens[i], now_us);
-      // Like Redis, other types read as missing. Visitors use ent->val,
-      // which for them is a pointer to the container.
-      if (val && val->type != T_STR)
-	val = NULL;
-      if (!visitor (val, ctx))
-	break;
+      size_t n = count - start < K_MGET_GROUP ? count - start : K_MGET_GROUP;
+      const char **gkeys = keys + start;
+      const size_t *glens = key_lens + start;
+      uint64_t hcodes[K_MGET_GROUP];
+      Entry *found[K_MGET_GROUP];
+
+      for (size_t i = 0; i < n; i++)
+	{
+	  hcodes[i] = str_hash ((const uint8_t *) gkeys[i], glens[i]);
+	  minis_prefetch_slot (minis, hcodes[i]);
+	}
+      for (size_t i = 0; i < n; i++)
+	minis_prefetch_entry (minis, hcodes[i]);
+      // A lookup may drop its own key if it expired, never another one,
+      // so what the earlier lookups found stays valid
+      for (size_t i = 0; i < n; i++)
+	{
+	  found[i] = entry_lookup_hashed (minis,
+					  &minis->shards[hcodes[i] & SHARD_MASK],
+					  gkeys[i], glens[i], hcodes[i], now_us);
+	  // Like Redis, other types read as missing. Visitors use ent->val,
+	  // which for them is a pointer to the container.
+	  if (found[i] && found[i]->type != T_STR)
+	    found[i] = NULL;
+	  if (found[i])
+	    __builtin_prefetch (found[i]->val);
+	}
+      for (size_t i = 0; i < n && more; i++)
+	more = visitor (found[i], ctx);
     }
 
   unlock_shards_batch (minis, shards, n_locked);

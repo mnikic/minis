@@ -188,7 +188,15 @@ Entry *
 entry_lookup (Minis *minis, Shard *shard, const char *key, size_t key_len,
 	      uint64_t now_us)
 {
-  uint64_t hcode = str_hash ((const uint8_t *) key, key_len);
+  return entry_lookup_hashed (minis, shard, key, key_len,
+			      str_hash ((const uint8_t *) key, key_len),
+			      now_us);
+}
+
+Entry *
+entry_lookup_hashed (Minis *minis, Shard *shard, const char *key,
+		     size_t key_len, uint64_t hcode, uint64_t now_us)
+{
   EntryKey ekey = {.key = key,.len = key_len };
   HNode *node = hm_lookup (&shard->db, &ekey, hcode, &entry_eq_str);
 

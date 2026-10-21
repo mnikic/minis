@@ -1186,6 +1186,32 @@ $ {client_executable-abs_path} hmset many e
 $ {client_executable-abs_path} del many
 (int) 1
 
+# MGET looks keys up 16 at a time: 17 keys, some missing, some twice
+$ {client_executable-abs_path} mset g1 v1 g2 v2 g4 v4 g5 v5 g7 v7 g8 v8
+(str) OK
+$ {client_executable-abs_path} mget g0 g1 g2 g3 g4 g5 g6 g7 g8 g0 g1 g2 g3 g4 g5 g6 g7
+(arr) len=17
+(nil)
+(str) v1
+(str) v2
+(nil)
+(str) v4
+(str) v5
+(nil)
+(str) v7
+(str) v8
+(nil)
+(str) v1
+(str) v2
+(nil)
+(str) v4
+(str) v5
+(nil)
+(str) v7
+(arr) end
+$ {client_executable-abs_path} del g1 g2 g4 g5 g7 g8
+(int) 6
+
 # A small value lives in its entry, a long one apart; overwrites move it
 $ {client_executable-abs_path} set sizes v
 (str) OK

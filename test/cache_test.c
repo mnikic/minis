@@ -1010,6 +1010,130 @@ test_mget_other_types (void)
   printf ("PASSED\n");
 }
 
+// A binary MGET reply against what each key should give, NULL for nil
+static void
+assert_mget_reply (Buffer *buf, const char **want, const size_t *want_lens,
+		   size_t count)
+{
+  const uint8_t *data = buf_data (buf);
+  ASSERT_EQ (data[0], SER_ARR);
+  uint32_t n;
+  memcpy (&n, &data[1], 4);
+  ASSERT_EQ (ntoh_u32 (n), count);
+  size_t pos = 5;
+  for (size_t i = 0; i < count; i++)
+    {
+      if (!want[i])
+	{
+	  ASSERT_EQ (data[pos], SER_NIL);
+	  pos++;
+	  continue;
+	}
+      ASSERT_EQ (data[pos], SER_STR);
+      uint32_t len;
+      memcpy (&len, &data[pos + 1], 4);
+      ASSERT_EQ (ntoh_u32 (len), want_lens[i]);
+      ASSERT_TRUE (memcmp (&data[pos + 5], want[i], want_lens[i]) == 0);
+      pos += 5 + want_lens[i];
+    }
+  ASSERT_EQ (pos, buf_len (buf));
+}
+
+// MGET looks keys up 16 at a time: every count around a group's edge,
+// keys given twice, missing, of other types, expired or with NUL bytes
+static void
+test_mget_groups (void)
+{
+  printf ("TEST: MGET in groups of keys... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+  static char names[40][16], vals[40][16];
+  for (int i = 0; i < 40; i++)
+    {
+      snprintf (names[i], sizeof (names[i]), "mgg_%d", i);
+      snprintf (vals[i], sizeof (vals[i]), "v%d", i);
+      // Every third key missing, every fifth a list, the rest strings
+      if (i % 3 == 0)
+	continue;
+      if (i % 5 == 0)
+	RUN (cache, now, "rpush", names[i], "x");
+      else
+	RUN (cache, now, "set", names[i], vals[i]);
+    }
+
+  const char *cmd[64];
+  size_t lens[64];
+  const char *want[64];
+  size_t want_lens[64];
+  size_t sizes[] = { 1, 2, 15, 16, 17, 31, 32, 33, 40 };
+  for (size_t s = 0; s < sizeof (sizes) / sizeof (sizes[0]); s++)
+    {
+      size_t count = sizes[s];
+      cmd[0] = "mget";
+      lens[0] = 4;
+      for (size_t i = 0; i < count; i++)
+	{
+	  // Keys in a scrambled order, some of them twice
+	  size_t k = (i * 7 + s) % 40;
+	  if (i % 4 == 3)
+	    k = (i - 1) * 7 % 40;
+	  cmd[1 + i] = names[k];
+	  lens[1 + i] = strlen (names[k]);
+	  bool str = k % 3 != 0 && k % 5 != 0;
+	  want[i] = str ? vals[k] : NULL;
+	  want_lens[i] = str ? strlen (vals[k]) : 0;
+	}
+      buf = init_test_buffer (PROTO_BIN);
+      ASSERT_TRUE (cache_execute_n (cache, cmd, lens, 1 + count, &buf, now));
+      assert_mget_reply (&buf, want, want_lens, count);
+    }
+
+  // An expired key twice in one group: the first lookup drops it, the
+  // second finds nothing, both are nil (ASan checks nothing freed is read)
+  RUN (cache, now, "set", "mgg_exp", "gone");
+  RUN (cache, now, "pexpire", "mgg_exp", "1");
+  RUN (cache, now + 5000, "mget", "mgg_1", "mgg_exp", "mgg_2", "mgg_exp",
+       "mgg_4");
+  const char *exp_want[] = { "v1", NULL, "v2", NULL, "v4" };
+  size_t exp_lens[] = { 2, 0, 2, 0, 2 };
+  assert_mget_reply (&buf, exp_want, exp_lens, 5);
+  RUN (cache, now + 5000, "exists", "mgg_exp");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  // NUL bytes in keys and values
+  const char *bin_set[] = { "set", "mgg\0b", "v\0w" };
+  size_t bin_set_lens[] = { 3, 5, 3 };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, bin_set, bin_set_lens, 3, &buf, now));
+  const char *bin_get[] = { "mget", "mgg", "mgg\0b", "mgg_1" };
+  size_t bin_get_lens[] = { 4, 3, 5, 5 };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, bin_get, bin_get_lens, 4, &buf, now));
+  const char *bin_want[] = { NULL, "v\0w", "v1" };
+  size_t bin_want_lens[] = { 0, 3, 2 };
+  assert_mget_reply (&buf, bin_want, bin_want_lens, 3);
+
+  // A reply too big for the buffer stops partway, and says so
+  static char big[3000];
+  memset (big, 'b', sizeof (big) - 1);
+  for (int i = 0; i < 5; i++)
+    {
+      char name[32];
+      snprintf (name, sizeof (name), "mgg_big%d", i);
+      RUN (cache, now, "set", name, big);
+    }
+  const char *too_big[] = { "mget", "mgg_big0", "mgg_big1", "mgg_big2",
+    "mgg_big3", "mgg_big4"
+  };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_FALSE (cache_execute (cache, too_big, 6, &buf, now));
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // ============================================================================
 // Test 6l: Glob patterns
 // ============================================================================
@@ -2964,6 +3088,7 @@ main (void)
   test_list_range ();
   test_list_rem ();
   test_mget_other_types ();
+  test_mget_groups ();
   test_glob ();
   test_hm_lookup_mid_resize ();
   test_hm_random_ops ();

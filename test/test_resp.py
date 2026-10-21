@@ -1783,6 +1783,47 @@ class TestStringValueSizes(MinisTestCase):
             self.assertEqual(self.r.get(key), value, key)
 
 
+class TestMgetGroups(MinisTestCase):
+    """MGET looks its keys up 16 at a time; any number of keys, in any
+    order, given twice, missing, of other types or expired, give what
+    one GET each would"""
+
+    def test_against_a_model(self):
+        rng = random.Random(7)
+        model = {}
+        pipe = self.r.pipeline(transaction=False)
+        for i in range(300):
+            key = f"mgm_{i}"
+            pipe.delete(key)
+            kind = rng.random()
+            if kind < 0.6:
+                model[key] = f"v{i}" * rng.randint(1, 30)
+                pipe.set(key, model[key])
+            elif kind < 0.7:
+                pipe.rpush(key, "x")
+        pipe.execute()
+        names = [f"mgm_{i}" for i in range(320)]  # 20 never set
+        for size in list(range(1, 71)) + [1023]:
+            with self.subTest(size=size):
+                keys = [rng.choice(names) for _ in range(size)]
+                self.assertEqual(self.r.mget(keys),
+                                 [model.get(k) for k in keys])
+
+    def test_expired_keys(self):
+        keys = [f"mge_{i}" for i in range(40)]
+        for i, key in enumerate(keys):
+            self.r.set(key, f"v{i}")
+            if i % 2:
+                self.r.pexpire(key, 50)
+        time.sleep(0.2)
+        # Each expired key twice within a group
+        asked = [k for k in keys for _ in (0, 1)]
+        want = [None if int(k.split("_")[1]) % 2 else f"v{k.split('_')[1]}"
+                for k in asked]
+        self.assertEqual(self.r.mget(asked), want)
+        self.assertEqual(self.r.exists(*keys[1::2]), 0)
+
+
 class TestPipelining(MinisTestCase):
     """Many requests in one write, in both protocols: past the per-round
     request budget (1024) and the response slots (2048), with requests

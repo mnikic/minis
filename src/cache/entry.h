@@ -60,6 +60,9 @@ Entry *fetch_entry_expiry_aware (Minis * minis, HNode * node,
 				 uint64_t now_us);
 Entry *fetch_entry_from_heap_ref (size_t *ref);
 
+// entry_lookup for a key whose hash, str_hash, is known already
+Entry *entry_lookup_hashed (Minis * minis, Shard * shard, const char *key,
+			    size_t key_len, uint64_t hcode, uint64_t now_us);
 Entry *entry_lookup (Minis * minis, Shard * shard, const char *key,
 		     size_t key_len,
 		     uint64_t now_us);
