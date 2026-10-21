@@ -24,11 +24,15 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
     {
       IOStatus read_status = transport_read_buffer (conn);
 
-      if (unlikely (read_status == IO_ERROR || read_status == IO_EOF))
+      if (unlikely (read_status == IO_ERROR))
 	{
 	  conn->state = STATE_CLOSE;
 	  break;
 	}
+      // The client sends no more, but what it sent gets its replies:
+      // handle_connection_io closes it once they are out
+      if (unlikely (read_status == IO_EOF))
+	conn->peer_closed = true;
 
       QueueStatus q_status =
 	response_queue_process_buffered_data (cache, conn, now_us);
@@ -157,11 +161,14 @@ handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
 		      IOEvent events)
 {
   // EPOLLERR, which epoll always reports, is a failed socket
-  if (unlikely (events & (EPOLLERR | IO_EVENT_HUP | IO_EVENT_RDHUP)))
+  if (unlikely (events & (EPOLLERR | IO_EVENT_HUP)))
     {
       conn->state = STATE_CLOSE;
       return;
     }
+  // Shut down for writing: what it sent still gets its replies
+  if (unlikely (events & IO_EVENT_RDHUP))
+    conn->peer_closed = true;
 
   if (unlikely (conn->state == STATE_DRAIN))
     {
@@ -178,4 +185,11 @@ handle_connection_io (Cache *cache, Conn *conn, uint64_t now_us,
   // An error reply is out, by now or after waiting for EPOLLOUT
   if (conn->state == STATE_FLUSH_CLOSE && conn->pipeline_depth == 0)
     start_drain (conn, now_us);
+
+  // A client that sends no more is done once its replies are out. One
+  // waiting in BLPOP goes at once, like in Redis: a client that closed
+  // looks the same, and must not take an element it never reads.
+  if (unlikely (conn->peer_closed) && conn->state == STATE_ACTIVE
+      && conn->pipeline_depth == 0 && !conn->yield)
+    conn->state = STATE_CLOSE;
 }

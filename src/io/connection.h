@@ -87,6 +87,7 @@ typedef struct __attribute__((aligned (64))) Conn
   bool blocked;
   bool yield;			// Pushed with clients waiting: stop, let them go first
   bool resp3;			// Switched by HELLO 3, RESP replies are RESP3
+  bool peer_closed;		// EPOLLRDHUP: the client sends no more
   uint64_t block_deadline_us;	// 0 is forever
   DList block_node;
 

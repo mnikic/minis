@@ -233,10 +233,11 @@ handle_listener_event (int listen_fd, uint64_t now_us)
       dlist_insert_before (&g_data.idle_list, &conn->idle_list);
 
       // Both directions, once: with edge triggering EPOLLOUT only comes
-      // back after a write filled the socket, so it never has to change
+      // back after a write filled the socket, so it never has to change.
+      // EPOLLRDHUP tells when the client has shut down its side.
       struct epoll_event event;
       event.data.fd = conn->fd;
-      event.events = EPOLLIN | EPOLLOUT | EPOLLET;
+      event.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
       if (unlikely
 	  (epoll_ctl (epfd, EPOLL_CTL_ADD, event.data.fd, &event) == -1))
 	{

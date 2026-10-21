@@ -1604,26 +1604,82 @@ class TestLargeBinaryReplies(MinisTestCase):
 
 
 class TestHalfClose(MinisTestCase):
-    """A client may send its requests and shut down its side at once: the
-    end of input comes with the data, and the replies are still due"""
+    """A client may send its requests and shut down its side at once. Its
+    replies are still due, then the server closes."""
+
+    def half_closed(self, data):
+        sock = socket.create_connection(("127.0.0.1", self.server.port))
+        self.addCleanup(sock.close)
+        sock.settimeout(3)
+        sock.sendall(data)
+        sock.shutdown(socket.SHUT_WR)
+        return sock
+
+    def read_to_close(self, sock, chunk=65536, pause=0.0):
+        """Everything until the server closes, timing out if it never does"""
+        got = b""
+        while True:
+            data = sock.recv(chunk)
+            if not data:
+                return got
+            got += data
+            if pause:
+                time.sleep(pause)
 
     def test_requests_then_shutdown(self):
+        want = b"+PONG\r\n:0\r\n$-1\r\n"
         for round in range(20):
-            with socket.create_connection(("127.0.0.1",
-                                           self.server.port)) as sock:
-                sock.settimeout(3)
-                sock.sendall(raw_command("PING") + raw_command("ECHO", "x")
-                             + raw_command("GET", "hc_missing"))
-                sock.shutdown(socket.SHUT_WR)
-                got = b""
-                want = b"+PONG\r\n"
-                while len(got) < len(want):
-                    chunk = sock.recv(4096)
-                    if not chunk:
-                        break
-                    got += chunk
-                self.assertEqual(got[:len(want)], want, f"round {round}")
+            sock = self.half_closed(raw_command("PING")
+                                    + raw_command("EXISTS", "hc_missing")
+                                    + raw_command("GET", "hc_missing"))
+            self.assertEqual(self.read_to_close(sock), want, f"round {round}")
         self.assertAlive()
+
+    def test_replies_bigger_than_the_socket(self):
+        # Valkey drops what did not fit in the socket by the shutdown
+        value = "v" * 150_000
+        self.r.set("hc_big", value)
+        sock = self.half_closed(raw_command("GET", "hc_big") * 20)
+        time.sleep(0.3)  # The socket fills up before anything is read
+        got = self.read_to_close(sock, chunk=8192, pause=0.001)
+        self.assertEqual(got, f"$150000\r\n{value}\r\n".encode() * 20)
+
+    def test_waiting_blpop(self):
+        # Like in Redis it is closed at once, as one that closed would be,
+        # and a later push stays in the list
+        self.r.delete("hc_queue")
+        for timeout in ("0", "5"):
+            with self.subTest(timeout=timeout):
+                start = time.time()
+                sock = self.half_closed(raw_command("BLPOP", "hc_queue",
+                                                    timeout))
+                self.assertEqual(self.read_to_close(sock), b"")
+                self.assertLess(time.time() - start, 1)
+        self.r.rpush("hc_queue", "x")
+        time.sleep(0.1)
+        self.assertEqual(self.r.lrange("hc_queue", 0, -1), ["x"])
+
+    def test_blpop_served_before_the_shutdown(self):
+        self.r.delete("hc_ready")
+        self.r.rpush("hc_ready", "y")
+        sock = self.half_closed(raw_command("BLPOP", "hc_ready", "5"))
+        self.assertEqual(self.read_to_close(sock),
+                         b"*2\r\n$8\r\nhc_ready\r\n$1\r\ny\r\n")
+
+    def test_unfinished_request(self):
+        sock = self.half_closed(b"*2\r\n$3\r\nGET\r\n$5\r\nhc")
+        self.assertEqual(self.read_to_close(sock), b"")
+        self.assertAlive()
+
+    def test_open_clients_stay(self):
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(0.5)
+            sock.sendall(raw_command("PING"))
+            self.assertEqual(sock.recv(100), b"+PONG\r\n")
+            with self.assertRaises(socket.timeout):
+                sock.recv(100)
+            sock.sendall(raw_command("PING"))
+            self.assertEqual(sock.recv(100), b"+PONG\r\n")
 
 
 class TestBinaryProtocolErrors(MinisTestCase):
