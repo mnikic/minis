@@ -1739,6 +1739,32 @@ class TestStringValueSizes(MinisTestCase):
                 self.assertEqual(b.get(f"sv_grow_{key}"), value,
                                  f"key {key} step {step} size {size}")
 
+    def test_grown_values_read_and_delete(self):
+        # Each key starts small, inside its entry, and grows out of it
+        b = client(port=self.server.port, socket_timeout=5)
+        self.addCleanup(b.close)
+        keys = [f"sv_big_{i}" for i in range(20)]
+        values = {}
+        for i, key in enumerate(keys):
+            b.set(key, b"s")
+            values[key] = bytes([i]) * (65 + i * 50)
+            b.set(key, values[key])
+        self.assertEqual(b.mget(keys), [values[k] for k in keys])
+        for key in keys[:10]:
+            b.expire(key, 100)
+        self.assertEqual(b.ttl(keys[0]), 100)
+        self.assertEqual(b.delete(*keys[::2]), 10)
+        self.assertEqual(b.exists(*keys), 10)
+        for key in keys[::2]:
+            self.assertIsNone(b.get(key))
+            # Back as a new key, small again
+            b.set(key, b"back")
+            self.assertEqual(b.get(key), b"back")
+        for key in keys[1::2]:
+            self.assertEqual(b.get(key), values[key])
+        self.assertEqual(b.delete(*keys), 20)
+        self.assertEqual(b.exists(*keys), 0)
+
     def test_counter_across_digits(self):
         self.r.set("sv_count", "8")
         for want in range(9, 1002):

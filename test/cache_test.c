@@ -2518,6 +2518,32 @@ test_inline_values (void)
   RUN (cache, now + 5000, "get", "iv_small");
   ASSERT_TRUE (is_nil_response (&buf));
 
+  // Grown out of its entry, then deleted: its own block is freed, and
+  // the key comes back as a new entry with the value inside
+  RUN (cache, now, "set", "iv_grow", "1");
+  RUN (cache, now, "set", "iv_grow", v65);
+  ASSERT_FALSE (value_is_inline (cache, "iv_grow", 7, now));
+  RUN (cache, now, "mget", "iv_grow", "iv_n");
+  const char *both[] = { v65, "1000000000000000" };
+  assert_str_array (&buf, both, 2);
+  RUN (cache, now, "del", "iv_grow");
+  ASSERT_EQ (extract_int_response (&buf), 1);
+  RUN (cache, now, "exists", "iv_grow");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+  RUN (cache, now, "set", "iv_grow", "again");
+  ASSERT_TRUE (value_is_inline (cache, "iv_grow", 7, now));
+  assert_get (cache, now, "iv_grow", "again", 5);
+
+  // Grown with a TTL, which a plain SET drops and SET EX keeps
+  RUN (cache, now, "set", "iv_ttl", "1", "ex", "100");
+  RUN (cache, now, "set", "iv_ttl", v64, "ex", "100");
+  RUN (cache, now, "set", "iv_ttl", v65, "ex", "100");
+  ASSERT_FALSE (value_is_inline (cache, "iv_ttl", 6, now));
+  RUN (cache, now, "ttl", "iv_ttl");
+  ASSERT_EQ (extract_int_response (&buf), 100);
+  RUN (cache, now + 101 * 1000000ULL, "get", "iv_ttl");
+  ASSERT_TRUE (is_nil_response (&buf));
+
   cache_free (cache);
   printf ("PASSED\n");
 }
