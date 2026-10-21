@@ -26,13 +26,15 @@ typedef struct entry
 {
   HNode node;			// HMap linkage
   EntryType type;		// T_STR, T_ZSET, T_HASH or T_LIST
+  uint32_t val_cap;		// T_STR: room for val (and its NUL) after the key
   uint64_t expire_at_us;	// Expiration time
   size_t heap_idx;		// Heap index for TTL
   size_t val_len;		// T_STR: val's length, it may hold NUL bytes
 
   union
   {
-    char *val;			// Used if type == T_STR, also NUL terminated
+    char *val;			// Used if type == T_STR, also NUL terminated. A
+				// small one lives in the entry, after the key.
     ZSet *zset;			// Used if type == T_ZSET
     HMap *hash;			// Used if type == T_HASH
     List *list;			// Used if type == T_LIST

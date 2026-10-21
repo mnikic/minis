@@ -1186,6 +1186,20 @@ $ {client_executable-abs_path} hmset many e
 $ {client_executable-abs_path} del many
 (int) 1
 
+# A small value lives in its entry, a long one apart; overwrites move it
+$ {client_executable-abs_path} set sizes v
+(str) OK
+$ {client_executable-abs_path} set sizes 0123456789012345678901234567890123456789012345678901234567890123456789
+(str) OK
+$ {client_executable-abs_path} get sizes
+(str) 0123456789012345678901234567890123456789012345678901234567890123456789
+$ {client_executable-abs_path} set sizes w
+(str) OK
+$ {client_executable-abs_path} get sizes
+(str) w
+$ {client_executable-abs_path} del sizes
+(int) 1
+
 # HELLO picks RESP2 or RESP3, it means nothing to the binary protocol
 $ {client_executable-abs_path} hello 3
 (err) 1 Unknown cmd

@@ -1715,6 +1715,48 @@ class TestLargeBinaryReplies(MinisTestCase):
         self.assertEqual(pipe.execute(), values)
 
 
+class TestStringValueSizes(MinisTestCase):
+    """Small values are kept inside their entry and bigger ones apart; a
+    key goes back and forth between the two as it is overwritten"""
+
+    def test_sizes_around_the_limit(self):
+        for size in list(range(0, 20)) + list(range(60, 70)) + [200, 5000]:
+            with self.subTest(size=size):
+                value = bytes((i * 7 + size) % 256 for i in range(size))
+                b = client(port=self.server.port, socket_timeout=5)
+                self.addCleanup(b.close)
+                b.set(f"sv_{size}", value)
+                self.assertEqual(b.get(f"sv_{size}"), value)
+
+    def test_overwrites_grow_and_shrink(self):
+        sizes = [1, 15, 16, 64, 65, 3, 100, 0, 64, 2, 1000, 1]
+        b = client(port=self.server.port, socket_timeout=5)
+        self.addCleanup(b.close)
+        for key in range(5):
+            for step, size in enumerate(sizes):
+                value = bytes([key + step]) * size
+                b.set(f"sv_grow_{key}", value)
+                self.assertEqual(b.get(f"sv_grow_{key}"), value,
+                                 f"key {key} step {step} size {size}")
+
+    def test_counter_across_digits(self):
+        self.r.set("sv_count", "8")
+        for want in range(9, 1002):
+            self.assertEqual(self.r.incr("sv_count"), want)
+        self.assertEqual(self.r.incrby("sv_count", 10**17), 10**17 + 1001)
+        self.assertEqual(self.r.get("sv_count"), str(10**17 + 1001))
+
+    def test_survive_restart(self):
+        values = {f"sv_r_{size}": "x" * size for size in (0, 1, 15, 64, 65, 300)}
+        for key, value in values.items():
+            self.r.set(key, value)
+        self.r.set("sv_r_15", "y" * 200)  # Moved out of its entry
+        values["sv_r_15"] = "y" * 200
+        self.server.restart()
+        for key, value in values.items():
+            self.assertEqual(self.r.get(key), value, key)
+
+
 class TestPipelining(MinisTestCase):
     """Many requests in one write, in both protocols: past the per-round
     request budget (1024) and the response slots (2048), with requests

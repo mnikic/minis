@@ -17,6 +17,22 @@ entry_fetch (HNode *node_to_fetch)
 #pragma GCC diagnostic pop
 }
 
+// Values up to this long are kept in the entry itself, right after the
+// key: a lookup then reads them without another cache miss
+#define K_INLINE_VAL_MAX 64
+
+static ALWAYS_INLINE char *
+entry_inline_val (Entry *ent)
+{
+  return ent->key + ent->key_len + 1;
+}
+
+static ALWAYS_INLINE bool
+entry_val_is_inline (Entry *ent)
+{
+  return ent->val_cap > 0 && ent->val == entry_inline_val (ent);
+}
+
 bool
 entry_eq_str (HNode *node, const void *key)
 {
@@ -92,7 +108,7 @@ entry_destroy_internal (Entry *ent)
 	}
       break;
     case T_STR:
-      if (ent->val)
+      if (ent->val && !entry_val_is_inline (ent))
 	free (ent->val);
       break;
     default:
@@ -182,11 +198,13 @@ entry_lookup (Minis *minis, Shard *shard, const char *key, size_t key_len,
   return fetch_entry_expiry_aware (minis, node, now_us);
 }
 
+// val_cap: bytes after the key for a T_STR value, see entry_set_str
 static Entry *
-entry_new (Minis *minis, const char *key, size_t klen, EntryType type)
+entry_new (Minis *minis, const char *key, size_t klen, EntryType type,
+	   uint32_t val_cap)
 {
 
-  Entry *ent = malloc (sizeof (Entry) + klen + 1);
+  Entry *ent = malloc (sizeof (Entry) + klen + 1 + val_cap);
   if (!ent)
     return NULL;
   memcpy (ent->key, key, klen);
@@ -195,6 +213,7 @@ entry_new (Minis *minis, const char *key, size_t klen, EntryType type)
 
   ent->node.hcode = str_hash ((const uint8_t *) key, klen);
   ent->type = type;
+  ent->val_cap = val_cap;
   ent->heap_idx = (size_t) -1;
   ent->expire_at_us = 0;
 
@@ -210,7 +229,7 @@ entry_new (Minis *minis, const char *key, size_t klen, EntryType type)
 Entry *
 entry_new_zset (Minis *minis, const char *key, size_t key_len)
 {
-  Entry *ent = entry_new (minis, key, key_len, T_ZSET);
+  Entry *ent = entry_new (minis, key, key_len, T_ZSET, 0);
   if (!ent)
     return NULL;
 
@@ -223,16 +242,23 @@ entry_new_zset (Minis *minis, const char *key, size_t key_len)
   return ent;
 }
 
+// The value goes in the entry if it fits the room made for it there,
+// else in a block of its own
 bool
 entry_set_str (Entry *ent, const char *val, size_t val_len)
 {
-  char *copy = malloc (val_len + 1);
-  if (!copy)
-    return false;
-  memcpy (copy, val, val_len);
-  copy[val_len] = '\0';
-  free (ent->val);
-  ent->val = copy;
+  char *dst = entry_inline_val (ent);
+  if (val_len >= ent->val_cap)
+    {
+      dst = malloc (val_len + 1);
+      if (!dst)
+	return false;
+    }
+  memcpy (dst, val, val_len);
+  dst[val_len] = '\0';
+  if (ent->val && !entry_val_is_inline (ent))
+    free (ent->val);
+  ent->val = dst;
   ent->val_len = val_len;
   return true;
 }
@@ -241,7 +267,11 @@ Entry *
 entry_new_str (Minis *minis, const char *key, size_t key_len,
 	       const char *val, size_t val_len)
 {
-  Entry *ent = entry_new (minis, key, key_len, T_STR);
+  // Room for the value and a little growth, like a counter's next digit
+  uint32_t val_cap = 0;
+  if (val_len <= K_INLINE_VAL_MAX)
+    val_cap = (uint32_t) ((val_len + 1 + 15) & ~(size_t) 15);
+  Entry *ent = entry_new (minis, key, key_len, T_STR, val_cap);
   if (!ent)
     return NULL;
 
@@ -256,7 +286,7 @@ entry_new_str (Minis *minis, const char *key, size_t key_len,
 Entry *
 entry_new_hash (Minis *minis, const char *key, size_t key_len)
 {
-  Entry *ent = entry_new (minis, key, key_len, T_HASH);
+  Entry *ent = entry_new (minis, key, key_len, T_HASH, 0);
   if (!ent)
     return NULL;
 
@@ -278,7 +308,7 @@ entry_new_hash (Minis *minis, const char *key, size_t key_len)
 Entry *
 entry_new_list (Minis *minis, const char *key, size_t key_len)
 {
-  Entry *ent = entry_new (minis, key, key_len, T_LIST);
+  Entry *ent = entry_new (minis, key, key_len, T_LIST, 0);
   if (!ent)
     return NULL;
 

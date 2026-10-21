@@ -10,6 +10,8 @@
 
 #include "cache/cache.h"
 #include "cache/minis.h"
+#include "cache/entry.h"
+#include "cache/minis_private.h"
 #include "cache/hashtable.h"
 #include "common/common.h"
 #include "common/glob.h"
@@ -2416,6 +2418,110 @@ test_hset_many_pairs (void)
   printf ("PASSED\n");
 }
 
+// Whether key's string value lives in its entry, right after the key
+static bool
+value_is_inline (Cache *cache, const char *key, size_t key_len, uint64_t now)
+{
+  Shard *shard = &cache->shards[get_shard_id (key, key_len)];
+  Entry *ent = entry_lookup (cache, shard, key, key_len, now);
+  ASSERT_TRUE (ent != NULL && ent->type == T_STR);
+  return ent->val == ent->key + ent->key_len + 1;
+}
+
+static void
+assert_get (Cache *cache, uint64_t now, const char *key, const char *val,
+	    size_t val_len)
+{
+  const char *cmd[] = { "get", key };
+  Buffer buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute (cache, cmd, 2, &buf, now));
+  const uint8_t *data = buf_data (&buf);
+  ASSERT_EQ (data[0], SER_STR);
+  uint32_t len;
+  memcpy (&len, &data[1], 4);
+  ASSERT_EQ (ntoh_u32 (len), val_len);
+  ASSERT_TRUE (memcmp (&data[5], val, val_len) == 0);
+}
+
+// Values up to 64 bytes live in their entry, longer ones in a block of
+// their own; overwrites move between the two
+static void
+test_inline_values (void)
+{
+  printf ("TEST: String values kept in their entry... ");
+
+  Cache *cache = cache_init ();
+  uint64_t now = get_test_time_us ();
+  Buffer buf;
+  char v64[65], v65[66], v15[16], v16[17];
+  memset (v64, 'a', 64); v64[64] = '\0';
+  memset (v65, 'b', 65); v65[65] = '\0';
+  memset (v15, 'c', 15); v15[15] = '\0';
+  memset (v16, 'd', 16); v16[16] = '\0';
+
+  RUN (cache, now, "set", "iv_small", "v");
+  ASSERT_TRUE (value_is_inline (cache, "iv_small", 8, now));
+  assert_get (cache, now, "iv_small", "v", 1);
+
+  RUN (cache, now, "set", "iv_64", v64);
+  ASSERT_TRUE (value_is_inline (cache, "iv_64", 5, now));
+  assert_get (cache, now, "iv_64", v64, 64);
+  RUN (cache, now, "set", "iv_65", v65);
+  ASSERT_FALSE (value_is_inline (cache, "iv_65", 5, now));
+  assert_get (cache, now, "iv_65", v65, 65);
+
+  // "v" left room for 15 bytes: those fit, 16 do not, and a short value
+  // comes back in
+  RUN (cache, now, "set", "iv_small", v15);
+  ASSERT_TRUE (value_is_inline (cache, "iv_small", 8, now));
+  assert_get (cache, now, "iv_small", v15, 15);
+  RUN (cache, now, "set", "iv_small", v16);
+  ASSERT_FALSE (value_is_inline (cache, "iv_small", 8, now));
+  assert_get (cache, now, "iv_small", v16, 16);
+  RUN (cache, now, "set", "iv_small", "x");
+  ASSERT_TRUE (value_is_inline (cache, "iv_small", 8, now));
+  assert_get (cache, now, "iv_small", "x", 1);
+  RUN (cache, now, "set", "iv_65", "short now");
+  ASSERT_FALSE (value_is_inline (cache, "iv_65", 5, now));
+  assert_get (cache, now, "iv_65", "short now", 9);
+
+  // A counter growing a digit stays where it is
+  RUN (cache, now, "set", "iv_n", "9");
+  RUN (cache, now, "incr", "iv_n");
+  ASSERT_EQ (extract_int_response (&buf), 10);
+  ASSERT_TRUE (value_is_inline (cache, "iv_n", 4, now));
+  RUN (cache, now, "incrby", "iv_n", "999999999999990");
+  ASSERT_EQ (extract_int_response (&buf), 1000000000000000);
+  assert_get (cache, now, "iv_n", "1000000000000000", 16);
+
+  // NUL bytes, in the entry and out of it
+  const char *bin_cmd[] = { "set", "iv_bin", "a\0b" };
+  size_t bin_lens[] = { 3, 6, 3 };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, bin_cmd, bin_lens, 3, &buf, now));
+  ASSERT_TRUE (value_is_inline (cache, "iv_bin", 6, now));
+  assert_get (cache, now, "iv_bin", "a\0b", 3);
+  char big_bin[100];
+  memset (big_bin, '\0', sizeof (big_bin));
+  big_bin[50] = 'z';
+  const char *big_cmd[] = { "set", "iv_bin", big_bin };
+  size_t big_lens[] = { 3, 6, sizeof (big_bin) };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, big_cmd, big_lens, 3, &buf, now));
+  ASSERT_FALSE (value_is_inline (cache, "iv_bin", 6, now));
+  assert_get (cache, now, "iv_bin", big_bin, sizeof (big_bin));
+
+  // Deleting and expiring free both kinds (ASan checks)
+  RUN (cache, now, "del", "iv_64", "iv_65");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now, "pexpire", "iv_small", "1");
+  RUN (cache, now + 5000, "get", "iv_small");
+  ASSERT_TRUE (is_nil_response (&buf));
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // Exact RESP bytes of 'buf'
 static void
 assert_buffer_equals (Buffer *buf, const char *expected)
@@ -2763,6 +2869,7 @@ main (void)
   test_resp3_encoding ();
   test_hset_overwrite_is_a_change ();
   test_hset_many_pairs ();
+  test_inline_values ();
   test_edge_cases ();
   test_arg_validation ();
   test_zset_updates ();
