@@ -1603,6 +1603,143 @@ class TestLargeBinaryReplies(MinisTestCase):
         self.assertEqual(pipe.execute(), values)
 
 
+class TestPipelining(MinisTestCase):
+    """Many requests in one write, in both protocols: past the per-round
+    request budget (1024) and the response slots (2048), with requests
+    near the 200KB limit, and with a client that sends faster than it
+    reads"""
+
+    BIG = 150_000
+
+    def binary(self):
+        c = BinaryClient(self.server.port)
+        self.addCleanup(c.close)
+        return c
+
+    def resp(self):
+        sock = socket.create_connection(("127.0.0.1", self.server.port))
+        sock.settimeout(10)
+        self.addCleanup(sock.close)
+        f = sock.makefile("rb")
+        self.addCleanup(f.close)
+        return sock, f
+
+    def test_long_pipeline_binary(self):
+        c = self.binary()
+        c.call("DEL", "pl_bin")
+        c.send(*[("INCR", "pl_bin")] * 5000)
+        self.assertEqual([c.read_reply() for _ in range(5000)],
+                         list(range(1, 5001)))
+
+    def test_long_pipeline_resp(self):
+        self.r.delete("pl_resp")
+        sock, f = self.resp()
+        sock.sendall(raw_command("INCR", "pl_resp") * 5000)
+        self.assertEqual([read_reply(f) for _ in range(5000)],
+                         list(range(1, 5001)))
+
+    def test_big_requests_binary(self):
+        c = self.binary()
+        values = [blob(self.BIG, i) for i in range(30)]
+        c.send(*[("SET", f"pl_big_{i}", v) for i, v in enumerate(values)])
+        self.assertEqual([c.read_reply() for _ in values], [b"OK"] * 30)
+        self.assertEqual(c.call("GET", "pl_big_29"), values[29])
+
+    def test_big_requests_resp(self):
+        sock, f = self.resp()
+        values = [blob(self.BIG, i) for i in range(30)]
+        sock.sendall(b"".join(raw_command("SET", f"pl_rbig_{i}", v)
+                              for i, v in enumerate(values)))
+        self.assertEqual([read_reply(f) for _ in values], ["OK"] * 30)
+        b = client(port=self.server.port, socket_timeout=5)
+        self.addCleanup(b.close)
+        self.assertEqual(b.get("pl_rbig_29"), values[29])
+
+    def fast_sender_slow_reader(self, send, read_big, read_ok):
+        """A thread sends big GETs and big SETs while the replies are read
+        late and slowly: the server has to stop reading and go on"""
+        rounds = 40
+        errors = []
+
+        def sender():
+            try:
+                for i in range(rounds):
+                    send(i)
+            except Exception as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=sender)
+        thread.start()
+        time.sleep(1)  # Both directions fill up
+        for i in range(rounds):
+            self.assertEqual(read_big(), self.value, f"GET {i}")
+            self.assertTrue(read_ok(), f"SET {i}")
+            time.sleep(0.005)
+        thread.join(10)
+        self.assertEqual(errors, [])
+        self.assertAlive()
+
+    def test_fast_sender_slow_reader_binary(self):
+        self.value = blob(self.BIG, 99)
+        self.binary().call("SET", "pl_slow", self.value)
+        c = self.binary()
+        self.fast_sender_slow_reader(
+            lambda i: c.send(("GET", "pl_slow"),
+                             ("SET", f"pl_slow_{i}", self.value)),
+            c.read_reply,
+            lambda: c.read_reply() == b"OK")
+
+    def test_fast_sender_slow_reader_resp(self):
+        self.value = blob(self.BIG, 98)
+        self.r.set("pl_rslow", self.value)
+        sock, f = self.resp()
+        self.fast_sender_slow_reader(
+            lambda i: sock.sendall(raw_command("GET", "pl_rslow")
+                                   + raw_command("SET", f"pl_rslow_{i}",
+                                                 self.value)),
+            lambda: read_reply_bytes(f),
+            lambda: read_reply(f) == "OK")
+
+    def test_errors_keep_their_place(self):
+        self.r.set("pl_str", "v")
+        sock, f = self.resp()
+        sock.sendall(raw_command("SET", "pl_e", "1") + raw_command("NOSUCHCMD")
+                     + raw_command("LPUSH", "pl_str", "x")
+                     + raw_command("INCR", "pl_e") + raw_command("GET", "pl_e"))
+        replies = [read_reply(f) for _ in range(5)]
+        self.assertEqual(replies[0], "OK")
+        self.assertIsInstance(replies[1], redis.ResponseError)
+        self.assertIn("WRONGTYPE", str(replies[2]))
+        self.assertEqual(replies[3:], [2, "2"])
+        sock.sendall(raw_command("PING"))
+        self.assertEqual(read_reply(f), "PONG")
+
+    def test_one_byte_at_a_time(self):
+        sock, f = self.resp()
+        data = (raw_command("SET", "pl_byte", "abc") + raw_command("GET", "pl_byte")
+                + raw_command("DEL", "pl_byte"))
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        for i in range(len(data)):
+            sock.sendall(data[i:i + 1])
+        self.assertEqual([read_reply(f) for _ in range(3)], ["OK", "abc", 1])
+
+        c = self.binary()
+        c.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        data = binary_command("SET", "pl_bbyte", "xyz") + binary_command("GET", "pl_bbyte")
+        for i in range(len(data)):
+            c.sock.sendall(data[i:i + 1])
+        self.assertEqual([c.read_reply(), c.read_reply()], [b"OK", b"xyz"])
+
+
+def read_reply_bytes(f):
+    """One RESP bulk string reply, as bytes"""
+    line = f.readline()
+    if not line.startswith(b"$"):
+        raise ValueError(f"not a bulk string: {line!r}")
+    data = f.read(int(line[1:-2]) + 2)
+    return data[:-2]
+
+
 class TestHalfClose(MinisTestCase):
     """A client may send its requests and shut down its side at once. Its
     replies are still due, then the server closes."""

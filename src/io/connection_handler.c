@@ -37,27 +37,13 @@ handle_in_event (Cache *cache, Conn *conn, uint64_t now_us)
       QueueStatus q_status =
 	response_queue_process_buffered_data (cache, conn, now_us);
 
-      if (q_status == QUEUE_PROGRESSED)
-	continue;
-      if (q_status == QUEUE_ERROR || conn->state == STATE_CLOSE)
+      // Anything but progress waits for its event. On an error or close
+      // there is nothing left to do; after a yield the server loop
+      // resumes us; when stalled, the socket's next EPOLLOUT does, also
+      // with a read buffer full of requests, which then run; when done,
+      // what is left is part of a request whose rest comes with EPOLLIN.
+      if (q_status != QUEUE_PROGRESSED)
 	break;
-
-      // The server loop serves the waiting clients and calls us again
-      if (q_status == QUEUE_YIELD)
-	break;
-
-      if (unlikely (q_status == QUEUE_STALLED && read_status == IO_BUF_FULL))
-	{
-	  msgf
-	    ("Client %d sent request larger than buffer size even after compacting.",
-	     conn->fd);
-	  conn->state = STATE_CLOSE;
-	  return;
-	}
-
-      // Stalled: the socket is full, its next EPOLLOUT resumes us. Done:
-      // what is left is part of a request, the rest comes with EPOLLIN.
-      break;
     }
 }
 
