@@ -1053,6 +1053,8 @@ class Waiter(threading.Thread):
         super().__init__(daemon=True)
         self.client = client(port=port, decode_responses=True,
                                   socket_timeout=timeout + 5)
+        # Connected now, so that the thread only has a command to send
+        self.client.ping()
         self.keys, self.timeout, self.right = keys, timeout, right
         self.result, self.error, self.took = None, None, None
 
@@ -1069,7 +1071,7 @@ class Waiter(threading.Thread):
     def started(self, port):
         """Starts and returns once the server has parked the client"""
         self.start()
-        # The server parks it at once, a short wait is plenty
+        # The server parks it at once, a short wait for the command is plenty
         time.sleep(0.15)
         return self
 
