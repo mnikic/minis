@@ -1626,6 +1626,52 @@ class TestHalfClose(MinisTestCase):
         self.assertAlive()
 
 
+class TestBinaryProtocolErrors(MinisTestCase):
+    """A binary request that cannot be parsed gets one error, then the
+    connection closes, and what the client sends after it is dropped"""
+
+    CASES = [
+        ("no arguments", struct.pack(">I", 0),
+         "Must have at least one argument (the command)"),
+        ("too many arguments", struct.pack(">I", 2048), "Too many arguments"),
+        ("missing length", struct.pack(">I", 1) + b"\x00\x00",
+         "Argument count mismatch: missing length header"),
+        ("data past the end", struct.pack(">II", 1, 1000) + b"A",
+         "Argument count mismatch: data length exceeds packet size"),
+        ("trailing garbage", struct.pack(">II", 1, 4) + b"PING\xde",
+         "Trailing garbage in request"),
+    ]
+
+    def test_one_error_then_close(self):
+        for name, body, message in self.CASES:
+            with self.subTest(case=name):
+                with socket.create_connection(("127.0.0.1",
+                                               self.server.port)) as sock:
+                    sock.settimeout(3)
+                    sock.sendall(struct.pack(">I", len(body)) + body)
+                    time.sleep(0.1)
+                    try:
+                        sock.sendall(binary_command("PING"))
+                    except OSError:
+                        pass  # Closed already
+                    got = b""
+                    while True:
+                        try:
+                            chunk = sock.recv(4096)
+                        except ConnectionResetError:
+                            break
+                        if not chunk:
+                            break
+                        got += chunk
+                # One frame: length, SER_ERR, code, message length, message
+                (size,) = struct.unpack_from(">I", got)
+                self.assertEqual(len(got), 4 + size, f"more than one reply: {got!r}")
+                tag, code, msg_len = struct.unpack_from(">BII", got, 4)
+                self.assertEqual((tag, code), (1, 5))
+                self.assertIn(message, got[13:13 + msg_len].decode())
+        self.assertAlive()
+
+
 class TestErrorClose(MinisTestCase):
     """After an error reply the server closes, but first lets the client
     read the error even if it is still sending"""

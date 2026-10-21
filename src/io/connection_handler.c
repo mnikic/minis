@@ -68,9 +68,11 @@ handle_out_event (Cache *cache, Conn *conn, uint64_t now_us)
       return;
     }
 
-  // A client that pushed to waiting clients is resumed by the server
-  // loop once they are served, not here
-  if (conn_has_unprocessed_data (conn) && !conn->yield)
+  // Input left over runs only on an active connection: not after an
+  // error, and not for a client that pushed to waiting clients, which the
+  // server loop resumes once they are served
+  if (conn->state == STATE_ACTIVE && !conn->yield
+      && conn_has_unprocessed_data (conn))
     handle_in_event (cache, conn, now_us);
 }
 
