@@ -120,12 +120,15 @@ def parse_response(response_data):
 def read_full_response(s):
     """Reads a complete response from the socket based on the length prefix."""
     
-    # Read the 4-byte length header L
-    header = s.recv(4)
-    if not header:
-        return None # Server closed connection gracefully (or timed out)
-    if len(header) != 4:
-        raise IOError("Failed to read complete 4-byte response header.")
+    # Read the 4-byte length header L, which may come in pieces too
+    header = b''
+    while len(header) < 4:
+        chunk = s.recv(4 - len(header))
+        if not chunk:
+            if not header:
+                return None # Server closed connection gracefully (or timed out)
+            raise IOError("Failed to read complete 4-byte response header.")
+        header += chunk
 
     total_len_response = struct.unpack('!I', header)[0]
 
@@ -186,7 +189,7 @@ if __name__ == '__main__':
         s.settimeout(10.0) # Set a generous client timeout
         print("Connection established. Running rapid fire commands...")
 
-        # === 1. SET command (Expected: Success (NIL)) ===
+        # === 1. SET command (Expected: 'OK') ===
         N = struct.pack('!I', 3)
         L1 = struct.pack('!I', 3); D1 = b'SET'
         L2 = struct.pack('!I', len(key_name)); D2 = key_name.encode()
@@ -208,9 +211,12 @@ if __name__ == '__main__':
         print(f"PARSED RESULT (2): {result}")
 
         # === 3. KEYS command (Expected: Array including 'a') ===
-        N_keys = struct.pack('!I', 1)
+        # The pattern is an argument of its own, and no shell is involved,
+        # so it is a plain * (the backslash in keys \* is for the shell)
+        N_keys = struct.pack('!I', 2)
         L1_keys = struct.pack('!I', 4); D1_keys = b'KEYS'
-        keys_payload = N_keys + L1_keys + D1_keys
+        L2_keys = struct.pack('!I', 1); D2_keys = b'*'
+        keys_payload = N_keys + L1_keys + D1_keys + L2_keys + D2_keys
 
         print("\n\n=== 3. Running KEYS (Expected: Array including 'a') ===")
         result = send_and_parse_transaction(s, keys_payload, 'KEYS')
