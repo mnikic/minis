@@ -155,7 +155,7 @@ TEST_PERSIST_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(TEST_PERSIST_SRCS))
 # ============================================================================
 
 .PHONY: all clean install debug asan ubsan tsan android resp-test resp-test-asan resp-test-ubsan jni-test \
-        test test-android test-asan test-ubsan test-tsan test-debug heap-test
+        test test-all test-android test-asan test-ubsan test-tsan test-debug heap-test
 
 # Default: Build all binaries for the selected profile
 all: $(TARGET_MINIS) $(TARGET_CLI) $(TARGET_BENCH)
@@ -287,6 +287,11 @@ jni-test:
 # --- Profile-Specific Test Wrappers ---
 test-android:
 	@$(MAKE) PROFILE=android test
+
+# Everything: make test against its own server and resp-test, in release,
+# asan and ubsan, then jni-test. See test/run_all.sh.
+test-all:
+	@./test/run_all.sh
 
 test-asan:
 	@$(MAKE) PROFILE=asan test

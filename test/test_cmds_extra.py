@@ -9,6 +9,8 @@ import os
 # --- Dynamic Path Setup ---
 CLIENT_BIN_PATH = os.environ.get('CLIENT_BIN_PATH', 'build/bin/release/minis-bench')
 CLIENT_PLACEHOLDER = '{client_executable-abs_path}'
+# The server's port, the client's default (1234) when unset
+MINIS_PORT = os.environ.get('MINIS_PORT', '')
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 if os.path.isabs(CLIENT_BIN_PATH):
@@ -21,6 +23,7 @@ else:
 print(f"--- Client Configuration ---")
 print(f"CLIENT_BIN_NAME: {CLIENT_BIN_PATH}")
 print(f"Calculated Path: {client_executable_abs_path}")
+print(f"MINIS_PORT: {MINIS_PORT or 'default'}")
 print(f"----------------------------")
 
 CASES = r'''
@@ -1236,6 +1239,9 @@ for i, (cmd, expect) in enumerate(zip(cmds, outputs)):
     # Inject the absolute path into the command string, replacing the literal placeholder
     invariant_cmd = cmd.replace(CLIENT_PLACEHOLDER, client_executable_abs_path)
     command_parts = shlex.split(invariant_cmd)
+    # Only client commands, not "sleep"
+    if MINIS_PORT and command_parts[0] == client_executable_abs_path:
+        command_parts[1:1] = ['-p', MINIS_PORT]
 
     # *** NEW DEBUGGING OUTPUT ***
     if i == 0:
