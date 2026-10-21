@@ -686,6 +686,118 @@ class TestIdle(MinisTestCase):
         self.assertAlive()
 
 
+class TestIdleTimeout(MinisTestCase):
+    """-t closes a client that does nothing for that long: one that sends
+    no request, only part of one, or does not read its replies. A client
+    waiting in BLPOP is not idle."""
+
+    TIMEOUT = 1
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = MinisServer(["-t", str(cls.TIMEOUT)])
+
+    def connect(self):
+        sock = socket.create_connection(("127.0.0.1", self.server.port))
+        self.addCleanup(sock.close)
+        sock.settimeout(self.TIMEOUT + 3)
+        return sock
+
+    def closed_after(self, sock):
+        """Seconds until the server closes, reading whatever comes first"""
+        start = time.time()
+        try:
+            while sock.recv(1 << 20):
+                pass
+        except ConnectionResetError:
+            pass
+        return time.time() - start
+
+    def test_idle_client(self):
+        sock = self.connect()
+        sock.sendall(raw_command("PING"))
+        self.assertEqual(sock.recv(100), b"+PONG\r\n")
+        took = self.closed_after(sock)
+        self.assertGreater(took, self.TIMEOUT * 0.8)
+        self.assertLess(took, self.TIMEOUT + 1.5)
+
+    def test_busy_client_stays(self):
+        sock = self.connect()
+        for _ in range(8):
+            time.sleep(self.TIMEOUT / 3)
+            sock.sendall(raw_command("PING"))
+            self.assertEqual(sock.recv(100), b"+PONG\r\n")
+
+    def test_client_that_never_reads(self):
+        # 22MB of replies, more than the socket buffers of both sides and
+        # the server's write buffer hold: the server is stuck with them
+        self.r.set("it_big", "v" * 150_000)
+        sock = self.connect()
+        sock.sendall(raw_command("GET", "it_big") * 150)
+        time.sleep(self.TIMEOUT + 1.5)
+        # Closed: after what was in flight, the end or a reset
+        received = 0
+        try:
+            while True:
+                chunk = sock.recv(1 << 20)
+                if not chunk:
+                    break
+                received += len(chunk)
+        except ConnectionResetError:
+            pass
+        self.assertLess(received, 150 * 150_000)
+        self.assertAlive()
+
+    def test_slow_reader_stays(self):
+        # Each read makes room, and once enough of the socket is free the
+        # server writes again: an event, so its idle time starts over. In
+        # a timeout this reads about half of the 2MB the server's socket
+        # buffers, so that an EPOLLOUT comes in time.
+        value = "v" * 150_000
+        self.r.set("it_slow", value)
+        sock = self.connect()
+        want = f"$150000\r\n{value}\r\n".encode() * 30
+        sock.sendall(raw_command("GET", "it_slow") * 30)
+        got = b""
+        while len(got) < len(want):
+            chunk = sock.recv(512 * 1024)
+            if not chunk:
+                break
+            got += chunk
+            time.sleep(self.TIMEOUT / 10)
+        self.assertEqual(len(got), len(want))
+        self.assertEqual(got, want)
+
+    def test_half_a_request(self):
+        sock = self.connect()
+        sock.sendall(b"*2\r\n$3\r\nGET\r\n$5\r\nit")
+        took = self.closed_after(sock)
+        self.assertGreater(took, self.TIMEOUT * 0.8)
+        self.assertLess(took, self.TIMEOUT + 1.5)
+
+    def test_blocked_client_waits(self):
+        self.r.delete("it_queue")
+        sock = self.connect()
+        sock.sendall(raw_command("BLPOP", "it_queue", "0"))
+        time.sleep(self.TIMEOUT + 1.5)
+        self.r.rpush("it_queue", "x")
+        self.assertEqual(sock.recv(100),
+                         b"*2\r\n$8\r\nit_queue\r\n$1\r\nx\r\n")
+
+
+class TestNoIdleTimeout(MinisTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = MinisServer(["-t", "0"])
+
+    def test_idle_client_stays(self):
+        with socket.create_connection(("127.0.0.1", self.server.port)) as sock:
+            sock.settimeout(1)
+            time.sleep(2)
+            sock.sendall(raw_command("PING"))
+            self.assertEqual(sock.recv(100), b"+PONG\r\n")
+
+
 class TestShutdown(MinisTestCase):
     def test_sigterm_saves_and_exits_promptly(self):
         # A SIGTERM landing just before the event loop's wait used to be

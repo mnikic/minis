@@ -166,17 +166,13 @@ conn_release_comp_slots (Conn *conn)
   return released_count;
 }
 
+// Between its events an active connection waits on the client: for a new
+// request, the rest of one, or room for its replies, which a client that
+// never reads never makes. One waiting in BLPOP waits as long as it asked.
 bool
-conn_is_idle (Conn *conn)
+conn_waits_on_client (const Conn *conn)
 {
-  if (conn->state != STATE_ACTIVE)
-    {
-      return false;
-    }
-
-  bool no_pending_responses = (conn->pipeline_depth == 0);
-  bool no_unprocessed_reqs = !conn_has_unprocessed_data (conn);
-  return no_pending_responses && no_unprocessed_reqs;
+  return conn->state == STATE_ACTIVE && !conn->blocked;
 }
 
 void

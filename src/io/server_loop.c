@@ -35,7 +35,6 @@
 #include "common/macros.h"
 
 #define MAX_EVENTS 256
-#define K_IDLE_TIMEOUT_SEC 300ULL	// in seconds
 
 static struct
 {
@@ -51,6 +50,7 @@ static struct
   const char *db_dir;		// Snapshot directory
   // Written by the signal handler to wake epoll_wait, -1 until set up
   volatile sig_atomic_t wake_fd;
+  uint64_t idle_timeout_us;	// 0: clients are never timed out
 } g_data;
 
 static ALWAYS_INLINE uint64_t
@@ -229,8 +229,11 @@ handle_listener_event (int listen_fd, uint64_t now_us)
 	  continue;
 	}
 
-      conn->idle_start = now_us;
-      dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+      if (g_data.idle_timeout_us)
+	{
+	  conn->idle_start = now_us;
+	  dlist_insert_before (&g_data.idle_list, &conn->idle_list);
+	}
 
       // Both directions, once: with edge triggering EPOLLOUT only comes
       // back after a write filled the socket, so it never has to change.
@@ -293,23 +296,9 @@ process_timers (Cache *cache, uint64_t now_us)
   while (!dlist_empty (&g_data.idle_list))
     {
       Conn *next = next_idle_connection ();
-      uint64_t next_us = next->idle_start + (K_IDLE_TIMEOUT_SEC * 1000000);
-
-      if (next_us > now_us)
+      if (next->idle_start + g_data.idle_timeout_us > now_us)
 	break;
 
-      if (conn_has_pending_write (next))
-	{
-	  next->idle_start = now_us;
-
-	  dlist_detach (&next->idle_list);
-	  dlist_insert_before (&g_data.idle_list, &next->idle_list);
-
-	  DBG_LOGF
-	    ("FD %d: Pending I/O. Resetting idle timer and skipping close.",
-	     next->fd);
-	  continue;
-	}
       msgf ("Removing idle connection: %d", next->fd);
       conn_done (next);
     }
@@ -332,18 +321,18 @@ flush_dead_conns (Conn **conns, int count)
     }
 }
 
-// Helper: Manage Idle List State
+// After an event of the connection: its idle time starts over. A client
+// that sends nothing, or reads nothing so that its socket stays full,
+// causes no events, and times out.
 static ALWAYS_INLINE void
 update_idle_state (Conn *conn, uint64_t now_us)
 {
-  // If we touched it, it's active. Remove from idle list.
   if (dlist_is_linked (&conn->idle_list))
     {
       dlist_detach (&conn->idle_list);
     }
 
-  // If it's effectively waiting for a new request, mark it idle.
-  if (conn_is_idle (conn))
+  if (g_data.idle_timeout_us && conn_waits_on_client (conn))
     {
       conn->idle_start = now_us;
       dlist_insert_before (&g_data.idle_list, &conn->idle_list);
@@ -591,7 +580,7 @@ next_timer_ms (Cache *cache, uint64_t now_us)
   if (!dlist_empty (&g_data.idle_list))
     {
       Conn *next = next_idle_connection ();
-      next_us = next->idle_start + (K_IDLE_TIMEOUT_SEC * 1000000);
+      next_us = next->idle_start + g_data.idle_timeout_us;
     }
 
   uint64_t from_cache = cache_next_expiry (cache);
@@ -736,10 +725,11 @@ server_shutdown (Cache *cache, int listen_fd, int epfd)
 }
 
 int
-server_run (int port, const char *bind_addr, const char *db_dir,
-	    int ready_fd)
+server_run (int port, const char *bind_addr, uint64_t idle_timeout_sec,
+	    const char *db_dir, int ready_fd)
 {
   g_data.db_dir = db_dir;
+  g_data.idle_timeout_us = idle_timeout_sec * 1000000;
   struct epoll_event events[MAX_EVENTS];
   int listen_fd = -1;
   int epfd = -1;

@@ -161,7 +161,8 @@ conn_alloc_slot (Conn *conn)
 
 bool conn_has_pending_write (const Conn * conn);
 uint32_t conn_release_comp_slots (Conn * conn);
-bool conn_is_idle (Conn * conn);
+// Waiting on its client to send or to read, so the idle timeout counts
+bool conn_waits_on_client (const Conn * conn);
 void conn_reset (Conn * conn, int file_desc);
 
 /**
