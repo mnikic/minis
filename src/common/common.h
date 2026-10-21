@@ -192,12 +192,6 @@ str_hash (const uint8_t *data, size_t len)
   return hash;
 }
 
-static ALWAYS_INLINE uint64_t
-cstr_hash (const char *str)
-{
-  return str_hash ((const uint8_t *) str, strlen (str));
-}
-
 static ALWAYS_INLINE int
 cmp_int (const void *first, const void *second)
 {

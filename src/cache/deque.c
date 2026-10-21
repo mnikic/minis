@@ -29,26 +29,6 @@ dq_empty (t_deque *deque)
 }
 
 bool
-dq_push_front (t_deque *deque, void *content)
-{
-  t_deque_node *node = malloc (sizeof (t_deque_node));
-  if (!node)
-    {
-      msg ("Out of memory dq_push_front");
-      return false;
-    }
-  node->content = content;
-  node->prev = NULL;
-  node->next = deque->first;
-  if (dq_empty (deque))
-    deque->last = node;
-  else
-    deque->first->prev = node;
-  deque->first = node;
-  return true;
-}
-
-bool
 dq_push_back (t_deque *deque, void *content)
 {
   t_deque_node *node = malloc (sizeof (t_deque_node));
@@ -58,7 +38,6 @@ dq_push_back (t_deque *deque, void *content)
       return false;
     }
   node->content = content;
-  node->prev = deque->last;
   node->next = NULL;
   if (dq_empty (deque))
     deque->first = node;
@@ -79,26 +58,6 @@ dq_pop_front (t_deque *deque)
   deque->first = node->next;
   if (!deque->first)
     deque->last = NULL;
-  else
-    deque->first->prev = NULL;
-  content = node->content;
-  free (node);
-  return content;
-}
-
-void *
-dq_pop_back (t_deque *deque)
-{
-  t_deque_node *node;
-  void *content;
-  if (dq_empty (deque))
-    return NULL;
-  node = deque->last;
-  deque->last = node->prev;
-  if (!deque->last)
-    deque->first = NULL;
-  else
-    deque->last->next = NULL;
   content = node->content;
   free (node);
   return content;
@@ -110,14 +69,6 @@ dq_peek_front (t_deque *deque)
   if (dq_empty (deque))
     return NULL;
   return deque->first->content;
-}
-
-void *
-dq_peek_back (t_deque *deque)
-{
-  if (dq_empty (deque))
-    return NULL;
-  return deque->last->content;
 }
 
 void

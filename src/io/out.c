@@ -10,7 +10,6 @@
 #include "io/proto_defs.h"
 
 // RESP CONSTANTS
-#define RESP_OK     "+OK\r\n"
 #define RESP_NIL    "$-1\r\n"
 #define RESP3_NULL  "_\r\n"
 #define RESP_CRLF   "\r\n"

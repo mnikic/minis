@@ -141,14 +141,6 @@ conn_is_slot_fully_sent (ResponseSlot *slot)
   return slot->sent >= slot->total_len;
 }
 
-// Check if a slot is empty/available
-static ALWAYS_INLINE bool
-conn_is_slot_empty (ResponseSlot *slot)
-{
-  // Changed actual_length -> total_len
-  return slot->total_len == 0;
-}
-
 static ALWAYS_INLINE void
 conn_set_events (Conn *conn, uint32_t events)
 {
@@ -175,18 +167,6 @@ conn_alloc_slot (Conn *conn)
   conn->pipeline_depth++;
 
   return slot;
-}
-
-// Circular Buffer: Calculate available bytes
-static ALWAYS_INLINE uint32_t
-conn_wbuf_free_space (const Conn *conn)
-{
-  if (conn->wbuf_head >= conn->wbuf_tail)
-    {
-      // [   T      H    ] 
-      return conn->wbuf_size - (conn->wbuf_head - conn->wbuf_tail) - 1;
-    }
-  return conn->wbuf_tail - conn->wbuf_head - 1;
 }
 
 bool conn_has_pending_write (const Conn * conn);
