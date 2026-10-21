@@ -243,21 +243,26 @@ entry_new_zset (Minis *minis, const char *key, size_t key_len)
 }
 
 // The value goes in the entry if it fits the room made for it there,
-// else in a block of its own
+// else in a block of its own. That block is resized with realloc, which
+// keeps it in place within its size class, and so next to its entry:
+// allocating a new block before freeing the old would take the block the
+// previous SET freed, and changed values would scatter over the heap. A
+// failed realloc leaves the old value as it was.
 bool
 entry_set_str (Entry *ent, const char *val, size_t val_len)
 {
+  char *old = (ent->val && !entry_val_is_inline (ent)) ? ent->val : NULL;
   char *dst = entry_inline_val (ent);
   if (val_len >= ent->val_cap)
     {
-      dst = malloc (val_len + 1);
+      dst = old ? realloc (old, val_len + 1) : malloc (val_len + 1);
       if (!dst)
 	return false;
+      old = NULL;
     }
   memcpy (dst, val, val_len);
   dst[val_len] = '\0';
-  if (ent->val && !entry_val_is_inline (ent))
-    free (ent->val);
+  free (old);
   ent->val = dst;
   ent->val_len = val_len;
   return true;
