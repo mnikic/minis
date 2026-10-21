@@ -26,6 +26,7 @@
 #include <sched.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -153,7 +154,7 @@ rdb_save_background (Cache *cache, uint64_t now_us)
   if (child_pid == 0)
     {
       bool status = cache_save (cache, g_data.db_dir, now_us);
-      msgf ("Background saving terminated with success in %llu ms.",
+      msgf ("Background saving terminated with success in %" PRIu64 " ms.",
 	    (get_monotonic_usec () - g_data.last_snapshot_time) / 1000);
       _exit (status ? 0 : 1);
     }
@@ -246,7 +247,7 @@ handle_listener_event (int listen_fd, uint64_t now_us)
       if (unlikely
 	  (setsockopt (connfd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof (val))))
 	{
-	  msgf ("SO_ZEROCOPY not set. error: %s");
+	  msgf ("SO_ZEROCOPY not set. error: %s", strerror (errno));
 	}
 
       Conn *conn = connpool_get (g_data.fd2conn, connfd);
@@ -365,7 +366,7 @@ flush_dirty_conns (int epfd, Conn **conns, int count)
       event.events = conn->pending_events;
       sys_calls++;
       (void) sys_calls;
-      DBG_LOGF ("Calling CTL_MOD on fd: %i for event: %u, call number: %llu",
+      DBG_LOGF ("Calling CTL_MOD on fd: %i for event: %u, call number: %zu",
 		conn->fd, conn->pending_events, sys_calls);
       epoll_ctl (epfd, EPOLL_CTL_MOD, conn->fd, &event);
       conn->last_events = conn->pending_events;
@@ -562,7 +563,7 @@ cleanup_server_resources (Cache *cache, int listen_fd, int epfd)
       close (g_data.wake_fd);
       g_data.wake_fd = -1;
     }
-  msgf ("Cleanup complete. %llu calls to epoll_ctl", sys_calls);
+  msgf ("Cleanup complete. %zu calls to epoll_ctl", sys_calls);
 }
 
 static bool COLD
@@ -696,7 +697,8 @@ init_cache (uint64_t now_us)
 
   if (cache_load (cache, g_data.db_dir, now_us))
     {
-      msgf ("[Minis] DB loaded from directory %s in %llu ms.", g_data.db_dir,
+      msgf ("[Minis] DB loaded from directory %s in %" PRIu64 " ms.",
+	    g_data.db_dir,
 	    (get_monotonic_usec () - now_us) / 1000);
     }
   else
@@ -708,7 +710,7 @@ init_cache (uint64_t now_us)
 	}
       else
 	{
-	  msgf ("[Minis] No existing DB found. Starting fresh.",
+	  msgf ("[Minis] No existing DB found in %s. Starting fresh.",
 		g_data.db_dir);
 	}
     }
@@ -748,7 +750,8 @@ process_snapshots (Cache *cache, uint64_t now_us)
 	  dirty_diff >= save_params[i].changes)
 	{
 	  msgf
-	    ("Snapshot triggered: rule %llu/%llu with %llu changes in %llu seconds",
+	    ("Snapshot triggered: rule %" PRIu64 "/%" PRIu64 " with %" PRIu64
+	     " changes in %" PRIu64 " seconds",
 	     save_params[i].changes, save_params[i].seconds, dirty_diff,
 	     time_diff_sec);
 	  trigger = true;

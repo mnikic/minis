@@ -108,7 +108,8 @@ static const SaveParam save_params[] = {
     } \
 } while(0)
 
-void COLD msgf (const char *fmt, ...);
+// Checked like printf at every call
+void COLD msgf (const char *fmt, ...) __attribute__((format (printf, 1, 2)));
 void COLD msg (const char *msg);
 
 #ifdef K_ENABLE_BENCHMARK

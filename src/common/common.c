@@ -20,8 +20,8 @@
 
 bool g_verbose_mode = false;
 
-__attribute__((format (printf, 1, 2)))
-     void msgf (const char *fmt, ...)
+void
+msgf (const char *fmt, ...)
 {
   va_list apl;
   va_start (apl, fmt);
