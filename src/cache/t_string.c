@@ -143,9 +143,6 @@ minis_mset (Minis *minis, const char **key_vals, const size_t *lens,
   return err;
 }
 
-// MGET keys looked up together, see minis_mget
-#define K_MGET_GROUP 16
-
 MinisError
 minis_mget (Minis *minis, const char **keys, const size_t *key_lens,
 	    size_t count, MinisOneEntryVisitor visitor, void *ctx,
@@ -155,27 +152,18 @@ minis_mget (Minis *minis, const char **keys, const size_t *key_lens,
   size_t n_locked =
     lock_shards_batch (minis, keys, key_lens, count, 1, shards);
 
-  // The keys go in groups, and a group in stages: all their hash slots
-  // are prefetched, then all their entries, then all are looked up and
-  // their values prefetched, and only then visited. So the cache misses
-  // of a group's keys overlap instead of each key waiting for its own.
-  // More than 16 keys at once fill the cache before they are used.
+  // A group's keys are prefetched, then all looked up and their values
+  // prefetched, and only then visited, so that the misses overlap
   bool more = true;
-  for (size_t start = 0; more && start < count; start += K_MGET_GROUP)
+  for (size_t start = 0; more && start < count; start += K_KEY_GROUP)
     {
-      size_t n = count - start < K_MGET_GROUP ? count - start : K_MGET_GROUP;
+      size_t n = count - start < K_KEY_GROUP ? count - start : K_KEY_GROUP;
       const char **gkeys = keys + start;
       const size_t *glens = key_lens + start;
-      uint64_t hcodes[K_MGET_GROUP];
-      Entry *found[K_MGET_GROUP];
+      uint64_t hcodes[K_KEY_GROUP];
+      Entry *found[K_KEY_GROUP];
 
-      for (size_t i = 0; i < n; i++)
-	{
-	  hcodes[i] = str_hash ((const uint8_t *) gkeys[i], glens[i]);
-	  minis_prefetch_slot (minis, hcodes[i]);
-	}
-      for (size_t i = 0; i < n; i++)
-	minis_prefetch_entry (minis, hcodes[i]);
+      minis_prefetch_keys (minis, gkeys, glens, n, hcodes);
       // A lookup may drop its own key if it expired, never another one,
       // so what the earlier lookups found stays valid
       for (size_t i = 0; i < n; i++)

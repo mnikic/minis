@@ -1134,6 +1134,95 @@ test_mget_groups (void)
   printf ("PASSED\n");
 }
 
+// EXISTS and DEL take their keys 16 at a time too. A key given twice
+// counts twice for EXISTS but is deleted, and counted, once by DEL.
+static void
+test_exists_del_groups (void)
+{
+  printf ("TEST: EXISTS and DEL in groups of keys... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+  static char names[40][16];
+  for (int i = 0; i < 40; i++)
+    snprintf (names[i], sizeof (names[i]), "edg_%d", i);
+
+  const char *cmd[64];
+  size_t lens[64];
+  size_t sizes[] = { 1, 2, 15, 16, 17, 31, 32, 33, 40 };
+  for (size_t s = 0; s < sizeof (sizes) / sizeof (sizes[0]); s++)
+    {
+      // Every third key missing, every fifth a list
+      bool present[40] = { false };
+      for (int i = 0; i < 40; i++)
+	{
+	  if (i % 3 == 0)
+	    continue;
+	  if (i % 5 == 0)
+	    RUN (cache, now, "rpush", names[i], "x");
+	  else
+	    RUN (cache, now, "set", names[i], "v");
+	  present[i] = true;
+	}
+
+      size_t count = sizes[s];
+      uint64_t exists = 0, deleted = 0;
+      bool gone[40] = { false };
+      for (size_t i = 0; i < count; i++)
+	{
+	  // Keys in a scrambled order, some of them twice
+	  size_t k = (i * 7 + s) % 40;
+	  if (i % 4 == 3)
+	    k = (i - 1) * 7 % 40;
+	  cmd[1 + i] = names[k];
+	  lens[1 + i] = strlen (names[k]);
+	  exists += present[k];
+	  if (present[k] && !gone[k])
+	    deleted++;
+	  gone[k] = true;
+	}
+
+      cmd[0] = "exists";
+      lens[0] = 6;
+      buf = init_test_buffer (PROTO_BIN);
+      ASSERT_TRUE (cache_execute_n (cache, cmd, lens, 1 + count, &buf, now));
+      ASSERT_EQ (extract_int_response (&buf), exists);
+
+      cmd[0] = "del";
+      lens[0] = 3;
+      buf = init_test_buffer (PROTO_BIN);
+      ASSERT_TRUE (cache_execute_n (cache, cmd, lens, 1 + count, &buf, now));
+      ASSERT_EQ (extract_int_response (&buf), deleted);
+
+      // Exactly the keys given are gone
+      for (int i = 0; i < 40; i++)
+	{
+	  RUN (cache, now, "exists", names[i]);
+	  ASSERT_EQ (extract_int_response (&buf),
+		     (uint64_t) (present[i] && !gone[i]));
+	  RUN (cache, now, "del", names[i]);
+	}
+    }
+
+  // An expired key twice in one group neither exists nor counts as
+  // deleted, and the keys around it are unaffected
+  RUN (cache, now, "mset", "edg_a", "1", "edg_exp", "2", "edg_b", "3");
+  RUN (cache, now, "pexpire", "edg_exp", "1");
+  RUN (cache, now + 5000, "exists", "edg_a", "edg_exp", "edg_b", "edg_exp");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now, "pexpire", "edg_exp", "1");
+  RUN (cache, now, "set", "edg_exp", "2");
+  RUN (cache, now, "pexpire", "edg_exp", "1");
+  RUN (cache, now + 5000, "del", "edg_exp", "edg_a", "edg_exp", "edg_b");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now + 5000, "exists", "edg_a", "edg_exp", "edg_b");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // ============================================================================
 // Test 6l: Glob patterns
 // ============================================================================
@@ -3089,6 +3178,7 @@ main (void)
   test_list_rem ();
   test_mget_other_types ();
   test_mget_groups ();
+  test_exists_del_groups ();
   test_glob ();
   test_hm_lookup_mid_resize ();
   test_hm_random_ops ();

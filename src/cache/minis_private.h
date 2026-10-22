@@ -117,6 +117,18 @@ lock_shards_batch (struct Minis *minis, const char **keys,
 #endif
 }
 
+// Commands with many keys take them in groups of this many, hashed and
+// prefetched together by minis_prefetch_keys
+#define K_KEY_GROUP 16
+
+// Hashes N <= K_KEY_GROUP keys into HCODES, then prefetches all their
+// hash slots and then all their entries, so that the cache misses of the
+// keys overlap instead of each key waiting for its own. More than 16 keys
+// at once fill the cache before they are used. The keys' shards must be
+// locked, or be the server's, whose tables only its main thread changes.
+void minis_prefetch_keys (struct Minis *minis, const char **keys,
+			  const size_t *key_lens, size_t n, uint64_t *hcodes);
+
 // 2. UNLOCK (Reverse Order)
 static ALWAYS_INLINE void
 unlock_shards_batch (struct Minis *minis, const int *shards,

@@ -146,13 +146,10 @@ minis_next_expiry (Minis *minis)
 // Internal helper for DEL (Assumes Shard Lock is HELD)
 static int
 minis_del_internal_locked (Minis *minis, Shard *shard, const char *key,
-			   size_t key_len,
-			   uint64_t now_us)
+			   size_t key_len, uint64_t hcode, uint64_t now_us)
 {
   EntryKey ekey = {.key = key,.len = key_len };
-  HNode *node = hm_pop (&shard->db, &ekey,
-			str_hash ((const uint8_t *) key, key_len),
-			&entry_eq_str);
+  HNode *node = hm_pop (&shard->db, &ekey, hcode, &entry_eq_str);
   int ret_val = 0;
 
   if (node)
@@ -176,7 +173,9 @@ minis_del (Minis *minis, const char *key, size_t key_len, int *out_deleted,
 {
   Shard *shard = lock_shard_for_key (minis, key, key_len);
   *out_deleted =
-    minis_del_internal_locked (minis, shard, key, key_len, now_us);
+    minis_del_internal_locked (minis, shard, key, key_len,
+			       str_hash ((const uint8_t *) key, key_len),
+			       now_us);
   unlock_shard (shard);
   return MINIS_OK;
 }
@@ -213,14 +212,17 @@ minis_mdel (Minis *minis, const char **keys, const size_t *key_lens,
     lock_shards_batch (minis, keys, key_lens, count, 1, shards);
 
   uint64_t total = 0;
-  for (size_t i = 0; i < count; ++i)
+  for (size_t start = 0; start < count; start += K_KEY_GROUP)
     {
-      int shard_id = get_shard_id (keys[i], key_lens[i]);
-      int deleted =
-	minis_del_internal_locked (minis, &minis->shards[shard_id], keys[i],
-				   key_lens[i],
-				   now_us);
-      total += (uint64_t) deleted;
+      size_t n = count - start < K_KEY_GROUP ? count - start : K_KEY_GROUP;
+      uint64_t hcodes[K_KEY_GROUP];
+      minis_prefetch_keys (minis, keys + start, key_lens + start, n, hcodes);
+      for (size_t i = 0; i < n; i++)
+	total += (uint64_t)
+	  minis_del_internal_locked (minis,
+				     &minis->shards[hcodes[i] & SHARD_MASK],
+				     keys[start + i], key_lens[start + i],
+				     hcodes[i], now_us);
     }
 
   unlock_shards_batch (minis, shards, n_locked);
@@ -234,21 +236,27 @@ MinisError
 minis_exists (Minis *minis, const char **keys, const size_t *key_lens,
 	      size_t nkeys, int64_t *out_exists, uint64_t now_us)
 {
-  // Note: For EXISTS with multiple keys, we have a choice:
-  // 1. Lock all involved shards (Atomic snapshot)
-  // 2. Lock one by one (Rolling check)
-  // Redis EXISTS is atomic, but for simple checking, 'Rolling' is usually acceptable 
-  // and much faster/simpler than the MDEL sorting dance.
-  // Let's go with rolling checks for concurrency.
+  // All the shards locked at once, as minis_prefetch_keys needs, which
+  // also makes EXISTS atomic, as in Redis
+  int shards[NUM_SHARDS];
+  size_t n_locked =
+    lock_shards_batch (minis, keys, key_lens, nkeys, 1, shards);
 
   int64_t hits = 0;
-  for (size_t i = 0; i < nkeys; ++i)
+  for (size_t start = 0; start < nkeys; start += K_KEY_GROUP)
     {
-      Shard *shard = lock_shard_for_key (minis, keys[i], key_lens[i]);
-      if (entry_lookup (minis, shard, keys[i], key_lens[i], now_us))
-	hits++;
-      unlock_shard (shard);
+      size_t n = nkeys - start < K_KEY_GROUP ? nkeys - start : K_KEY_GROUP;
+      uint64_t hcodes[K_KEY_GROUP];
+      minis_prefetch_keys (minis, keys + start, key_lens + start, n, hcodes);
+      for (size_t i = 0; i < n; i++)
+	if (entry_lookup_hashed (minis,
+				 &minis->shards[hcodes[i] & SHARD_MASK],
+				 keys[start + i], key_lens[start + i],
+				 hcodes[i], now_us))
+	  hits++;
     }
+
+  unlock_shards_batch (minis, shards, n_locked);
 
   if (out_exists)
     *out_exists = hits;
@@ -267,7 +275,8 @@ minis_expire (Minis *minis, const char *key, size_t key_len, int64_t ttl_ms,
     {
       // Like Redis: a TTL that is already up deletes the key
       success = minis_del_internal_locked (minis, shard, key, key_len,
-					   now_us);
+					   str_hash ((const uint8_t *) key,
+						     key_len), now_us);
     }
   else if (ent)
     {
@@ -472,6 +481,19 @@ minis_prefetch_slot (Minis *minis, uint64_t hcode)
   const HTab *htab = &minis->shards[hcode & SHARD_MASK].db.ht1;
   if (htab->tab)
     __builtin_prefetch (&htab->tab[hcode & htab->mask]);
+}
+
+void
+minis_prefetch_keys (Minis *minis, const char **keys, const size_t *key_lens,
+		     size_t n, uint64_t *hcodes)
+{
+  for (size_t i = 0; i < n; i++)
+    {
+      hcodes[i] = str_hash ((const uint8_t *) keys[i], key_lens[i]);
+      minis_prefetch_slot (minis, hcodes[i]);
+    }
+  for (size_t i = 0; i < n; i++)
+    minis_prefetch_entry (minis, hcodes[i]);
 }
 
 void

@@ -1824,6 +1824,37 @@ class TestMgetGroups(MinisTestCase):
         self.assertEqual(self.r.exists(*keys[1::2]), 0)
 
 
+class TestExistsDelGroups(MinisTestCase):
+    """EXISTS and DEL take their keys 16 at a time; for any number of keys,
+    in any order and given twice, they count what Redis counts"""
+
+    def test_against_a_model(self):
+        rng = random.Random(11)
+        names = [f"edm_{i}" for i in range(120)]
+        for size in list(range(1, 50)) + [1023]:
+            with self.subTest(size=size):
+                self.r.delete(*names)
+                present = set()
+                pipe = self.r.pipeline(transaction=False)
+                for name in names:
+                    kind = rng.random()
+                    if kind < 0.5:
+                        pipe.set(name, "v")
+                        present.add(name)
+                    elif kind < 0.6:
+                        pipe.rpush(name, "x")
+                        present.add(name)
+                pipe.execute()
+                keys = [rng.choice(names) for _ in range(size)]
+                self.assertEqual(self.r.exists(*keys),
+                                 sum(k in present for k in keys))
+                self.assertEqual(self.r.delete(*keys),
+                                 len(present & set(keys)))
+                for name in names:
+                    self.assertEqual(self.r.exists(name),
+                                     int(name in present - set(keys)))
+
+
 class TestPipelining(MinisTestCase):
     """Many requests in one write, in both protocols: past the per-round
     request budget (1024) and the response slots (2048), with requests
