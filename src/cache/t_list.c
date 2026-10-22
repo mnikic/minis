@@ -113,6 +113,9 @@ minis_pop (Minis *minis, const char *key, size_t key_len, size_t count, bool fro
   return MINIS_OK;
 }
 
+// How many items ahead of the visit LRANGE prefetches
+#define K_LRANGE_AHEAD 16
+
 MinisError
 minis_lrange (Minis *minis, const char *key, size_t key_len, int64_t start, int64_t stop,
 	      MinisListCb cb, void *ctx, uint64_t now_us)
@@ -138,9 +141,16 @@ minis_lrange (Minis *minis, const char *key, size_t key_len, int64_t start, int6
 
   if (start <= stop)
     {
+      // Each item is a block of its own: the ones K_LRANGE_AHEAD ahead
+      // are prefetched, so their misses overlap with the visits
       size_t total = (size_t) (stop - start + 1);
+      for (size_t i = 0; i < total && i < K_LRANGE_AHEAD; i++)
+	__builtin_prefetch (list_at (list, (size_t) start + i));
       for (size_t i = 0; i < total; i++)
 	{
+	  if (i + K_LRANGE_AHEAD < total)
+	    __builtin_prefetch (list_at (list,
+					 (size_t) start + i + K_LRANGE_AHEAD));
 	  const ListItem *item = list_at (list, (size_t) start + i);
 	  if (!cb (item->data, item->len, i, total, ctx))
 	    {

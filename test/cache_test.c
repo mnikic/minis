@@ -1508,6 +1508,78 @@ test_shard_spread (void)
   printf ("PASSED\n");
 }
 
+// LRANGE prefetches the items ahead of it: every range, of lengths
+// around the prefetch distance (16), over a ring that wraps, gives the
+// items in order; a reply too big stops it partway
+static void
+test_lrange_ahead (void)
+{
+  printf ("TEST: LRANGE with items prefetched ahead... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+  // Pushed at both ends, so the ring's first item is not in slot 0;
+  // model[] holds the list in order
+  static char vals[40][16];
+  const char *model[40];
+  int first = 20, last = 19;
+  for (int i = 0; i < 40; i++)
+    {
+      snprintf (vals[i], sizeof (vals[i]), "v%d", i);
+      if (i % 2)
+	{
+	  RUN (cache, now, "lpush", "lra", vals[i]);
+	  model[--first] = vals[i];
+	}
+      else
+	{
+	  RUN (cache, now, "rpush", "lra", vals[i]);
+	  model[++last] = vals[i];
+	}
+    }
+  ASSERT_TRUE (first == 0 && last == 39);
+  RUN (cache, now, "lpop", "lra");
+  RUN (cache, now, "rpush", "lra", "end");
+  for (int i = 0; i < 39; i++)
+    model[i] = model[i + 1];
+  model[39] = "end";
+
+  int bounds[] = { -100, -41, -40, -17, -16, -15, -2, -1, 0, 1, 14, 15, 16,
+    17, 31, 32, 33, 38, 39, 40, 100
+  };
+  int n = (int) (sizeof (bounds) / sizeof (bounds[0]));
+  for (int a = 0; a < n; a++)
+    for (int b = 0; b < n; b++)
+      {
+	char start[16], stop[16];
+	snprintf (start, sizeof (start), "%d", bounds[a]);
+	snprintf (stop, sizeof (stop), "%d", bounds[b]);
+	int from = bounds[a] < 0 ? bounds[a] + 40 : bounds[a];
+	int to = bounds[b] < 0 ? bounds[b] + 40 : bounds[b];
+	if (from < 0)
+	  from = 0;
+	if (to > 39)
+	  to = 39;
+	RUN (cache, now, "lrange", "lra", start, stop);
+	assert_str_array (&buf, model + (from <= to ? from : 0),
+			  from <= to ? (size_t) (to - from + 1) : 0);
+      }
+
+  // Too big for the buffer: the walk stops with prefetches still ahead
+  // of it (ASan checks they read nothing outside the list)
+  static char big[3000];
+  memset (big, 'b', sizeof (big) - 1);
+  for (int i = 0; i < 20; i++)
+    RUN (cache, now, "rpush", "lra_big", big);
+  const char *cmd[] = { "lrange", "lra_big", "0", "-1" };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_FALSE (cache_execute (cache, cmd, 4, &buf, now));
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // ============================================================================
 // Test 6l: Glob patterns
 // ============================================================================
@@ -3532,6 +3604,7 @@ main (void)
   test_hash_inline_values ();
   test_str_hash ();
   test_shard_spread ();
+  test_lrange_ahead ();
   test_glob ();
   test_hm_lookup_mid_resize ();
   test_hm_random_ops ();

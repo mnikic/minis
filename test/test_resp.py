@@ -2032,6 +2032,39 @@ class TestPipelinedHashFields(MinisTestCase):
                 self.assertEqual(self.b.hgetall(key), model[key])
 
 
+class TestLrangeAhead(MinisTestCase):
+    """LRANGE prefetches the items ahead of it; lists pushed and popped at
+    both ends give what a model of them gives, for any range"""
+
+    def test_against_a_model(self):
+        rng = random.Random(4)
+        self.r.delete("lra_py")
+        model = []
+        for step in range(3000):
+            op = rng.random()
+            value = f"v{step}" * rng.randint(1, 20)
+            if op < 0.35:
+                self.r.rpush("lra_py", value)
+                model.append(value)
+            elif op < 0.65:
+                self.r.lpush("lra_py", value)
+                model.insert(0, value)
+            elif op < 0.75 and model:
+                self.assertEqual(self.r.lpop("lra_py"), model.pop(0))
+            elif op < 0.85 and model:
+                self.assertEqual(self.r.rpop("lra_py"), model.pop())
+            else:
+                n = len(model)
+                start = rng.randint(-n - 5, n + 5)
+                stop = rng.randint(-n - 5, n + 5)
+                first = max(start + n if start < 0 else start, 0)
+                last = min(stop + n if stop < 0 else stop, n - 1)
+                self.assertEqual(self.r.lrange("lra_py", start, stop),
+                                 model[first:last + 1] if first <= last
+                                 else [], f"step {step} {start} {stop}")
+        self.assertEqual(self.r.lrange("lra_py", 0, -1), model)
+
+
 class TestPipelining(MinisTestCase):
     """Many requests in one write, in both protocols: past the per-round
     request budget (1024) and the response slots (2048), with requests
