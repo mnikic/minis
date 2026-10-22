@@ -1783,6 +1783,25 @@ class TestStringValueSizes(MinisTestCase):
             self.assertEqual(self.r.get(key), value, key)
 
 
+class TestHgetallAhead(MinisTestCase):
+    """HGETALL walks with iterators ahead of it; the hash it returns is
+    the hash, whatever its size and through each resize"""
+
+    def test_growing_and_shrinking(self):
+        rng = random.Random(5)
+        self.r.delete("hga_py")
+        model = {}
+        for i in range(400):
+            field = f"f{i}" + "x" * rng.randint(0, 40)
+            model[field] = "v" * rng.randint(0, 200)
+            self.r.hset("hga_py", field, model[field])
+            self.assertEqual(self.r.hgetall("hga_py"), model)
+        for field in list(model)[::2]:
+            self.r.hdel("hga_py", field)
+            del model[field]
+            self.assertEqual(self.r.hgetall("hga_py"), model)
+
+
 class TestMgetGroups(MinisTestCase):
     """MGET looks its keys up 16 at a time; any number of keys, in any
     order, given twice, missing, of other types or expired, give what

@@ -1223,6 +1223,99 @@ test_exists_del_groups (void)
   printf ("PASSED\n");
 }
 
+// A binary HGETALL reply of the hash test_hgetall_ahead builds: each
+// field in WANT exactly once, with its value
+static void
+assert_hgetall_reply (Buffer *buf, const bool *want, size_t nfields)
+{
+  const uint8_t *data = buf_data (buf);
+  size_t expect = 0;
+  for (size_t i = 0; i < nfields; i++)
+    expect += want[i];
+  ASSERT_EQ (data[0], SER_ARR);
+  uint32_t n;
+  memcpy (&n, &data[1], 4);
+  ASSERT_EQ (ntoh_u32 (n), 2 * expect);
+  bool seen[512] = { false };
+  size_t pos = 5;
+  for (size_t p = 0; p < expect; p++)
+    {
+      char field[64], value[256];
+      for (int half = 0; half < 2; half++)
+	{
+	  ASSERT_EQ (data[pos], SER_STR);
+	  uint32_t len;
+	  memcpy (&len, &data[pos + 1], 4);
+	  len = ntoh_u32 (len);
+	  ASSERT_TRUE (len < sizeof (value));
+	  memcpy (half ? value : field, &data[pos + 5], len);
+	  (half ? value : field)[len] = '\0';
+	  pos += 5 + len;
+	}
+      size_t k = (size_t) atoi (field + 1);
+      ASSERT_TRUE (k < nfields && want[k] && !seen[k]);
+      seen[k] = true;
+      ASSERT_EQ (strlen (value), k % 12);
+      for (size_t c = 0; c < k % 12; c++)
+	ASSERT_EQ (value[c], 'a' + (char) (k % 26));
+    }
+  ASSERT_EQ (pos, buf_len (buf));
+}
+
+// HGETALL walks with iterators ahead of it: on a hash after every field
+// added, through each resize where the fields are in two tables, after
+// deletes, and stopping partway when the reply does not fit
+static void
+test_hgetall_ahead (void)
+{
+  printf ("TEST: HGETALL with iterators ahead... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+  enum { NFIELDS = 300 };
+  bool want[NFIELDS] = { false };
+  // Small values, so that 300 fields fit in the test's reply buffer
+  static char fields[NFIELDS][16], values[NFIELDS][16];
+
+  RUN (cache, now, "hgetall", "hga");
+  assert_hgetall_reply (&buf, want, NFIELDS);
+  for (int k = 0; k < NFIELDS; k++)
+    {
+      snprintf (fields[k], sizeof (fields[k]), "f%d", k);
+      memset (values[k], 'a' + k % 26, (size_t) (k % 12));
+      values[k][k % 12] = '\0';
+      RUN (cache, now, "hset", "hga", fields[k], values[k]);
+      want[k] = true;
+      RUN (cache, now, "hgetall", "hga");
+      assert_hgetall_reply (&buf, want, NFIELDS);
+    }
+  for (int k = 0; k < NFIELDS; k += 3)
+    {
+      RUN (cache, now, "hdel", "hga", fields[k]);
+      want[k] = false;
+    }
+  RUN (cache, now, "hgetall", "hga");
+  assert_hgetall_reply (&buf, want, NFIELDS);
+
+  // Too big for the buffer: the walk stops with the iterators still
+  // ahead of it (ASan checks they read nothing freed)
+  static char big[3000];
+  memset (big, 'b', sizeof (big) - 1);
+  for (int i = 0; i < 20; i++)
+    {
+      char field[32];
+      snprintf (field, sizeof (field), "big%d", i);
+      RUN (cache, now, "hset", "hga_big", field, big);
+    }
+  const char *cmd[] = { "hgetall", "hga_big" };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_FALSE (cache_execute (cache, cmd, 2, &buf, now));
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // ============================================================================
 // Test 6l: Glob patterns
 // ============================================================================
@@ -3179,6 +3272,7 @@ main (void)
   test_mget_other_types ();
   test_mget_groups ();
   test_exists_del_groups ();
+  test_hgetall_ahead ();
   test_glob ();
   test_hm_lookup_mid_resize ();
   test_hm_random_ops ();

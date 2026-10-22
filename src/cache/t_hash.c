@@ -191,6 +191,27 @@ minis_hlen (Minis *minis, const char *key, size_t key_len, size_t *out_count, ui
   return MINIS_OK;
 }
 
+#ifndef K_HGETALL_AHEAD
+#define K_HGETALL_AHEAD 4
+#endif
+
+static inline void
+prefetch_hash_entry (HNode *node)
+{
+  if (node)
+    __builtin_prefetch (node);
+}
+
+static inline void
+prefetch_hash_strings (HNode *node)
+{
+  if (!node)
+    return;
+  const HashEntry *hent = fetch_hash_entry (node);
+  __builtin_prefetch (hent->field);
+  __builtin_prefetch (hent->value);
+}
+
 MinisError
 minis_hgetall (Minis *minis, const char *key, size_t key_len, MinisHashCb func, void *ctx,
 	       uint64_t now_us)
@@ -210,13 +231,25 @@ minis_hgetall (Minis *minis, const char *key, size_t key_len, MinisHashCb func, 
       return MINIS_ERR_TYPE;
     }
 
-  HMIter iter;
+  // Two iterators run ahead: the far one prefetches a field's entry, and
+  // by the time the near one reaches it the entry is in, so it prefetches
+  // the field and the value. So their misses overlap with the visits.
+  HMIter iter, near, far;
   hm_iter_init (ent->hash, &iter);
+  hm_iter_init (ent->hash, &near);
+  hm_iter_init (ent->hash, &far);
+  for (int i = 0; i < K_HGETALL_AHEAD; i++)
+    {
+      prefetch_hash_entry (hm_iter_next (&far));
+      prefetch_hash_entry (hm_iter_next (&far));
+      prefetch_hash_strings (hm_iter_next (&near));
+    }
   HNode *node;
   while ((node = hm_iter_next (&iter)))
     {
-      HashEntry *hash_entry = fetch_hash_entry (node);
-      if (!func (hash_entry, ctx))
+      prefetch_hash_entry (hm_iter_next (&far));
+      prefetch_hash_strings (hm_iter_next (&near));
+      if (!func (fetch_hash_entry (node), ctx))
 	break;
     }
 
