@@ -174,8 +174,7 @@ minis_del (Minis *minis, const char *key, size_t key_len, int *out_deleted,
   Shard *shard = lock_shard_for_key (minis, key, key_len);
   *out_deleted =
     minis_del_internal_locked (minis, shard, key, key_len,
-			       str_hash ((const uint8_t *) key, key_len),
-			       now_us);
+			       key_hash (minis, key, key_len), now_us);
   unlock_shard (shard);
   return MINIS_OK;
 }
@@ -275,8 +274,8 @@ minis_expire (Minis *minis, const char *key, size_t key_len, int64_t ttl_ms,
     {
       // Like Redis: a TTL that is already up deletes the key
       success = minis_del_internal_locked (minis, shard, key, key_len,
-					   str_hash ((const uint8_t *) key,
-						     key_len), now_us);
+					   key_hash (minis, key, key_len),
+					   now_us);
     }
   else if (ent)
     {
@@ -481,6 +480,15 @@ minis_prefetch_slot (Minis *minis, uint64_t hcode)
   const HTab *htab = &minis->shards[hcode & SHARD_MASK].db.ht1;
   if (htab->tab)
     __builtin_prefetch (&htab->tab[hcode & htab->mask]);
+}
+
+void
+minis_hint_key (Minis *minis, const char *key, size_t key_len,
+		uint64_t hcode)
+{
+  minis->hint_key = key;
+  minis->hint_len = key_len;
+  minis->hint_hcode = hcode;
 }
 
 void

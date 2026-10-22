@@ -2007,8 +2007,9 @@ check_framing (const char *msg, size_t len, ProtoStatus want,
     len = strlen (msg);
   size_t got_len = 0;
   const char *error = NULL;
+  ProtoMessageInfo key = { 0 };
   ProtoStatus got = scan_resp_message ((const uint8_t *) msg, len, &got_len,
-				       &error);
+				       &error, &key);
   if (got != want || (want == PROTO_DECISION_OK && got_len != want_len)
       || (want == PROTO_DECISION_INVALID
 	  && (!error || !strstr (error, want_error))))
@@ -2858,20 +2859,31 @@ static void
 assert_request_key (const char *req, size_t len, ProtoType type,
 		    const char *want, size_t want_len)
 {
-  const uint8_t *key = NULL;
-  size_t key_len = 0;
-  bool found = proto_request_key ((const uint8_t *) req, len, type, &key,
-				  &key_len);
+  // A binary body goes behind its length
+  static uint8_t msg[512];
+  size_t msg_len = len;
+  const uint8_t *m = (const uint8_t *) req;
+  if (type == PROTO_BIN)
+    {
+      uint32_t net = hton_u32 ((uint32_t) len);
+      memcpy (msg, &net, 4);
+      memcpy (msg + 4, req, len);
+      m = msg;
+      msg_len = len + 4;
+    }
+  ProtoMessageInfo info;
+  proto_identify_message (m, msg_len, &info);
   if (!want)
     {
-      ASSERT_FALSE (found);
+      ASSERT_FALSE (info.status == PROTO_DECISION_OK && info.has_key);
       return;
     }
-  ASSERT_TRUE (found);
-  ASSERT_EQ (key_len, want_len);
-  ASSERT_TRUE (key >= (const uint8_t *) req
-	       && key + key_len <= (const uint8_t *) req + len);
-  ASSERT_TRUE (memcmp (key, want, want_len) == 0);
+  ASSERT_EQ (info.status, PROTO_DECISION_OK);
+  ASSERT_TRUE (info.has_key);
+  ASSERT_EQ (info.key_len, want_len);
+  ASSERT_TRUE (info.key_off + info.key_len <= info.payload_len);
+  ASSERT_TRUE (memcmp (m + info.header_len + info.key_off, want, want_len)
+	       == 0);
 }
 
 // A binary request body: argument count, then length and bytes of each
@@ -2891,8 +2903,8 @@ bin_request (char *out, const char **args, const size_t *lens, size_t argc)
   return pos;
 }
 
-// proto_request_key finds argument 1 of a framed request, which the
-// server prefetches ahead, and never reads past the request
+// Framing finds argument 1 of a request, which the server hashes once
+// and prefetches ahead, and never reads past the request
 static void
 test_request_key (void)
 {

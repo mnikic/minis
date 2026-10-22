@@ -33,6 +33,8 @@ uint64_t cache_dirty_count (Cache * cache);
 // See minis_prefetch_slot and minis_prefetch_entry
 void cache_prefetch_slot (Cache * cache, uint64_t hcode);
 void cache_prefetch_entry (Cache * cache, uint64_t hcode);
+void cache_hint_key (Cache * cache, const char *key, size_t key_len,
+		     uint64_t hcode);
 
 typedef enum
 {

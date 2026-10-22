@@ -189,8 +189,7 @@ entry_lookup (Minis *minis, Shard *shard, const char *key, size_t key_len,
 	      uint64_t now_us)
 {
   return entry_lookup_hashed (minis, shard, key, key_len,
-			      str_hash ((const uint8_t *) key, key_len),
-			      now_us);
+			      key_hash (minis, key, key_len), now_us);
 }
 
 Entry *

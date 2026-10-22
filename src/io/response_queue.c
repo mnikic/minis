@@ -15,7 +15,8 @@
 // prefetched while the current one runs: the hash slot of the request
 // K_PREFETCH_SLOT ahead, then, once that slot is in cache, the entry of
 // the request K_PREFETCH_ENTRY ahead. Their cache misses overlap instead
-// of each request waiting for its own.
+// of each request waiting for its own. Each request is framed and its
+// key hashed here once, and run with that frame and hash.
 #define K_PREFETCH_SLOT 8
 #define K_PREFETCH_ENTRY 4
 
@@ -23,8 +24,8 @@ typedef struct
 {
   size_t offset;		// Where the next request to look at starts
   uint64_t next;		// Its number; requests are numbered as run
-  uint64_t hcodes[K_PREFETCH_SLOT];	// Key hashes of those looked at
-  bool keyed[K_PREFETCH_SLOT];
+  ProtoMessageInfo frames[K_PREFETCH_SLOT];	// Of those looked at
+  uint64_t hcodes[K_PREFETCH_SLOT];	// Their keys' hashes
 } Lookahead;
 
 // Looks ahead up to K_PREFETCH_SLOT requests past 'running', the number
@@ -39,29 +40,29 @@ lookahead (Cache *cache, Conn *conn, Lookahead *la, uint64_t running)
     }
   while (la->next < running + K_PREFETCH_SLOT)
     {
-      ProtoMessageInfo m = proto_identify_message (&conn->rbuf[la->offset],
-						   conn->rbuf_size -
-						   la->offset);
-      if (m.status != PROTO_DECISION_OK)
-	return;
+      // Framed in place: a copy of the frame, read back whole right after
+      // it is written in parts, would wait for the writes to land
       size_t i = la->next % K_PREFETCH_SLOT;
-      const uint8_t *key;
-      size_t key_len;
-      // The one about to run gains nothing, it only gets framed
-      la->keyed[i] = la->next != running
-	&& proto_request_key (&conn->rbuf[la->offset + m.header_len],
-			      m.payload_len, m.type, &key, &key_len);
-      if (la->keyed[i])
+      ProtoMessageInfo *m = &la->frames[i];
+      proto_identify_message (&conn->rbuf[la->offset],
+			      conn->rbuf_size - la->offset, m);
+      if (m->status != PROTO_DECISION_OK)
+	return;
+      if (m->has_key)
 	{
-	  la->hcodes[i] = str_hash (key, key_len);
-	  cache_prefetch_slot (cache, la->hcodes[i]);
+	  la->hcodes[i] =
+	    str_hash (&conn->rbuf[la->offset + m->header_len + m->key_off],
+		      m->key_len);
+	  // The one about to run gains nothing from a prefetch
+	  if (la->next != running)
+	    cache_prefetch_slot (cache, la->hcodes[i]);
 	}
       // The request whose slot was prefetched a while ago
       uint64_t earlier = la->next - (K_PREFETCH_SLOT - K_PREFETCH_ENTRY);
       if (la->next >= K_PREFETCH_SLOT - K_PREFETCH_ENTRY && earlier > running
-	  && la->keyed[earlier % K_PREFETCH_SLOT])
+	  && la->frames[earlier % K_PREFETCH_SLOT].has_key)
 	cache_prefetch_entry (cache, la->hcodes[earlier % K_PREFETCH_SLOT]);
-      la->offset += m.total_len;
+      la->offset += m->total_len;
       la->next++;
     }
 }
@@ -86,6 +87,10 @@ response_queue_process_input (Cache *cache, Conn *conn, uint64_t now_us)
 	break;
 
       lookahead (cache, conn, &la, running);
+      // Framed, unless it is incomplete or bad, which it frames itself
+      bool framed = la.next > running;
+      ctx.frame = framed ? &la.frames[running % K_PREFETCH_SLOT] : NULL;
+      ctx.key_hcode = framed ? la.hcodes[running % K_PREFETCH_SLOT] : 0;
       if (!protocol_try_one_request (&ctx))
 	break;
       running++;

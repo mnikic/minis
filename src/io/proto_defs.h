@@ -77,6 +77,11 @@ typedef struct
   uint32_t header_len;		// Bytes used by framing (4 for Bin, 0 for RESP)
   uint32_t payload_len;		// Actual data length
   uint32_t total_len;		// header_len + payload_len
+  // Argument 1, the key of most commands, if a framed request has one:
+  // its offset in the payload and its length
+  bool has_key;
+  uint32_t key_off;
+  uint32_t key_len;
   const char *error;		// Why, for PROTO_DECISION_INVALID
 } ProtoMessageInfo;
 

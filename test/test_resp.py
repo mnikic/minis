@@ -1874,6 +1874,55 @@ class TestExistsDelGroups(MinisTestCase):
                                      int(name in present - set(keys)))
 
 
+class TestPipelinedKeyHash(MinisTestCase):
+    """A pipelined request's key is hashed once, while looking ahead, and
+    its command reuses that hash. Keys written that way are found by the
+    commands that hash keys themselves, and the other way round."""
+
+    def setUp(self):
+        super().setUp()
+        self.b = client(port=self.server.port, socket_timeout=2)
+
+    def tearDown(self):
+        self.b.close()
+        super().tearDown()
+
+    def test_written_pipelined_read_otherwise(self):
+        rng = random.Random(3)
+        # Few enough for one MGET, minis takes 1024 arguments at most
+        keys = [f"pkh_{i}" + "k" * rng.randint(0, 60) for i in range(900)]
+        keys += [f"pkh_bin_{i}\x00\r\n" for i in range(50)]
+        pipe = self.b.pipeline(transaction=False)
+        for i, key in enumerate(keys):
+            pipe.set(key, f"v{i}")
+            pipe.hset(key + ":h", "f", f"h{i}")
+        pipe.execute()
+        # MGET hashes its keys itself, all but the first
+        self.assertEqual(self.b.mget(keys),
+                         [f"v{i}".encode() for i in range(len(keys))])
+        self.assertEqual(self.b.exists(*keys), len(keys))
+        self.assertEqual(
+            sorted(self.b.keys("pkh_*")),
+            sorted([k.encode() for k in keys]
+                   + [(k + ":h").encode() for k in keys]))
+        # And the other way: MSET writes, pipelined reads find them
+        for start in range(0, len(keys), 500):
+            self.b.mset({key: f"w{i}" for i, key in enumerate(keys)
+                         if start <= i < start + 500})
+        pipe = self.b.pipeline(transaction=False)
+        for key in keys:
+            pipe.get(key)
+            pipe.hget(key + ":h", "f")
+        got = pipe.execute()
+        self.assertEqual(got[0::2], [f"w{i}".encode() for i in range(len(keys))])
+        self.assertEqual(got[1::2], [f"h{i}".encode() for i in range(len(keys))])
+        pipe = self.b.pipeline(transaction=False)
+        for key in keys:
+            pipe.delete(key, key + ":h")
+        self.assertEqual(pipe.execute(), [2] * len(keys))
+        self.assertEqual(self.b.exists(*keys), 0)
+
+
 class TestPipelining(MinisTestCase):
     """Many requests in one write, in both protocols: past the per-round
     request budget (1024) and the response slots (2048), with requests

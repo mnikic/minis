@@ -295,8 +295,11 @@ protocol_try_one_request (RequestContext *ctx)
 
   // Check if we have enough data to identify the message
   size_t bytes_remain = conn->rbuf_size - conn->read_offset;
-  ProtoMessageInfo msg =
-    proto_identify_message (&conn->rbuf[conn->read_offset], bytes_remain);
+  ProtoMessageInfo own;
+  if (!ctx->frame)
+    proto_identify_message (&conn->rbuf[conn->read_offset], bytes_remain,
+			    &own);
+  const ProtoMessageInfo msg = ctx->frame ? *ctx->frame : own;
 
   if (msg.status == PROTO_DECISION_INCOMPLETE)
     return false;
@@ -338,11 +341,12 @@ protocol_try_one_request (RequestContext *ctx)
   buf_set_resp3 (&out_buf, conn->resp3);
 
   uint64_t pushes_before = cache_list_pushes (ctx->cache);
-  ExecResult result = execute_request (ctx,
-				       &conn->rbuf[conn->read_offset +
-						   msg.header_len],
-				       msg.payload_len,
-				       &out_buf);
+  uint8_t *req = &conn->rbuf[conn->read_offset + msg.header_len];
+  if (ctx->frame && msg.has_key)
+    cache_hint_key (ctx->cache, (const char *) req + msg.key_off,
+		    msg.key_len, ctx->key_hcode);
+  ExecResult result = execute_request (ctx, req, msg.payload_len, &out_buf);
+  cache_hint_key (ctx->cache, NULL, 0, 0);
 
   if (unlikely (result == EXEC_FAIL))
     return false;

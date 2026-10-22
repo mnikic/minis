@@ -97,6 +97,13 @@ uint64_t minis_dirty_count (Minis * minis);
 // cache, the entry the slot points to
 void minis_prefetch_slot (Minis * minis, uint64_t hcode);
 void minis_prefetch_entry (Minis * minis, uint64_t hcode);
+// Until called again, the key at exactly this address and length has
+// this hash. The server hints the key of each request it runs, which
+// stays put in its read buffer meanwhile, so the hash computed while
+// looking ahead is not computed again. NULL ends it. Not for embedding:
+// other threads could hash other keys at the time.
+void minis_hint_key (Minis * minis, const char *key, size_t key_len,
+		     uint64_t hcode);
 
 // How many LPUSH/RPUSH calls have added elements so far. Blocked BLPOP
 // clients only need another look when this moves.

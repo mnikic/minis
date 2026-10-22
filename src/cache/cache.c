@@ -1084,6 +1084,13 @@ cache_prefetch_entry (Cache *cache, uint64_t hcode)
   minis_prefetch_entry (cache, hcode);
 }
 
+void
+cache_hint_key (Cache *cache, const char *key, size_t key_len,
+		uint64_t hcode)
+{
+  minis_hint_key (cache, key, key_len, hcode);
+}
+
 uint64_t
 cache_dirty_count (Cache *cache)
 {

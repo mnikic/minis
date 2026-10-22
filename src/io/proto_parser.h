@@ -36,14 +36,10 @@ restore_all_bytes (const RestoreState *state)
     }
 }
 
-// The protoc sniffing function
-HOT ProtoMessageInfo proto_identify_message (const uint8_t * buf, size_t len);
-
-// Argument 1 of a request proto_identify_message framed (req and len are
-// its payload), which is the key of most commands. The buffer is only
-// read. False if there is no argument 1.
-bool proto_request_key (const uint8_t * req, size_t len, ProtoType type,
-			const uint8_t ** key, size_t *key_len);
+// Frames the request at buf, of either protocol, into info: its status,
+// lengths and argument 1. The buffer is only read.
+HOT void proto_identify_message (const uint8_t * buf, size_t len,
+				 ProtoMessageInfo * info);
 
 // Validate the basic request structure (BINARY)
 ValidationResult
@@ -60,9 +56,11 @@ HOT ParseResult proto_parse_arguments (ProtoRequest * proto_request);
  * @param limit Total bytes available in the buffer
  * @param out_len The message length, for PROTO_DECISION_OK
  * @param out_error Why, for PROTO_DECISION_INVALID
+ * @param key Gets argument 1, if there is one, in its key fields
  */
 HOT ProtoStatus scan_resp_message (const uint8_t * buf, size_t limit,
-				   size_t *out_len, const char **out_error);
+				   size_t *out_len, const char **out_error,
+				   ProtoMessageInfo * key);
 
 /**
  * @brief Parses a RESP Array message into the cmd array using Zero-Copy.

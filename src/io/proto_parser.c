@@ -83,7 +83,7 @@ read_resp_int (const uint8_t *buf, size_t limit, size_t *pos,
  */
 HOT ProtoStatus
 scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
-		   const char **out_error)
+		   const char **out_error, ProtoMessageInfo *key)
 {
   size_t pos = 0;
   if (unlikely (limit == 0))
@@ -169,6 +169,12 @@ scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
 	  return PROTO_DECISION_INVALID;
 	}
 
+      if (i == 1)
+	{
+	  key->has_key = true;
+	  key->key_off = (uint32_t) pos;
+	  key->key_len = (uint32_t) len;
+	}
       pos = data_end + 2;
     }
 
@@ -176,37 +182,64 @@ scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
   return PROTO_DECISION_OK;
 }
 
-HOT ProtoMessageInfo
-proto_identify_message (const uint8_t *buf, size_t len)
+// Argument 1 of a binary request body: the argument count, then each
+// argument as length and bytes. Nothing past len is read.
+static void
+bin_request_key (const uint8_t *req, size_t len, ProtoMessageInfo *info)
 {
-  ProtoMessageInfo info = { 0 };
+  uint32_t net;
+  if (len < 8)
+    return;
+  memcpy (&net, req, 4);
+  if (ntohl (net) < 2)
+    return;
+  memcpy (&net, req + 4, 4);
+  size_t pos = 8 + (size_t) ntohl (net);
+  if (pos > len || len - pos < 4)
+    return;
+  memcpy (&net, req + pos, 4);
+  pos += 4;
+  size_t key_len = ntohl (net);
+  if (len - pos < key_len)
+    return;
+  info->has_key = true;
+  info->key_off = (uint32_t) pos;
+  info->key_len = (uint32_t) key_len;
+}
+
+HOT void
+proto_identify_message (const uint8_t *buf, size_t len,
+			ProtoMessageInfo *info)
+{
+  *info = (ProtoMessageInfo) { 0 };
 
   if (unlikely (len == 0))
     {
-      info.status = PROTO_DECISION_INCOMPLETE;
-      return info;
+      info->status = PROTO_DECISION_INCOMPLETE;
+      return;
     }
 
   // Sniff First Byte: '*' means RESP
   if (likely (buf[0] == '*'))
     {
-      info.type = PROTO_RESP;
+      info->type = PROTO_RESP;
       size_t msg_len = 0;
-      info.status = scan_resp_message (buf, len, &msg_len, &info.error);
-      if (info.status == PROTO_DECISION_OK)
+      info->status = scan_resp_message (buf, len, &msg_len, &info->error,
+					info);
+      if (info->status == PROTO_DECISION_OK)
 	{
-	  info.payload_len = (uint32_t) msg_len;
-	  info.header_len = 0;
-	  info.total_len = info.payload_len;
+	  info->payload_len = (uint32_t) msg_len;
+	  info->header_len = 0;
+	  info->total_len = info->payload_len;
 	}
     }
   else
     {
-      info.type = PROTO_BIN;
+      info->type = PROTO_BIN;
       if (len < BIN_HEADER_SIZE)
 	{
-	  info.status = PROTO_DECISION_INCOMPLETE;
-	  return info;
+	  info->status = PROTO_DECISION_INCOMPLETE;
+	  return;
 	}
 
       uint32_t msg_len;
@@ -215,83 +248,25 @@ proto_identify_message (const uint8_t *buf, size_t len)
 
       if (unlikely (msg_len > K_MAX_MSG))
 	{
-	  info.status = PROTO_DECISION_TOO_BIG;
-	  return info;
+	  info->status = PROTO_DECISION_TOO_BIG;
+	  return;
 	}
 
-      info.header_len = BIN_HEADER_SIZE;
-      info.payload_len = msg_len;
-      info.total_len = BIN_HEADER_SIZE + msg_len;
+      info->header_len = BIN_HEADER_SIZE;
+      info->payload_len = msg_len;
+      info->total_len = BIN_HEADER_SIZE + msg_len;
 
-      if (len < info.total_len)
-	info.status = PROTO_DECISION_INCOMPLETE;
+      if (len < info->total_len)
+	info->status = PROTO_DECISION_INCOMPLETE;
       else
-	info.status = PROTO_DECISION_OK;
-    }
-
-  return info;
-}
-
-// A decimal number at req[*pos], up to the first non digit
-static size_t
-read_decimal (const uint8_t *req, size_t len, size_t *pos)
-{
-  size_t n = 0;
-  while (*pos < len && req[*pos] >= '0' && req[*pos] <= '9')
-    n = n * 10 + (size_t) (req[(*pos)++] - '0');
-  return n;
-}
-
-bool
-proto_request_key (const uint8_t *req, size_t len, ProtoType type,
-		   const uint8_t **key, size_t *key_len)
-{
-  size_t pos;
-  if (type == PROTO_BIN)
-    {
-      // Argument count, then each argument as length and bytes
-      uint32_t net;
-      if (len < 8)
-	return false;
-      memcpy (&net, req, 4);
-      if (ntohl (net) < 2)
-	return false;
-      memcpy (&net, req + 4, 4);
-      pos = 8 + (size_t) ntohl (net);
-      if (pos > len || len - pos < 4)
-	return false;
-      memcpy (&net, req + pos, 4);
-      pos += 4;
-      *key_len = ntohl (net);
-    }
-  else
-    {
-      // *<count>\r\n$<len>\r\n<command>\r\n$<len>\r\n<key>\r\n
-      pos = 1;
-      if (read_decimal (req, len, &pos) < 2)
-	return false;
-      for (int arg = 0;; arg++)
 	{
-	  pos += 2;
-	  if (pos >= len || req[pos] != '$')
-	    return false;
-	  pos++;
-	  size_t arg_len = read_decimal (req, len, &pos);
-	  pos += 2;
-	  if (arg == 1)
-	    {
-	      *key_len = arg_len;
-	      break;
-	    }
-	  if (pos > len || len - pos < arg_len)
-	    return false;
-	  pos += arg_len;
+	  info->status = PROTO_DECISION_OK;
+	  bin_request_key (buf + BIN_HEADER_SIZE, msg_len, info);
 	}
     }
-  if (pos > len || len - pos < *key_len)
-    return false;
-  *key = req + pos;
-  return true;
+
+  if (info->status != PROTO_DECISION_OK)
+    info->has_key = false;
 }
 
 ValidationResult

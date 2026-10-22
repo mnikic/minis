@@ -31,7 +31,25 @@ struct Minis
   ThreadPool tp;
   ENGINE_LOCK_T heap_lock;
   uint64_t list_pushes;		// Pushes so far, for waking BLPOP clients
+  // The server's hint of the running request's key and its hash, see
+  // minis_hint_key
+  const char *hint_key;
+  size_t hint_len;
+  uint64_t hint_hcode;
 };
+
+// The hash of a key, str_hash, unless it is the hinted one
+static ALWAYS_INLINE uint64_t
+key_hash (const struct Minis *minis, const char *key, size_t key_len)
+{
+#ifndef MINIS_EMBEDDED
+  if (key == minis->hint_key && key_len == minis->hint_len && key)
+    return minis->hint_hcode;
+#else
+  (void) minis;
+#endif
+  return str_hash ((const uint8_t *) key, key_len);
+}
 
 // Keys may hold NUL bytes, hence their lengths
 static ALWAYS_INLINE int
@@ -51,7 +69,7 @@ lock_shard (Shard *shard)
 static ALWAYS_INLINE Shard *
 lock_shard_for_key (struct Minis *minis, const char *key, size_t key_len)
 {
-  Shard *shard = &minis->shards[get_shard_id (key, key_len)];
+  Shard *shard = &minis->shards[key_hash (minis, key, key_len) & SHARD_MASK];
   ENGINE_LOCK (&shard->lock);
   return shard;
 }
