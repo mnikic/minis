@@ -33,12 +33,14 @@ minis_get (Minis *minis, const char *key, size_t key_len, MinisOneEntryVisitor v
   return MINIS_OK;
 }
 
+// HCODE is the key's hash
 static bool
-minis_set_internal (Minis *minis, Shard *shard, const char *key, size_t key_len,
-		    const char *val, size_t val_len, uint64_t now_us)
+minis_set_hashed (Minis *minis, Shard *shard, const char *key, size_t key_len,
+		  uint64_t hcode, const char *val, size_t val_len,
+		  uint64_t now_us)
 {
   // Note: Caller must hold the lock for 'shard_id'
-  Entry *ent = entry_lookup (minis, shard, key, key_len, now_us);
+  Entry *ent = entry_lookup_hashed (minis, shard, key, key_len, hcode, now_us);
 
   if (ent)
     {
@@ -76,6 +78,15 @@ minis_set_internal (Minis *minis, Shard *shard, const char *key, size_t key_len,
     }
   __atomic_fetch_add (&shard->dirty_count, 1, __ATOMIC_RELAXED);
   return true;
+}
+
+static bool
+minis_set_internal (Minis *minis, Shard *shard, const char *key, size_t key_len,
+		    const char *val, size_t val_len, uint64_t now_us)
+{
+  return minis_set_hashed (minis, shard, key, key_len,
+			   key_hash (minis, key, key_len), val, val_len,
+			   now_us);
 }
 
 MinisError
@@ -125,17 +136,32 @@ minis_mset (Minis *minis, const char **key_vals, const size_t *lens,
   size_t n_locked =
     lock_shards_batch (minis, key_vals, lens, total_num, 2, shards);
 
+  // Keys in groups, prefetched together as in MGET
   MinisError err = MINIS_OK;
-  for (size_t i = 0; i < total_num; i += 2)
+  size_t npairs = total_num / 2;
+  for (size_t start = 0; err == MINIS_OK && start < npairs;
+       start += K_KEY_GROUP)
     {
-      int shard_id = get_shard_id (key_vals[i], lens[i]);
-      // We already hold the lock, so call internal
-      if (!minis_set_internal
-	  (minis, &minis->shards[shard_id], key_vals[i], lens[i],
-	   key_vals[i + 1], lens[i + 1], now_us))
+      size_t n = npairs - start < K_KEY_GROUP ? npairs - start : K_KEY_GROUP;
+      const char *keys[K_KEY_GROUP];
+      size_t key_lens[K_KEY_GROUP];
+      uint64_t hcodes[K_KEY_GROUP];
+      for (size_t i = 0; i < n; i++)
 	{
-	  err = MINIS_ERR_OOM;
-	  break;
+	  keys[i] = key_vals[2 * (start + i)];
+	  key_lens[i] = lens[2 * (start + i)];
+	}
+      minis_prefetch_keys (minis, keys, key_lens, n, hcodes);
+      for (size_t i = 0; i < n; i++)
+	{
+	  size_t v = 2 * (start + i) + 1;
+	  if (!minis_set_hashed (minis, &minis->shards[shard_of (hcodes[i])],
+				 keys[i], key_lens[i], hcodes[i],
+				 key_vals[v], lens[v], now_us))
+	    {
+	      err = MINIS_ERR_OOM;
+	      break;
+	    }
 	}
     }
 

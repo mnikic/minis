@@ -1882,6 +1882,38 @@ class TestMgetGroups(MinisTestCase):
         self.assertEqual(self.r.exists(*keys[1::2]), 0)
 
 
+class TestMsetGroups(MinisTestCase):
+    """MSET sets its keys 16 at a time; any number of keys, in any order,
+    given twice, of other types or with a TTL, end as Redis leaves them"""
+
+    def test_against_a_model(self):
+        rng = random.Random(11)
+        names = [f"msm_{i}" for i in range(200)]
+        self.r.delete(*names)
+        model = {}
+        # 511 pairs, with the command, are all the arguments a request takes
+        for size in list(range(1, 71)) + [511]:
+            with self.subTest(size=size):
+                # Some keys a list, some with a TTL, before the MSET
+                pipe = self.r.pipeline(transaction=False)
+                for key in rng.sample(names, 10):
+                    pipe.delete(key)
+                    pipe.rpush(key, "x")
+                    model.pop(key, None)
+                for key in rng.sample(sorted(model), min(5, len(model))):
+                    pipe.pexpire(key, 100000)
+                pipe.execute()
+                pairs = [(rng.choice(names), f"v{size}_{i}" * rng.randint(1, 8))
+                         for i in range(size)]
+                self.assertTrue(self.r.execute_command(
+                    "MSET", *[x for pair in pairs for x in pair]))
+                model.update(pairs)
+                self.assertEqual(self.r.mget(names),
+                                 [model.get(k) for k in names])
+                for key in {k for k, _ in pairs}:
+                    self.assertEqual(self.r.pttl(key), -1, key)
+
+
 class TestExistsDelGroups(MinisTestCase):
     """EXISTS and DEL take their keys 16 at a time; for any number of keys,
     in any order and given twice, they count what Redis counts"""

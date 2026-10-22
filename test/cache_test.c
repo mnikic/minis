@@ -1135,6 +1135,101 @@ test_mget_groups (void)
   printf ("PASSED\n");
 }
 
+// MSET sets keys 16 at a time: every count around a group's edge, keys
+// given twice (the last value wins), keys of other types or with a TTL
+// (both replaced by a plain string), and keys with NUL bytes
+static void
+test_mset_groups (void)
+{
+  printf ("TEST: MSET in groups of keys... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+  static char names[40][16];
+  static char model[40][48];
+  for (int i = 0; i < 40; i++)
+    snprintf (names[i], sizeof (names[i]), "msg_%d", i);
+
+  const char *cmd[1 + 2 * 40];
+  size_t lens[1 + 2 * 40];
+  static char vals[40][48];
+  const char *want[40];
+  size_t want_lens[40];
+  size_t set_keys[40];
+  size_t sizes[] = { 1, 2, 15, 16, 17, 31, 32, 33, 40 };
+  for (size_t s = 0; s < sizeof (sizes) / sizeof (sizes[0]); s++)
+    {
+      size_t count = sizes[s];
+      // Some keys a list, some with a TTL, before each MSET
+      for (int k = 0; k < 40; k++)
+	if (k % 5 == (int) s % 5)
+	  {
+	    RUN (cache, now, "del", names[k]);
+	    RUN (cache, now, "rpush", names[k], "x");
+	    model[k][0] = '\0';
+	  }
+	else if (k % 7 == 0 && model[k][0])
+	  RUN (cache, now, "pexpire", names[k], "100000");
+
+      cmd[0] = "mset";
+      lens[0] = 4;
+      for (size_t i = 0; i < count; i++)
+	{
+	  // Keys in a scrambled order, some of them twice
+	  size_t k = (i * 7 + s) % 40;
+	  if (i % 4 == 3)
+	    k = ((i - 1) * 7 + s) % 40;
+	  set_keys[i] = k;
+	  snprintf (vals[i], sizeof (vals[i]), "v%zu_%zu", s, i);
+	  cmd[1 + 2 * i] = names[k];
+	  lens[1 + 2 * i] = strlen (names[k]);
+	  cmd[2 + 2 * i] = vals[i];
+	  lens[2 + 2 * i] = strlen (vals[i]);
+	  memcpy (model[k], vals[i], sizeof (model[k]));
+	}
+      buf = init_test_buffer (PROTO_BIN);
+      ASSERT_TRUE (cache_execute_n (cache, cmd, lens, 1 + 2 * count, &buf,
+				    now));
+      ASSERT_FALSE (is_err_response (&buf));
+
+      cmd[0] = "mget";
+      for (int k = 0; k < 40; k++)
+	{
+	  cmd[1 + k] = names[k];
+	  lens[1 + k] = strlen (names[k]);
+	  want[k] = model[k][0] ? model[k] : NULL;
+	  want_lens[k] = strlen (model[k]);
+	}
+      buf = init_test_buffer (PROTO_BIN);
+      ASSERT_TRUE (cache_execute_n (cache, cmd, lens, 41, &buf, now));
+      assert_mget_reply (&buf, want, want_lens, 40);
+
+      // What MSET set has no TTL left
+      for (size_t i = 0; i < count; i++)
+	{
+	  RUN (cache, now, "pttl", names[set_keys[i]]);
+	  ASSERT_EQ (extract_int_response (&buf), -1ULL);
+	}
+    }
+
+  // NUL bytes in keys and values
+  const char *bin_set[] = { "mset", "msg\0b", "v\0w", "msg", "plain" };
+  size_t bin_set_lens[] = { 4, 5, 3, 3, 5 };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, bin_set, bin_set_lens, 5, &buf, now));
+  const char *bin_get[] = { "mget", "msg", "msg\0b" };
+  size_t bin_get_lens[] = { 4, 3, 5 };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, bin_get, bin_get_lens, 3, &buf, now));
+  const char *bin_want[] = { "plain", "v\0w" };
+  size_t bin_want_lens[] = { 5, 3 };
+  assert_mget_reply (&buf, bin_want, bin_want_lens, 2);
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // EXISTS and DEL take their keys 16 at a time too. A key given twice
 // counts twice for EXISTS but is deleted, and counted, once by DEL.
 static void
@@ -1521,7 +1616,7 @@ test_lrange_ahead (void)
   uint64_t now = get_test_time_us ();
   // Pushed at both ends, so the ring's first item is not in slot 0;
   // model[] holds the list in order
-  static char vals[40][16];
+  static char vals[40][48];
   const char *model[40];
   int first = 20, last = 19;
   for (int i = 0; i < 40; i++)
@@ -3599,6 +3694,7 @@ main (void)
   test_list_rem ();
   test_mget_other_types ();
   test_mget_groups ();
+  test_mset_groups ();
   test_exists_del_groups ();
   test_hgetall_ahead ();
   test_hash_inline_values ();
