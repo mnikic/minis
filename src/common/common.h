@@ -177,18 +177,35 @@ dump_stats (void)
 
 #endif // K_ENABLE_BENCHMARK
 
-#define FNV_OFFSET 14695981039346656037ULL
-#define FNV_PRIME 1099511628211ULL
-
+// Eight bytes at a time, each a multiply on the way, then murmur3's
+// finalizer, which mixes every input bit into every output bit: the
+// tables place keys by the low bits and shards take the top ones. Not
+// kept anywhere, so the byte order a word is read in does not matter.
 static ALWAYS_INLINE uint64_t
 str_hash (const uint8_t *data, size_t len)
 {
-  uint64_t hash = FNV_OFFSET;
-  for (size_t i = 0; i < len; i++)
+  const uint64_t k = 0x9e3779b97f4a7c15ULL;
+  uint64_t hash = len * k;
+  for (; len >= 8; data += 8, len -= 8)
     {
-      hash ^= data[i];		// XOR first (Mixes the bits)
-      hash *= FNV_PRIME;	// Multiply second (Scrambles them)
+      uint64_t word;
+      memcpy (&word, data, 8);
+      hash = (hash ^ word) * k;
+      hash ^= hash >> 32;
     }
+  if (len > 0)
+    {
+      uint64_t word = 0;
+      for (size_t i = 0; i < len; i++)
+	word |= (uint64_t) data[i] << (8 * i);
+      hash = (hash ^ word) * k;
+      hash ^= hash >> 32;
+    }
+  hash ^= hash >> 33;
+  hash *= 0xff51afd7ed558ccdULL;
+  hash ^= hash >> 33;
+  hash *= 0xc4ceb9fe1a85ec53ULL;
+  hash ^= hash >> 33;
   return hash;
 }
 

@@ -1251,6 +1251,18 @@ def validate_output(cmd, expected, actual):
             else:
                 return actual_val == expected_val
     
+    # Like Redis, KEYS, SCAN and HGETALL give no order: the same lines,
+    # and for HGETALL the same field and value pairs, in any order
+    name = shlex.split(cmd)[1].lower() if len(shlex.split(cmd)) > 1 else ''
+    if name in ('keys', 'scan'):
+        return sorted(actual.splitlines()) == sorted(expected.splitlines())
+    if name == 'hgetall':
+        def pairs(out):
+            lines = out.splitlines()
+            return (lines[:1], lines[-1:],
+                    sorted(zip(lines[1:-1:2], lines[2:-1:2])))
+        return pairs(actual) == pairs(expected)
+
     # Default: exact match
     return actual == expected
 

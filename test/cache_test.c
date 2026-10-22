@@ -1428,6 +1428,50 @@ test_hash_inline_values (void)
   printf ("PASSED\n");
 }
 
+// str_hash mixes every byte into every bit: tables place keys by the low
+// bits, shards by the top ones, so both are spread for keys that differ
+// only a little, like numbered ones
+static void
+test_str_hash (void)
+{
+  printf ("TEST: Key hash... ");
+
+  // Any one byte changed, at any length, changes the hash
+  uint8_t bytes[40];
+  for (size_t len = 0; len <= sizeof (bytes); len++)
+    for (size_t at = 0; at < len; at++)
+      {
+	memset (bytes, 'k', sizeof (bytes));
+	uint64_t before = str_hash (bytes, len);
+	ASSERT_EQ (str_hash (bytes, len), before);
+	bytes[at] ^= 1;
+	ASSERT_TRUE (str_hash (bytes, len) != before);
+      }
+  // The length counts too, not only the bytes
+  memset (bytes, 0, sizeof (bytes));
+  ASSERT_TRUE (str_hash (bytes, 3) != str_hash (bytes, 4));
+
+  // Numbered keys over 16 buckets by the top bits and by the low ones:
+  // each within 10% of an even share
+  enum { KEYS = 64000 };
+  size_t top[16] = { 0 }, low[16] = { 0 };
+  for (int i = 0; i < KEYS; i++)
+    {
+      char key[32];
+      int len = snprintf (key, sizeof (key), "user:%d", i);
+      uint64_t h = str_hash ((const uint8_t *) key, (size_t) len);
+      top[h >> 60]++;
+      low[h & 15]++;
+    }
+  for (int b = 0; b < 16; b++)
+    {
+      ASSERT_TRUE (top[b] > KEYS / 16 * 9 / 10 && top[b] < KEYS / 16 * 11 / 10);
+      ASSERT_TRUE (low[b] > KEYS / 16 * 9 / 10 && low[b] < KEYS / 16 * 11 / 10);
+    }
+
+  printf ("PASSED\n");
+}
+
 // ============================================================================
 // Test 6l: Glob patterns
 // ============================================================================
@@ -3450,6 +3494,7 @@ main (void)
   test_exists_del_groups ();
   test_hgetall_ahead ();
   test_hash_inline_values ();
+  test_str_hash ();
   test_glob ();
   test_hm_lookup_mid_resize ();
   test_hm_random_ops ();
