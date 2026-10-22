@@ -14,6 +14,7 @@
 
 #define NUM_SHARDS 16
 #define SHARD_MASK 15
+#define SHARD_BITS 4
 #define CACHE_LINE_SIZE 64
 
 typedef struct
@@ -51,12 +52,19 @@ key_hash (const struct Minis *minis, const char *key, size_t key_len)
   return str_hash ((const uint8_t *) key, key_len);
 }
 
+// The shard of a key's hash: its top bits, since a shard's table places
+// keys by the low ones, which would be the same for all of its keys
+static ALWAYS_INLINE int
+shard_of (uint64_t hcode)
+{
+  return (int) (hcode >> (64 - SHARD_BITS));
+}
+
 // Keys may hold NUL bytes, hence their lengths
 static ALWAYS_INLINE int
 get_shard_id (const char *key, size_t key_len)
 {
-  uint64_t hash = str_hash ((const uint8_t *) key, key_len);
-  return hash & SHARD_MASK;
+  return shard_of (str_hash ((const uint8_t *) key, key_len));
 }
 
 static ALWAYS_INLINE void
@@ -69,7 +77,7 @@ lock_shard (Shard *shard)
 static ALWAYS_INLINE Shard *
 lock_shard_for_key (struct Minis *minis, const char *key, size_t key_len)
 {
-  Shard *shard = &minis->shards[key_hash (minis, key, key_len) & SHARD_MASK];
+  Shard *shard = &minis->shards[shard_of (key_hash (minis, key, key_len))];
   ENGINE_LOCK (&shard->lock);
   return shard;
 }

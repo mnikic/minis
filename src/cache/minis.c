@@ -219,7 +219,7 @@ minis_mdel (Minis *minis, const char **keys, const size_t *key_lens,
       for (size_t i = 0; i < n; i++)
 	total += (uint64_t)
 	  minis_del_internal_locked (minis,
-				     &minis->shards[hcodes[i] & SHARD_MASK],
+				     &minis->shards[shard_of (hcodes[i])],
 				     keys[start + i], key_lens[start + i],
 				     hcodes[i], now_us);
     }
@@ -249,7 +249,7 @@ minis_exists (Minis *minis, const char **keys, const size_t *key_lens,
       minis_prefetch_keys (minis, keys + start, key_lens + start, n, hcodes);
       for (size_t i = 0; i < n; i++)
 	if (entry_lookup_hashed (minis,
-				 &minis->shards[hcodes[i] & SHARD_MASK],
+				 &minis->shards[shard_of (hcodes[i])],
 				 keys[start + i], key_lens[start + i],
 				 hcodes[i], now_us))
 	  hits++;
@@ -477,7 +477,7 @@ minis_list_pushes (Minis *minis)
 void
 minis_prefetch_slot (Minis *minis, uint64_t hcode)
 {
-  const HTab *htab = &minis->shards[hcode & SHARD_MASK].db.ht1;
+  const HTab *htab = &minis->shards[shard_of (hcode)].db.ht1;
   if (htab->tab)
     __builtin_prefetch (&htab->tab[hcode & htab->mask]);
 }
@@ -536,7 +536,7 @@ void
 minis_prefetch_entry (Minis *minis, uint64_t hcode)
 {
   HNode *node =
-    prefetched_node (&minis->shards[hcode & SHARD_MASK].db.ht1, hcode);
+    prefetched_node (&minis->shards[shard_of (hcode)].db.ht1, hcode);
   if (node)
     prefetch_node (node);
 }
@@ -546,7 +546,7 @@ static const HTab *
 prefetched_fields (Minis *minis, uint64_t hcode)
 {
   HNode *node =
-    prefetched_node (&minis->shards[hcode & SHARD_MASK].db.ht1, hcode);
+    prefetched_node (&minis->shards[shard_of (hcode)].db.ht1, hcode);
   if (!node)
     return NULL;
   const Entry *ent = entry_fetch (node);

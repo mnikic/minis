@@ -169,7 +169,7 @@ minis_mget (Minis *minis, const char **keys, const size_t *key_lens,
       for (size_t i = 0; i < n; i++)
 	{
 	  found[i] = entry_lookup_hashed (minis,
-					  &minis->shards[hcodes[i] & SHARD_MASK],
+					  &minis->shards[shard_of (hcodes[i])],
 					  gkeys[i], glens[i], hcodes[i], now_us);
 	  // Like Redis, other types read as missing. Visitors use ent->val,
 	  // which for them is a pointer to the container.

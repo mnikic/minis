@@ -1472,6 +1472,42 @@ test_str_hash (void)
   printf ("PASSED\n");
 }
 
+// A shard's keys spread over all of its table's slots: the shard is not
+// taken from the bits that place keys in the table. Robin Hood probing
+// keeps them, on average, less than a slot from where they belong.
+static void
+test_shard_spread (void)
+{
+  printf ("TEST: Keys spread over their shard's table... ");
+
+  Cache *cache = cache_init ();
+  Buffer buf;
+  uint64_t now = get_test_time_us ();
+  for (int i = 0; i < 20000; i++)
+    {
+      char key[32];
+      snprintf (key, sizeof (key), "spread:%d", i);
+      RUN (cache, now, "set", key, "v");
+    }
+  for (int s = 0; s < NUM_SHARDS; s++)
+    {
+      const HTab *t = &cache->shards[s].db.ht1;
+      size_t keys = 0, distance = 0;
+      for (size_t pos = 0; t->tab && pos <= t->mask; pos++)
+	{
+	  if (!t->tab[pos].node)
+	    continue;
+	  keys++;
+	  distance += (pos - (t->tab[pos].hcode_cached & t->mask)) & t->mask;
+	}
+      ASSERT_TRUE (keys > 0);
+      ASSERT_TRUE (distance < keys);
+    }
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
 // ============================================================================
 // Test 6l: Glob patterns
 // ============================================================================
@@ -3495,6 +3531,7 @@ main (void)
   test_hgetall_ahead ();
   test_hash_inline_values ();
   test_str_hash ();
+  test_shard_spread ();
   test_glob ();
   test_hm_lookup_mid_resize ();
   test_hm_random_ops ();
