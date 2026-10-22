@@ -30,9 +30,14 @@ bool cache_execute_n (Cache * cache, const char **cmd, const size_t *lens,
 bool cache_execute (Cache * cache, const char **cmd, size_t size,
 		    Buffer * out, uint64_t now_us);
 uint64_t cache_dirty_count (Cache * cache);
-// See minis_prefetch_slot and minis_prefetch_entry
+// See minis_prefetch_slot and the ones after it
 void cache_prefetch_slot (Cache * cache, uint64_t hcode);
 void cache_prefetch_entry (Cache * cache, uint64_t hcode);
+bool cache_prefetch_hash (Cache * cache, uint64_t hcode);
+void cache_prefetch_field_slot (Cache * cache, uint64_t hcode,
+				uint64_t fhcode);
+void cache_prefetch_field_entry (Cache * cache, uint64_t hcode,
+				 uint64_t fhcode);
 void cache_hint_key (Cache * cache, const char *key, size_t key_len,
 		     uint64_t hcode);
 

@@ -1084,6 +1084,24 @@ cache_prefetch_entry (Cache *cache, uint64_t hcode)
   minis_prefetch_entry (cache, hcode);
 }
 
+bool
+cache_prefetch_hash (Cache *cache, uint64_t hcode)
+{
+  return minis_prefetch_hash (cache, hcode);
+}
+
+void
+cache_prefetch_field_slot (Cache *cache, uint64_t hcode, uint64_t fhcode)
+{
+  minis_prefetch_field_slot (cache, hcode, fhcode);
+}
+
+void
+cache_prefetch_field_entry (Cache *cache, uint64_t hcode, uint64_t fhcode)
+{
+  minis_prefetch_field_entry (cache, hcode, fhcode);
+}
+
 void
 cache_hint_key (Cache *cache, const char *key, size_t key_len,
 		uint64_t hcode)

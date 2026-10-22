@@ -12,24 +12,68 @@
 #define K_MAX_REQ_PER_TICK 1024
 
 // With pipelined requests in the buffer, the keys of the ones ahead are
-// prefetched while the current one runs: the hash slot of the request
-// K_PREFETCH_SLOT ahead, then, once that slot is in cache, the entry of
-// the request K_PREFETCH_ENTRY ahead. Their cache misses overlap instead
-// of each request waiting for its own. Each request is framed and its
-// key hashed here once, and run with that frame and hash.
-#define K_PREFETCH_SLOT 8
-#define K_PREFETCH_ENTRY 4
+// prefetched while the current one runs, a level at a time: the hash
+// slot of a request as it is framed, its entry K_STEP requests later,
+// once the slot is in cache, and for a field of a hash, the hash, the
+// field's slot and the field's entry each K_STEP later again. So their
+// cache misses overlap instead of each request waiting for its own. Each
+// request is framed and its key hashed here once, and run with that
+// frame and hash.
+#define K_STEP 2
+#define K_AHEAD (4 * K_STEP + 2)	// The last stage, one request ahead
+#define K_RING 32
+_Static_assert (K_AHEAD <= K_RING, "the ring holds those looked at");
 
 typedef struct
 {
   size_t offset;		// Where the next request to look at starts
   uint64_t next;		// Its number; requests are numbered as run
-  ProtoMessageInfo frames[K_PREFETCH_SLOT];	// Of those looked at
-  uint64_t hcodes[K_PREFETCH_SLOT];	// Their keys' hashes
+  // Of those looked at: their frames, where they start, the hashes of
+  // their keys and, for a field of a hash, of the field
+  ProtoMessageInfo frames[K_RING];
+  size_t offsets[K_RING];
+  uint64_t hcodes[K_RING];
+  uint64_t fhcodes[K_RING];
+  bool is_hash[K_RING];
 } Lookahead;
 
-// Looks ahead up to K_PREFETCH_SLOT requests past 'running', the number
-// of the request about to run
+// The stage of the request framed AGE requests before the newest one
+static void
+prefetch_stage (Cache *cache, Conn *conn, Lookahead *la, uint64_t running,
+		unsigned age)
+{
+  if (la->next < age || la->next - age <= running)
+    return;
+  size_t i = (la->next - age) % K_RING;
+  const ProtoMessageInfo *m = &la->frames[i];
+  if (!m->has_key)
+    return;
+  switch (age / K_STEP)
+    {
+    case 1:
+      cache_prefetch_entry (cache, la->hcodes[i]);
+      break;
+    case 2:
+      la->is_hash[i] = m->has_field
+	&& cache_prefetch_hash (cache, la->hcodes[i]);
+      if (la->is_hash[i])
+	la->fhcodes[i] =
+	  str_hash (&conn->rbuf[la->offsets[i] + m->header_len + m->field_off],
+		    m->field_len);
+      break;
+    case 3:
+      if (la->is_hash[i])
+	cache_prefetch_field_slot (cache, la->hcodes[i], la->fhcodes[i]);
+      break;
+    case 4:
+      if (la->is_hash[i])
+	cache_prefetch_field_entry (cache, la->hcodes[i], la->fhcodes[i]);
+      break;
+    }
+}
+
+// Looks ahead up to K_AHEAD requests past 'running', the number of the
+// request about to run
 static void
 lookahead (Cache *cache, Conn *conn, Lookahead *la, uint64_t running)
 {
@@ -38,16 +82,18 @@ lookahead (Cache *cache, Conn *conn, Lookahead *la, uint64_t running)
       la->offset = conn->read_offset;
       la->next = running;
     }
-  while (la->next < running + K_PREFETCH_SLOT)
+  while (la->next < running + K_AHEAD)
     {
       // Framed in place: a copy of the frame, read back whole right after
       // it is written in parts, would wait for the writes to land
-      size_t i = la->next % K_PREFETCH_SLOT;
+      size_t i = la->next % K_RING;
       ProtoMessageInfo *m = &la->frames[i];
       proto_identify_message (&conn->rbuf[la->offset],
 			      conn->rbuf_size - la->offset, m);
       if (m->status != PROTO_DECISION_OK)
 	return;
+      la->offsets[i] = la->offset;
+      la->is_hash[i] = false;
       if (m->has_key)
 	{
 	  la->hcodes[i] =
@@ -57,11 +103,8 @@ lookahead (Cache *cache, Conn *conn, Lookahead *la, uint64_t running)
 	  if (la->next != running)
 	    cache_prefetch_slot (cache, la->hcodes[i]);
 	}
-      // The request whose slot was prefetched a while ago
-      uint64_t earlier = la->next - (K_PREFETCH_SLOT - K_PREFETCH_ENTRY);
-      if (la->next >= K_PREFETCH_SLOT - K_PREFETCH_ENTRY && earlier > running
-	  && la->frames[earlier % K_PREFETCH_SLOT].has_key)
-	cache_prefetch_entry (cache, la->hcodes[earlier % K_PREFETCH_SLOT]);
+      for (unsigned age = K_STEP; age <= 4 * K_STEP; age += K_STEP)
+	prefetch_stage (cache, conn, la, running, age);
       la->offset += m->total_len;
       la->next++;
     }
@@ -78,7 +121,10 @@ response_queue_process_input (Cache *cache, Conn *conn, uint64_t now_us)
   };
 
   uint_fast16_t budget = K_MAX_REQ_PER_TICK;
-  Lookahead la = {.offset = conn->read_offset };
+  // The rest is only read for requests looked at, which set it
+  Lookahead la;
+  la.offset = conn->read_offset;
+  la.next = 0;
   uint64_t running = 0;
 
   while (budget > 0)
@@ -89,8 +135,8 @@ response_queue_process_input (Cache *cache, Conn *conn, uint64_t now_us)
       lookahead (cache, conn, &la, running);
       // Framed, unless it is incomplete or bad, which it frames itself
       bool framed = la.next > running;
-      ctx.frame = framed ? &la.frames[running % K_PREFETCH_SLOT] : NULL;
-      ctx.key_hcode = framed ? la.hcodes[running % K_PREFETCH_SLOT] : 0;
+      ctx.frame = framed ? &la.frames[running % K_RING] : NULL;
+      ctx.key_hcode = framed ? la.hcodes[running % K_RING] : 0;
       if (!protocol_try_one_request (&ctx))
 	break;
       running++;

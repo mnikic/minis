@@ -175,6 +175,12 @@ scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
 	  key->key_off = (uint32_t) pos;
 	  key->key_len = (uint32_t) len;
 	}
+      else if (i == 2)
+	{
+	  key->has_field = true;
+	  key->field_off = (uint32_t) pos;
+	  key->field_len = (uint32_t) len;
+	}
       pos = data_end + 2;
     }
 
@@ -182,8 +188,8 @@ scan_resp_message (const uint8_t *buf, size_t limit, size_t *out_len,
   return PROTO_DECISION_OK;
 }
 
-// Argument 1 of a binary request body: the argument count, then each
-// argument as length and bytes. Nothing past len is read.
+// Arguments 1 and 2 of a binary request body: the argument count, then
+// each argument as length and bytes. Nothing past len is read.
 static void
 bin_request_key (const uint8_t *req, size_t len, ProtoMessageInfo *info)
 {
@@ -191,7 +197,8 @@ bin_request_key (const uint8_t *req, size_t len, ProtoMessageInfo *info)
   if (len < 8)
     return;
   memcpy (&net, req, 4);
-  if (ntohl (net) < 2)
+  uint32_t argc = ntohl (net);
+  if (argc < 2)
     return;
   memcpy (&net, req + 4, 4);
   size_t pos = 8 + (size_t) ntohl (net);
@@ -205,6 +212,17 @@ bin_request_key (const uint8_t *req, size_t len, ProtoMessageInfo *info)
   info->has_key = true;
   info->key_off = (uint32_t) pos;
   info->key_len = (uint32_t) key_len;
+  pos += key_len;
+  if (argc < 3 || len - pos < 4)
+    return;
+  memcpy (&net, req + pos, 4);
+  pos += 4;
+  size_t field_len = ntohl (net);
+  if (len - pos < field_len)
+    return;
+  info->has_field = true;
+  info->field_off = (uint32_t) pos;
+  info->field_len = (uint32_t) field_len;
 }
 
 HOT void
@@ -266,7 +284,7 @@ proto_identify_message (const uint8_t *buf, size_t len,
     }
 
   if (info->status != PROTO_DECISION_OK)
-    info->has_key = false;
+    info->has_key = info->has_field = false;
 }
 
 ValidationResult

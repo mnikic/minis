@@ -504,28 +504,79 @@ minis_prefetch_keys (Minis *minis, const char **keys, const size_t *key_lens,
     minis_prefetch_entry (minis, hcodes[i]);
 }
 
-void
-minis_prefetch_entry (Minis *minis, uint64_t hcode)
+// The node with this hash in the start of its probe run, on the line
+// prefetched before, or NULL
+static HNode *
+prefetched_node (const HTab *htab, uint64_t hcode)
 {
-  const HTab *htab = &minis->shards[hcode & SHARD_MASK].db.ht1;
   if (!htab->tab)
-    return;
-  // The start of the key's probe run, on the line prefetched before
+    return NULL;
   size_t pos = (size_t) (hcode & htab->mask);
   for (size_t i = 0; i < 4; i++)
     {
       const HTabEntry *slot = &htab->tab[(pos + i) & htab->mask];
       if (!slot->node)
-	return;
+	return NULL;
       if (slot->hcode_cached == hcode)
-	{
-	  // The entry, and the line after it where a long key or a small
-	  // value continues
-	  __builtin_prefetch (slot->node);
-	  __builtin_prefetch ((const char *) slot->node + 64);
-	  return;
-	}
+	return slot->node;
     }
+  return NULL;
+}
+
+// A node, and the line after it where a long key or a small value
+// continues
+static void
+prefetch_node (const HNode *node)
+{
+  __builtin_prefetch (node);
+  __builtin_prefetch ((const char *) node + 64);
+}
+
+void
+minis_prefetch_entry (Minis *minis, uint64_t hcode)
+{
+  HNode *node =
+    prefetched_node (&minis->shards[hcode & SHARD_MASK].db.ht1, hcode);
+  if (node)
+    prefetch_node (node);
+}
+
+// The table of the fields of the hash at this key, if it is one
+static const HTab *
+prefetched_fields (Minis *minis, uint64_t hcode)
+{
+  HNode *node =
+    prefetched_node (&minis->shards[hcode & SHARD_MASK].db.ht1, hcode);
+  if (!node)
+    return NULL;
+  const Entry *ent = entry_fetch (node);
+  return ent->type == T_HASH ? &ent->hash->ht1 : NULL;
+}
+
+bool
+minis_prefetch_hash (Minis *minis, uint64_t hcode)
+{
+  const HTab *fields = prefetched_fields (minis, hcode);
+  if (fields)
+    __builtin_prefetch (fields);
+  return fields != NULL;
+}
+
+void
+minis_prefetch_field_slot (Minis *minis, uint64_t hcode, uint64_t fhcode)
+{
+  const HTab *fields = prefetched_fields (minis, hcode);
+  if (fields && fields->tab)
+    __builtin_prefetch (&fields->tab[fhcode & fields->mask]);
+}
+
+void
+minis_prefetch_field_entry (Minis *minis, uint64_t hcode, uint64_t fhcode)
+{
+  const HTab *fields = prefetched_fields (minis, hcode);
+  HNode *node = fields ? prefetched_node (fields, fhcode) : NULL;
+  if (node)
+    prefetch_node (node);
 }
 
 uint64_t

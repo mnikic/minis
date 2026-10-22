@@ -97,6 +97,14 @@ uint64_t minis_dirty_count (Minis * minis);
 // cache, the entry the slot points to
 void minis_prefetch_slot (Minis * minis, uint64_t hcode);
 void minis_prefetch_entry (Minis * minis, uint64_t hcode);
+// The same, a level further each, for a field (FHCODE) of a hash: once
+// the key's entry is in cache, minis_prefetch_hash starts loading the
+// hash, or says the key is not one; then the field's slot, then its entry
+bool minis_prefetch_hash (Minis * minis, uint64_t hcode);
+void minis_prefetch_field_slot (Minis * minis, uint64_t hcode,
+				uint64_t fhcode);
+void minis_prefetch_field_entry (Minis * minis, uint64_t hcode,
+				 uint64_t fhcode);
 // Until called again, the key at exactly this address and length has
 // this hash. The server hints the key of each request it runs, which
 // stays put in its read buffer meanwhile, so the hash computed while

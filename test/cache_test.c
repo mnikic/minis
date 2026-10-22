@@ -2967,11 +2967,12 @@ test_inline_values (void)
   printf ("PASSED\n");
 }
 
-static void
-assert_request_key (const char *req, size_t len, ProtoType type,
-		    const char *want, size_t want_len)
+// Frames a request, a binary body behind its length, and returns where
+// the framed bytes are
+static const uint8_t *
+frame_request (const char *req, size_t len, ProtoType type,
+	       ProtoMessageInfo *info)
 {
-  // A binary body goes behind its length
   static uint8_t msg[512];
   size_t msg_len = len;
   const uint8_t *m = (const uint8_t *) req;
@@ -2983,8 +2984,35 @@ assert_request_key (const char *req, size_t len, ProtoType type,
       m = msg;
       msg_len = len + 4;
     }
+  proto_identify_message (m, msg_len, info);
+  return m;
+}
+
+static void
+assert_request_field (const char *req, size_t len, ProtoType type,
+		      const char *want, size_t want_len)
+{
   ProtoMessageInfo info;
-  proto_identify_message (m, msg_len, &info);
+  const uint8_t *m = frame_request (req, len, type, &info);
+  if (!want)
+    {
+      ASSERT_FALSE (info.status == PROTO_DECISION_OK && info.has_field);
+      return;
+    }
+  ASSERT_EQ (info.status, PROTO_DECISION_OK);
+  ASSERT_TRUE (info.has_key && info.has_field);
+  ASSERT_EQ (info.field_len, want_len);
+  ASSERT_TRUE (info.field_off + info.field_len <= info.payload_len);
+  ASSERT_TRUE (memcmp (m + info.header_len + info.field_off, want, want_len)
+	       == 0);
+}
+
+static void
+assert_request_key (const char *req, size_t len, ProtoType type,
+		    const char *want, size_t want_len)
+{
+  ProtoMessageInfo info;
+  const uint8_t *m = frame_request (req, len, type, &info);
   if (!want)
     {
       ASSERT_FALSE (info.status == PROTO_DECISION_OK && info.has_key);
@@ -3015,8 +3043,9 @@ bin_request (char *out, const char **args, const size_t *lens, size_t argc)
   return pos;
 }
 
-// Framing finds argument 1 of a request, which the server hashes once
-// and prefetches ahead, and never reads past the request
+// Framing finds arguments 1 and 2 of a request, a key and for the hash
+// commands a field, which the server hashes and prefetches ahead, and
+// never reads past the request
 static void
 test_request_key (void)
 {
@@ -3037,6 +3066,14 @@ test_request_key (void)
   assert_request_key (RESP ("*2\r\n$100\r\nGET\r\n$3\r\nkey\r\n"), NULL, 0);
   assert_request_key (RESP ("*2\r\n$3\r\nGET"), NULL, 0);
   assert_request_key (RESP ("*2\r\n$3\r\nGET\r\nx3\r\nkey\r\n"), NULL, 0);
+  // Argument 2
+  assert_request_field (RESP ("*3\r\n$4\r\nHGET\r\n$1\r\nh\r\n$2\r\nf\0\r\n"),
+			"f\0", 2);
+  assert_request_field (RESP ("*4\r\n$4\r\nHSET\r\n$1\r\nh\r\n$0\r\n\r\n"
+			      "$1\r\nv\r\n"), "", 0);
+  assert_request_field (RESP ("*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n"), NULL, 0);
+  assert_request_field (RESP ("*3\r\n$4\r\nHGET\r\n$1\r\nh\r\n$2\r\nf"),
+			NULL, 0);
 #undef RESP
 
   char req[256];
@@ -3052,6 +3089,21 @@ test_request_key (void)
   size_t ping_lens[] = { 4 };
   len = bin_request (req, ping, ping_lens, 1);
   assert_request_key (req, len, PROTO_BIN, NULL, 0);
+  // Argument 2, and cut short anywhere in it
+  len = bin_request (req, nul, nul_lens, 3);
+  assert_request_field (req, len, PROTO_BIN, "v", 1);
+  assert_request_field (req, len - 1, PROTO_BIN, NULL, 0);
+  assert_request_field (req, len - 3, PROTO_BIN, NULL, 0);
+  len = bin_request (req, get, get_lens, 2);
+  assert_request_field (req, len, PROTO_BIN, NULL, 0);
+  const char *hget[] = { "HGET", "h", "f\0" };
+  size_t hget_lens[] = { 4, 1, 2 };
+  len = bin_request (req, hget, hget_lens, 3);
+  assert_request_key (req, len, PROTO_BIN, "h", 1);
+  assert_request_field (req, len, PROTO_BIN, "f\0", 2);
+  uint32_t big = hton_u32 (1000);
+  memcpy (req + 4 + 4 + 4 + 4 + 1, &big, 4);
+  assert_request_field (req, len, PROTO_BIN, NULL, 0);
   // Cut short anywhere: the count, the command, the key's length or bytes
   len = bin_request (req, get, get_lens, 2);
   for (size_t cut = 0; cut < len; cut++)

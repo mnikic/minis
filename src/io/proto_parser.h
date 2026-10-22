@@ -37,7 +37,7 @@ restore_all_bytes (const RestoreState *state)
 }
 
 // Frames the request at buf, of either protocol, into info: its status,
-// lengths and argument 1. The buffer is only read.
+// lengths and arguments 1 and 2. The buffer is only read.
 HOT void proto_identify_message (const uint8_t * buf, size_t len,
 				 ProtoMessageInfo * info);
 

@@ -82,6 +82,10 @@ typedef struct
   bool has_key;
   uint32_t key_off;
   uint32_t key_len;
+  // Argument 2, a field for the hash commands, the same way
+  bool has_field;
+  uint32_t field_off;
+  uint32_t field_len;
   const char *error;		// Why, for PROTO_DECISION_INVALID
 } ProtoMessageInfo;
 

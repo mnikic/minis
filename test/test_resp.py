@@ -1962,6 +1962,76 @@ class TestPipelinedKeyHash(MinisTestCase):
         self.assertEqual(self.b.exists(*keys), 0)
 
 
+class TestPipelinedHashFields(MinisTestCase):
+    """Pipelined requests on hashes have their fields prefetched ahead,
+    a level at a time. Requests run in between may delete those keys,
+    change their types or resize their hashes, which the lookahead has to
+    take as they are (the server's ASan checks it reads nothing freed)."""
+
+    def setUp(self):
+        super().setUp()
+        self.b = client(port=self.server.port, socket_timeout=5)
+
+    def tearDown(self):
+        self.b.close()
+        super().tearDown()
+
+    def test_against_a_model(self):
+        rng = random.Random(9)
+        keys = [f"phf_{i}" for i in range(6)]
+        self.b.delete(*keys)
+        model = {}
+        for _ in range(40):
+            pipe = self.b.pipeline(transaction=False)
+            want = []
+            for _ in range(rng.randint(1, 400)):
+                key = rng.choice(keys)
+                field = f"f{rng.randint(0, 300)}"
+                op = rng.random()
+                kind = type(model.get(key))
+                if op < 0.4:
+                    pipe.hget(key, field)
+                    want.append(model[key].get(field.encode())
+                                if kind is dict else
+                                "WRONGTYPE" if key in model else None)
+                elif op < 0.75:
+                    value = b"v" * rng.randint(0, 100)
+                    pipe.hset(key, field, value)
+                    if kind is dict or key not in model:
+                        fields = model.setdefault(key, {})
+                        want.append(int(field.encode() not in fields))
+                        fields[field.encode()] = value
+                    else:
+                        want.append("WRONGTYPE")
+                elif op < 0.85:
+                    pipe.hdel(key, field)
+                    if kind is dict:
+                        want.append(int(model[key].pop(field.encode(), None)
+                                        is not None))
+                        if not model[key]:
+                            del model[key]
+                    else:
+                        want.append("WRONGTYPE" if key in model else 0)
+                elif op < 0.93:
+                    pipe.delete(key)
+                    want.append(int(model.pop(key, None) is not None))
+                else:
+                    # The key becomes a string between field requests
+                    pipe.set(key, field)
+                    model[key] = field.encode()
+                    want.append(True)
+            got = pipe.execute(raise_on_error=False)
+            for g, w in zip(got, want):
+                if w == "WRONGTYPE":
+                    self.assertIsInstance(g, redis.ResponseError)
+                    self.assertIn("WRONGTYPE", str(g))
+                else:
+                    self.assertEqual(g, w)
+        for key in keys:
+            if isinstance(model.get(key), dict):
+                self.assertEqual(self.b.hgetall(key), model[key])
+
+
 class TestPipelining(MinisTestCase):
     """Many requests in one write, in both protocols: past the per-round
     request budget (1024) and the response slots (2048), with requests
