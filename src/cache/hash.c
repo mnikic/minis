@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -31,17 +32,41 @@ hash_entry_eq (HNode *node, const void *key)
     && memcmp (hent->field, fkey->field, fkey->len) == 0;
 }
 
-// A NUL terminated copy of len bytes
+// Values up to this long go in their entry's block
+#define K_INLINE_VALUE_MAX 64
+
 static char *
-copy_bytes (const char *bytes, size_t len)
+inline_value (HashEntry *ent)
 {
-  char *copy = malloc (len + 1);
-  if (copy)
+  return ent->field + ent->field_len + 1;
+}
+
+static bool
+value_is_inline (HashEntry *ent)
+{
+  return ent->value_cap > 0 && ent->value == inline_value (ent);
+}
+
+// A value that fits goes in the block, one that does not apart, in place
+// of the one it replaces where realloc can
+static bool
+set_value (HashEntry *ent, const char *value, size_t value_len)
+{
+  char *old = (ent->value && !value_is_inline (ent)) ? ent->value : NULL;
+  char *dst = inline_value (ent);
+  if (value_len >= ent->value_cap)
     {
-      memcpy (copy, bytes, len);
-      copy[len] = '\0';
+      dst = old ? realloc (old, value_len + 1) : malloc (value_len + 1);
+      if (!dst)
+	return false;
+      old = NULL;
     }
-  return copy;
+  memcpy (dst, value, value_len);
+  dst[value_len] = '\0';
+  free (old);
+  ent->value = dst;
+  ent->value_len = value_len;
+  return true;
 }
 
 HashEntry *
@@ -67,29 +92,26 @@ hash_set (HMap *hmap, const char *field, size_t field_len, const char *value,
       if (ent->value_len == value_len
 	  && memcmp (ent->value, value, value_len) == 0)
 	return HASH_UNCHANGED;
-      char *copy = copy_bytes (value, value_len);
-      if (!copy)
-	return HASH_OOM;
-      free (ent->value);
-      ent->value = copy;
-      ent->value_len = value_len;
-      return HASH_UPDATED;
+      return set_value (ent, value, value_len) ? HASH_UPDATED : HASH_OOM;
     }
 
-  ent = malloc (sizeof (HashEntry));
+  // Room for the value and a little growth
+  uint32_t value_cap = 0;
+  if (value_len <= K_INLINE_VALUE_MAX)
+    value_cap = (uint32_t) ((value_len + 1 + 15) & ~(size_t) 15);
+  ent = malloc (offsetof (HashEntry, field) + field_len + 1 + value_cap);
   if (!ent)
     return HASH_OOM;
-  ent->field = copy_bytes (field, field_len);
-  ent->value = copy_bytes (value, value_len);
-  if (!ent->field || !ent->value)
+  memcpy (ent->field, field, field_len);
+  ent->field[field_len] = '\0';
+  ent->field_len = field_len;
+  ent->value_cap = value_cap;
+  ent->value = NULL;
+  if (!set_value (ent, value, value_len))
     {
-      free (ent->field);
-      free (ent->value);
       free (ent);
       return HASH_OOM;
     }
-  ent->field_len = field_len;
-  ent->value_len = value_len;
   ent->node.hcode = str_hash ((const uint8_t *) field, field_len);
   FieldKey key = {.field = field,.len = field_len };
   hm_insert (hmap, &ent->node, &key, &hash_entry_eq);
@@ -101,8 +123,8 @@ cb_hash_entry_destroy (HNode *node, void *arg)
 {
   (void) arg;
   HashEntry *entry = fetch_hash_entry (node);
-  free (entry->field);
-  free (entry->value);
+  if (!value_is_inline (entry))
+    free (entry->value);
   free (entry);
 }
 

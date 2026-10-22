@@ -1784,7 +1784,7 @@ class TestStringValueSizes(MinisTestCase):
 
 
 class TestHgetallAhead(MinisTestCase):
-    """HGETALL walks with iterators ahead of it; the hash it returns is
+    """HGETALL walks with an iterator ahead of it; the hash it returns is
     the hash, whatever its size and through each resize"""
 
     def test_growing_and_shrinking(self):
@@ -1800,6 +1800,45 @@ class TestHgetallAhead(MinisTestCase):
             self.r.hdel("hga_py", field)
             del model[field]
             self.assertEqual(self.r.hgetall("hga_py"), model)
+
+
+class TestHashValueSizes(MinisTestCase):
+    """A hash field and a short value are kept in one block, a longer value
+    apart; a field goes back and forth as it is overwritten"""
+
+    def setUp(self):
+        super().setUp()
+        self.b = client(port=self.server.port, socket_timeout=5)
+
+    def tearDown(self):
+        self.b.close()
+        super().tearDown()
+
+    def test_sizes_around_the_limit(self):
+        self.b.delete("hvs")
+        model = {}
+        for size in list(range(0, 20)) + list(range(60, 70)) + [200, 5000]:
+            for flen in (0, 1, 30, 100):
+                field = bytes((i * 3 + flen) % 256 for i in range(flen)) + b"%d" % size
+                model[field] = bytes((i * 7 + size) % 256 for i in range(size))
+                self.b.hset("hvs", field, model[field])
+                self.assertEqual(self.b.hget("hvs", field), model[field])
+        self.assertEqual(self.b.hgetall("hvs"), model)
+
+    def test_overwrites_grow_and_shrink(self):
+        sizes = [1, 15, 16, 64, 65, 3, 100, 0, 64, 2, 1000, 1]
+        self.b.delete("hvs_grow")
+        for field in range(5):
+            for step, size in enumerate(sizes):
+                value = bytes([field + step]) * size
+                self.b.hset("hvs_grow", f"f{field}", value)
+                self.assertEqual(self.b.hget("hvs_grow", f"f{field}"), value,
+                                 f"field {field} step {step} size {size}")
+        self.assertEqual(self.b.hgetall("hvs_grow"),
+                         {f"f{f}".encode(): bytes([f + len(sizes) - 1])
+                          for f in range(5)})
+        self.assertEqual(self.b.hdel("hvs_grow", "f0", "f1"), 2)
+        self.assertEqual(self.b.delete("hvs_grow"), 1)
 
 
 class TestMgetGroups(MinisTestCase):

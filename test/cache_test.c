@@ -13,6 +13,7 @@
 #include "cache/entry.h"
 #include "cache/minis_private.h"
 #include "cache/hashtable.h"
+#include "cache/hash.h"
 #include "common/common.h"
 #include "common/glob.h"
 #include "io/buffer.h"
@@ -1262,13 +1263,13 @@ assert_hgetall_reply (Buffer *buf, const bool *want, size_t nfields)
   ASSERT_EQ (pos, buf_len (buf));
 }
 
-// HGETALL walks with iterators ahead of it: on a hash after every field
+// HGETALL walks with an iterator ahead of it: on a hash after every field
 // added, through each resize where the fields are in two tables, after
 // deletes, and stopping partway when the reply does not fit
 static void
 test_hgetall_ahead (void)
 {
-  printf ("TEST: HGETALL with iterators ahead... ");
+  printf ("TEST: HGETALL with an iterator ahead... ");
 
   Cache *cache = cache_init ();
   Buffer buf;
@@ -1298,8 +1299,8 @@ test_hgetall_ahead (void)
   RUN (cache, now, "hgetall", "hga");
   assert_hgetall_reply (&buf, want, NFIELDS);
 
-  // Too big for the buffer: the walk stops with the iterators still
-  // ahead of it (ASan checks they read nothing freed)
+  // Too big for the buffer: the walk stops with the iterator still
+  // ahead of it (ASan checks it reads nothing freed)
   static char big[3000];
   memset (big, 'b', sizeof (big) - 1);
   for (int i = 0; i < 20; i++)
@@ -1311,6 +1312,117 @@ test_hgetall_ahead (void)
   const char *cmd[] = { "hgetall", "hga_big" };
   buf = init_test_buffer (PROTO_BIN);
   ASSERT_FALSE (cache_execute (cache, cmd, 2, &buf, now));
+
+  cache_free (cache);
+  printf ("PASSED\n");
+}
+
+// Whether the value of FIELD of the hash at KEY lives in the field's
+// entry, right after the field
+static bool
+hash_value_is_inline (Cache *cache, const char *key, const char *field,
+		      size_t field_len, uint64_t now)
+{
+  Shard *shard = &cache->shards[get_shard_id (key, strlen (key))];
+  Entry *ent = entry_lookup (cache, shard, key, strlen (key), now);
+  ASSERT_TRUE (ent != NULL && ent->type == T_HASH);
+  HashEntry *hent = hash_lookup (ent->hash, field, field_len);
+  ASSERT_TRUE (hent != NULL);
+  return hent->value == hent->field + hent->field_len + 1;
+}
+
+static void
+assert_hget (Cache *cache, uint64_t now, const char *key, const char *field,
+	     size_t field_len, const char *val, size_t val_len)
+{
+  const char *cmd[] = { "hget", key, field };
+  size_t lens[] = { 4, strlen (key), field_len };
+  Buffer buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, cmd, lens, 3, &buf, now));
+  const uint8_t *data = buf_data (&buf);
+  ASSERT_EQ (data[0], SER_STR);
+  uint32_t len;
+  memcpy (&len, &data[1], 4);
+  ASSERT_EQ (ntoh_u32 (len), val_len);
+  ASSERT_TRUE (memcmp (&data[5], val, val_len) == 0);
+}
+
+// A hash field is kept in one block with its entry, and so is a value of
+// up to 64 bytes; longer ones are apart, and overwrites move between them
+static void
+test_hash_inline_values (void)
+{
+  printf ("TEST: Hash fields and values kept in their entry... ");
+
+  Cache *cache = cache_init ();
+  uint64_t now = get_test_time_us ();
+  Buffer buf;
+  char v64[65], v65[66], v15[16], v16[17], long_field[201];
+  memset (v64, 'a', 64); v64[64] = '\0';
+  memset (v65, 'b', 65); v65[65] = '\0';
+  memset (v15, 'c', 15); v15[15] = '\0';
+  memset (v16, 'd', 16); v16[16] = '\0';
+  memset (long_field, 'f', 200); long_field[200] = '\0';
+
+  RUN (cache, now, "hset", "hiv", "small", "v", "f64", v64, "f65", v65);
+  ASSERT_EQ (extract_int_response (&buf), 3);
+  ASSERT_TRUE (hash_value_is_inline (cache, "hiv", "small", 5, now));
+  ASSERT_TRUE (hash_value_is_inline (cache, "hiv", "f64", 3, now));
+  ASSERT_FALSE (hash_value_is_inline (cache, "hiv", "f65", 3, now));
+  assert_hget (cache, now, "hiv", "small", 5, "v", 1);
+  assert_hget (cache, now, "hiv", "f64", 3, v64, 64);
+  assert_hget (cache, now, "hiv", "f65", 3, v65, 65);
+
+  // "v" left room for 15 bytes: those fit, 16 do not, and a short value
+  // comes back in; one that never had room stays apart
+  RUN (cache, now, "hset", "hiv", "small", v15);
+  ASSERT_TRUE (hash_value_is_inline (cache, "hiv", "small", 5, now));
+  assert_hget (cache, now, "hiv", "small", 5, v15, 15);
+  RUN (cache, now, "hset", "hiv", "small", v16);
+  ASSERT_FALSE (hash_value_is_inline (cache, "hiv", "small", 5, now));
+  assert_hget (cache, now, "hiv", "small", 5, v16, 16);
+  RUN (cache, now, "hset", "hiv", "small", v65);
+  assert_hget (cache, now, "hiv", "small", 5, v65, 65);
+  RUN (cache, now, "hset", "hiv", "small", "x");
+  ASSERT_TRUE (hash_value_is_inline (cache, "hiv", "small", 5, now));
+  assert_hget (cache, now, "hiv", "small", 5, "x", 1);
+  RUN (cache, now, "hset", "hiv", "f65", "short now");
+  ASSERT_FALSE (hash_value_is_inline (cache, "hiv", "f65", 3, now));
+  assert_hget (cache, now, "hiv", "f65", 3, "short now", 9);
+
+  // The same value again changes nothing
+  RUN (cache, now, "hset", "hiv", "small", "x");
+  ASSERT_EQ (extract_int_response (&buf), 0);
+  ASSERT_TRUE (hash_value_is_inline (cache, "hiv", "small", 5, now));
+
+  // A long field, and NUL bytes in fields and values
+  RUN (cache, now, "hset", "hiv", long_field, "lv");
+  ASSERT_TRUE (hash_value_is_inline (cache, "hiv", long_field, 200, now));
+  assert_hget (cache, now, "hiv", long_field, 200, "lv", 2);
+  const char *bin_cmd[] = { "hset", "hiv", "b\0f", "v\0w" };
+  size_t bin_lens[] = { 4, 3, 3, 3 };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, bin_cmd, bin_lens, 4, &buf, now));
+  ASSERT_TRUE (hash_value_is_inline (cache, "hiv", "b\0f", 3, now));
+  assert_hget (cache, now, "hiv", "b\0f", 3, "v\0w", 3);
+  char big_bin[100];
+  memset (big_bin, '\0', sizeof (big_bin));
+  big_bin[50] = 'z';
+  const char *big_cmd[] = { "hset", "hiv", "b\0f", big_bin };
+  size_t big_lens[] = { 4, 3, 3, sizeof (big_bin) };
+  buf = init_test_buffer (PROTO_BIN);
+  ASSERT_TRUE (cache_execute_n (cache, big_cmd, big_lens, 4, &buf, now));
+  ASSERT_FALSE (hash_value_is_inline (cache, "hiv", "b\0f", 3, now));
+  assert_hget (cache, now, "hiv", "b\0f", 3, big_bin, sizeof (big_bin));
+
+  // Deleting fields and whole hashes frees both kinds (ASan checks)
+  RUN (cache, now, "hdel", "hiv", "f64", "f65");
+  ASSERT_EQ (extract_int_response (&buf), 2);
+  RUN (cache, now, "hset", "hiv", "f65", "back");
+  ASSERT_TRUE (hash_value_is_inline (cache, "hiv", "f65", 3, now));
+  assert_hget (cache, now, "hiv", "f65", 3, "back", 4);
+  RUN (cache, now, "del", "hiv");
+  ASSERT_EQ (extract_int_response (&buf), 1);
 
   cache_free (cache);
   printf ("PASSED\n");
@@ -3285,6 +3397,7 @@ main (void)
   test_mget_groups ();
   test_exists_del_groups ();
   test_hgetall_ahead ();
+  test_hash_inline_values ();
   test_glob ();
   test_hm_lookup_mid_resize ();
   test_hm_random_ops ();
