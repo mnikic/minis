@@ -115,14 +115,16 @@ hm_help_resizing (HMap *hmap)
 	  continue;
 	}
 
+      // The hash from the slot, not the node: the node is a cache miss
+      uint64_t n_hcode = old_entry->hcode_cached;
+
       // Shift the rest of the run back, as for any delete. A hole left
       // in the run would hide the keys behind it from lookups, until
       // they are moved too.
       h_delete (&hmap->ht2, old_entry);
 
-      size_t n_pos = (size_t) (node->hcode & hmap->ht1.mask);
+      size_t n_pos = (size_t) (n_hcode & hmap->ht1.mask);
       size_t n_dist = 0;
-      uint64_t n_hcode = node->hcode;
 
       for (;;)
 	{
